@@ -1,3 +1,5 @@
+<img width="180" height="100" alt="image" src="https://github.com/user-attachments/assets/18c36cdb-51f9-48f0-9458-52fa5ef2e844" />
+
 Example on Colab: https://colab.research.google.com/drive/1cwDrG9dbK1MfyaiI2gRaXxdlKRAjw_Wp
 
 - Digitalization & Automation
@@ -5,10 +7,6 @@ Example on Colab: https://colab.research.google.com/drive/1cwDrG9dbK1MfyaiI2gRaX
 - Step Render on Colab
 - Orthogonal Render on Colab
 - Automatic Evaluation Sympy
-
-
-<img width="180" height="100" alt="image" src="https://github.com/user-attachments/assets/18c36cdb-51f9-48f0-9458-52fa5ef2e844" />
-
 
 **Examples**
 
