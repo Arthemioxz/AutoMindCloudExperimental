@@ -149,6 +149,11 @@
     try{ window.removeEventListener('resize', state?.onResize); }catch(_){}
     try{ const el = state?.renderer?.domElement; el && el.parentNode && el.parentNode.removeChild(el); }catch(_){}
     try{ state?.renderer?.dispose?.(); }catch(_){}
+    // Remove UI if present
+    try{
+      state?.ui?.root && state.ui.root.remove();
+      state?.ui?.btn && state.ui.btn.remove();
+    }catch(_){}
     state=null;
   };
 
@@ -175,12 +180,14 @@
     const camera = new THREE.PerspectiveCamera(75, container.clientWidth/container.clientHeight, 0.01, 10000);
     camera.position.set(0,0,3);
 
-    const renderer = new THREE.WebGLRenderer({ antialias:true });
+    const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
     renderer.setPixelRatio(window.devicePixelRatio||1);
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     renderer.domElement.style.touchAction = 'none';
+    renderer.domElement.style.display = 'block';
+    renderer.domElement.style.position = 'relative';
     container.appendChild(renderer.domElement);
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
@@ -402,14 +409,218 @@
       controls.update(); renderer.render(scene, camera);
     }
 
+    // ---------- UI: Button + Scrollable Gallery Panel ----------
+    function createUI(){
+      // Root wrapper to hold button & panel
+      const root = document.createElement('div');
+      root.style.position = 'absolute';
+      root.style.left = '0';
+      root.style.top = '0';
+      root.style.width = '100%';
+      root.style.height = '100%';
+      root.style.pointerEvents = 'none';
+      root.style.zIndex = '10';
+      root.style.fontFamily = 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial';
+
+      // Button
+      const btn = document.createElement('button');
+      btn.textContent = 'Components';
+      Object.assign(btn.style, {
+        position: 'absolute',
+        right: '14px',
+        bottom: '14px',
+        padding: '10px 14px',
+        borderRadius: '14px',
+        border: '1px solid #d0d0d0',
+        background: '#fff',
+        boxShadow: '0 2px 10px rgba(0,0,0,0.08)',
+        fontWeight: '600',
+        cursor: 'pointer',
+        pointerEvents: 'auto'
+      });
+
+      // Panel
+      const panel = document.createElement('div');
+      Object.assign(panel.style, {
+        position: 'absolute',
+        right: '14px',
+        bottom: '64px',
+        width: '360px',
+        maxHeight: '60%',
+        background: '#ffffff',
+        border: '1px solid #e4e4e7',
+        boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
+        borderRadius: '16px',
+        overflow: 'hidden',
+        display: 'none',
+        pointerEvents: 'auto'
+      });
+
+      // Panel header
+      const header = document.createElement('div');
+      header.textContent = 'Components';
+      Object.assign(header.style, {
+        padding: '10px 14px',
+        fontWeight: '700',
+        borderBottom: '1px solid #eee',
+        background: '#fafafa'
+      });
+
+      // Scroll area
+      const list = document.createElement('div');
+      Object.assign(list.style, {
+        overflowY: 'auto',
+        maxHeight: 'calc(60vh - 48px)', // keep header height in mind
+        padding: '10px'
+      });
+
+      panel.appendChild(header);
+      panel.appendChild(list);
+      root.appendChild(panel);
+      root.appendChild(btn);
+      container.style.position = container.style.position || 'relative';
+      container.appendChild(root);
+
+      // Toggle panel
+      let builtOnce = false;
+      btn.addEventListener('click', async ()=>{
+        if (panel.style.display === 'none'){
+          panel.style.display = 'block';
+          // lazily build gallery once
+          if (!builtOnce){ await buildGallery(list); builtOnce = true; }
+        } else {
+          panel.style.display = 'none';
+        }
+      });
+
+      return { root, btn, panel, list };
+    }
+
+    // Create gallery entries (thumbnail + label)
+    async function buildGallery(listEl){
+      listEl.innerHTML = ''; // clear
+      if (!api.robotModel || !api.linkSet || api.linkSet.size===0){
+        listEl.textContent = 'No components found.'; return;
+      }
+
+      // Make others dim/fade utility (for snapshotting)
+      function setOthersVisibility(only, visible){
+        api.robotModel.traverse(o=>{
+          if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
+            // toggle visibility unless it's within the selected link
+            const inSelected = only && (only === findAncestorLink(o, api.linkSet));
+            o.visible = inSelected ? true : (visible ?? o.visible) && false;
+          }
+        });
+      }
+      // Snapshot a link to data URL
+      async function snapshotLink(link){
+        // Save vis flags
+        const vis = [];
+        api.robotModel.traverse(o=>{
+          if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){ vis.push([o, o.visible]); }
+        });
+
+        // Isolate
+        setOthersVisibility(link, false);
+        const box = new THREE.Box3().setFromObject(link);
+        const center = box.getCenter(new THREE.Vector3());
+        const size   = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x,size.y,size.z) || 1;
+
+        // Camera framing for the component
+        const prevPos = camera.position.clone();
+        const prevTarget = controls.target.clone();
+        const dist = maxDim * 1.8;
+        camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
+        controls.target.copy(center);
+        controls.update();
+
+        // Render twice to ensure updated matrices
+        renderer.render(scene, camera);
+        await new Promise(r=>setTimeout(r, 0));
+        renderer.render(scene, camera);
+
+        const url = renderer.domElement.toDataURL('image/png');
+
+        // Restore
+        vis.forEach(([o,v])=>{ o.visible = v; });
+        camera.position.copy(prevPos);
+        controls.target.copy(prevTarget);
+        controls.update();
+        renderer.render(scene, camera);
+
+        return url;
+      }
+
+      // Build entries
+      for (const link of api.linkSet){
+        const row = document.createElement('div');
+        Object.assign(row.style, {
+          display: 'grid',
+          gridTemplateColumns: '96px 1fr',
+          gap: '10px',
+          alignItems: 'center',
+          padding: '8px',
+          borderRadius: '12px',
+          border: '1px solid #f0f0f0',
+          marginBottom: '10px',
+          background: '#fff'
+        });
+
+        const img = document.createElement('img');
+        Object.assign(img.style, {
+          width: '96px',
+          height: '72px',
+          objectFit: 'contain',
+          background: '#fafafa',
+          borderRadius: '10px',
+          border: '1px solid #eee'
+        });
+        img.alt = link.name || 'component';
+
+        const meta = document.createElement('div');
+        const title = document.createElement('div');
+        title.textContent = link.name || '(unnamed link)';
+        Object.assign(title.style, { fontWeight: '700', fontSize: '14px' });
+
+        const desc = document.createElement('div');
+        desc.textContent = 'Hello world';
+        Object.assign(desc.style, { color: '#555', fontSize: '12px', marginTop: '4px' });
+
+        meta.appendChild(title);
+        meta.appendChild(desc);
+
+        row.appendChild(img);
+        row.appendChild(meta);
+        listEl.appendChild(row);
+
+        // Generate thumbnail async (don’t freeze UI)
+        (async ()=>{
+          try{
+            const url = await snapshotLink(link);
+            img.src = url;
+          }catch(_e){
+            // if snapshot fails, leave empty
+          }
+        })();
+      }
+    }
+    // ---------- end UI ----------
+
     // Public state
-    state = { scene, camera, renderer, controls, api, onResize, raf:null };
+    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui: null };
     loadURDF(opts.urdfContent||'');
+
+    // mount UI after initial render (so canvas exists)
+    state.ui = createUI();
+
     animate();
 
     return {
       scene, camera, renderer, controls,
-      get robot(){ return api.robotModel; }
+      get robot(){ return api.robotModel; },
+      openGallery(){ state.ui?.btn?.click?.(); } // helper if you want to open via code
     };
   };
 
