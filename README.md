@@ -6,7 +6,7 @@ Example on Colab: https://colab.research.google.com/drive/1cwDrG9dbK1MfyaiI2gRaX
 - Orthogonal Render on Colab
 - Automatic Evaluation Sympy
 
-<img width="96" height="54" alt="image" src="https://github.com/user-attachments/assets/18c36cdb-51f9-48f0-9458-52fa5ef2e844" />
+<img width="180" height="100" alt="image" src="https://github.com/user-attachments/assets/18c36cdb-51f9-48f0-9458-52fa5ef2e844" />
 
 **Examples**
 
