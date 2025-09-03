@@ -1,11 +1,11 @@
-/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer; gallery thumbnails are shot OFF-SCREEN */
+/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer; off-screen thumbnails; gallery shows ONLY visual links */
 (function (root) {
   'use strict';
 
   const URDFViewer = {};
   let state = null;
 
-  // ---------- Helpers for assets/paths ----------
+  // ---------- Helpers ----------
   function normKey(s){ return String(s||'').replace(/\\/g,'/').toLowerCase(); }
   function variantsFor(path){
     const out = new Set(), p = normKey(path);
@@ -54,6 +54,14 @@
       for (let i=0;i<kids.length;i++) stack.push(kids[i]);
     }
     return t;
+  }
+  function linkHasMeshes(rootObj){
+    let found = false;
+    rootObj?.traverse?.(o=>{
+      if (found) return;
+      if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay) found = true;
+    });
+    return found;
   }
   function buildHoverAPI(){
     const overlays=[];
@@ -144,9 +152,7 @@
     try{ window.removeEventListener('resize', state?.onResize); }catch(_){}
     try{ const el = state?.renderer?.domElement; el && el.parentNode && el.parentNode.removeChild(el); }catch(_){}
     try{ state?.renderer?.dispose?.(); }catch(_){}
-    try{
-      state?.ui?.root && state.ui.root.remove();
-    }catch(_){}
+    try{ state?.ui?.root && state.ui.root.remove(); }catch(_){}
     try{ state?.off?.renderer?.dispose?.(); }catch(_){}
     state=null;
   };
@@ -236,17 +242,15 @@
       let keyFound=null;
       for (const k of tries){ const kk=normKey(k); if (meshDB[kk]){ keyFound=kk; break; } }
 
-      // If no asset, finish with empty mesh
       if (!keyFound){ onComplete(new THREE.Mesh()); return; }
 
       const ext = keyFound.split('.').pop();
 
-      // ---- Skip image files; we don't want jpg/jpeg/png as components ----
+      // Skip image files – do not treat jpg/jpeg/png as components
       if (['jpg','jpeg','png'].includes(ext)){
         onComplete(new THREE.Mesh());
         return;
       }
-      // -------------------------------------------------------------------
 
       pendingMeshes++;
       const done=(mesh)=>{
@@ -429,11 +433,16 @@
       const robotClone = api.robotModel.clone(true);
       offScene.add(robotClone);
 
+      // Only clone/track links that actually have meshes
       const linkNames = new Set();
-      api.linkSet.forEach(l=>{ if (l && typeof l.name==='string') linkNames.add(l.name); });
+      api.linkSet.forEach(l=>{
+        if (l && typeof l.name==='string' && linkHasMeshes(l)) linkNames.add(l.name);
+      });
 
       const linkByName = new Map();
-      robotClone.traverse(o=>{ if (o && typeof o.name==='string' && linkNames.has(o.name)) linkByName.set(o.name, o); });
+      robotClone.traverse(o=>{
+        if (o && typeof o.name==='string' && linkNames.has(o.name)) linkByName.set(o.name, o);
+      });
 
       const linkSetClone = new Set(linkByName.values());
 
@@ -490,9 +499,9 @@
       fitAndCenter(camera, controls, api.robotModel);
     }
 
-    // ---------- UI: bottom-left button row + scrollable panel ----------
+    // ---------- UI: bottom-left toggle + right panel with header Show-all ----------
     function createUI(){
-      // Root overlay anchored to container
+      // Root overlay
       const root = document.createElement('div');
       Object.assign(root.style, {
         position: 'absolute',
@@ -503,43 +512,22 @@
         fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // Bottom-left button row (Components + Show all)
-      const btnRow = document.createElement('div');
-      Object.assign(btnRow.style, {
-        position: 'absolute',
-        left: '14px',
-        bottom: '14px',
-        display: 'flex',
-        gap: '10px',
-        pointerEvents: 'auto'
-      });
-
+      // Bottom-left toggle button (opens/closes panel)
       const btn = document.createElement('button');
       btn.textContent = 'Components';
       Object.assign(btn.style, {
+        position: 'absolute',
+        left: '14px',
+        bottom: '14px',
         padding: '10px 14px',
         borderRadius: '14px',
         border: '1px solid #d0d0d0',
         background: '#ffffff',
         boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
         fontWeight: '700',
-        cursor: 'pointer'
+        cursor: 'pointer',
+        pointerEvents: 'auto'
       });
-
-      const showAllBtn = document.createElement('button');
-      showAllBtn.textContent = 'Show all';
-      Object.assign(showAllBtn.style, {
-        padding: '10px 14px',
-        borderRadius: '14px',
-        border: '1px solid #d0d0d0',
-        background: '#ffffff',
-        boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
-        fontWeight: '700',
-        cursor: 'pointer'
-      });
-
-      btnRow.appendChild(btn);
-      btnRow.appendChild(showAllBtn);
 
       // Panel (bottom-right)
       const panel = document.createElement('div');
@@ -558,14 +546,38 @@
         pointerEvents: 'auto'
       });
 
+      // Header with title + Show all (in the header, next to "Components")
       const header = document.createElement('div');
-      header.textContent = 'Components';
       Object.assign(header.style, {
-        padding: '10px 14px',
-        fontWeight: '800',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '8px',
+        padding: '10px 10px',
         borderBottom: '1px solid #eee',
         background: '#fafafa'
       });
+
+      const headerTitle = document.createElement('div');
+      headerTitle.textContent = 'Components';
+      Object.assign(headerTitle.style, {
+        fontWeight: '800'
+      });
+
+      const showAllBtn = document.createElement('button');
+      showAllBtn.textContent = 'Show all';
+      Object.assign(showAllBtn.style, {
+        padding: '6px 10px',
+        borderRadius: '10px',
+        border: '1px solid #d0d0d0',
+        background: '#ffffff',
+        fontWeight: '700',
+        cursor: 'pointer'
+      });
+      showAllBtn.addEventListener('click', showAllAndFrame);
+
+      header.appendChild(headerTitle);
+      header.appendChild(showAllBtn);
 
       const list = document.createElement('div');
       Object.assign(list.style, {
@@ -577,7 +589,7 @@
       panel.appendChild(header);
       panel.appendChild(list);
       root.appendChild(panel);
-      root.appendChild(btnRow);
+      root.appendChild(btn);
       container.appendChild(root);
 
       let builtOnce = false;
@@ -590,16 +602,12 @@
         }
       });
 
-      showAllBtn.addEventListener('click', showAllAndFrame);
-
       return { root, btn, panel, list, showAllBtn };
     }
 
     async function buildGallery(listEl){
       listEl.innerHTML = '';
-      if (!api.robotModel || !api.linkSet || api.linkSet.size===0){
-        listEl.textContent = 'No components found.'; return;
-      }
+      if (!api.robotModel || !api.linkSet){ listEl.textContent = 'No components found.'; return; }
 
       function setOthersVisibility(onlyLink){
         api.robotModel.traverse(o=>{
@@ -610,7 +618,12 @@
         });
       }
 
+      let any = false;
       for (const link of api.linkSet){
+        // ONLY include links that actually have visual geometry
+        if (!linkHasMeshes(link)) continue;
+        any = true;
+
         const row = document.createElement('div');
         Object.assign(row.style, {
           display: 'grid',
@@ -665,13 +678,17 @@
           controls.update();
         });
 
-        // Generate thumbnail OFF-SCREEN (no on-screen flicker)
+        // Thumbnail captured OFF-SCREEN (no flicker)
         (async ()=>{
           try{
             const url = await snapshotLinkOffscreen(link.name);
             if (url) img.src = url;
           }catch(_e){ /* ignore */ }
         })();
+      }
+
+      if (!any){
+        listEl.textContent = 'No components with visual geometry found.';
       }
     }
     // ---------- end UI ----------
@@ -692,7 +709,7 @@
           api.linkSet = markLinksAndJoints(api.robotModel);
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
 
-          // Build the OFF-SCREEN clone rig now that links exist
+          // Build OFF-SCREEN rig now that links exist
           state.off = buildOffscreenFromRobot();
         }
       } catch(_e){}
