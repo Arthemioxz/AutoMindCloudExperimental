@@ -1,5 +1,4 @@
-<script>
-/* urdf_viewer.js - URDFViewer with bottom-right button; isolate-on-click; HTTP fallback + snapshots fixed */
+/* urdf_viewer.js - URDFViewer with bottom-right button; isolate-on-click */
 (function (root) {
   'use strict';
 
@@ -7,18 +6,6 @@
   let state = null;
 
   // ---------- Helpers ----------
-  function injectBaseCSSIfBody(container){
-    if (container === document.body && !document.getElementById('__urdfviewer_basecss')) {
-      const s = document.createElement('style');
-      s.id = '__urdfviewer_basecss';
-      s.textContent = `
-        html, body { height: 100%; margin: 0; }
-        canvas { display: block; }
-      `;
-      document.head.appendChild(s);
-    }
-  }
-
   function normKey(s){ return String(s||'').replace(/\\/g,'/').toLowerCase(); }
   function variantsFor(path){
     const out = new Set(), p = normKey(path);
@@ -42,9 +29,7 @@
 
   function rectifyUpForward(obj){
     if (!obj || obj.userData.__rectified) return;
-    // Convert ROS Z-up to Three Y-up (URDFLoader already does some transforms;
-    // this helps models that still come in tipped)
-    obj.rotateX(-Math.PI/2);
+    obj.rotateX(-Math.PI/2); // ROS Z-up -> Three Y-up
     obj.userData.__rectified = true;
     obj.updateMatrixWorld(true);
   }
@@ -72,48 +57,37 @@
   }
 
   function markLinksAndJoints(robot){
-    // Be robust: collect from robot.links and from userData markers
-    const linkSet = new Set();
-    if (robot && robot.links) {
-      Object.values(robot.links).forEach(l=>l && linkSet.add(l));
-    }
-    robot?.traverse?.(o=>{
-      if (o?.userData?.isURDFLink) linkSet.add(o);
-    });
+    const linkSet = new Set(Object.values(robot.links||{}));
     return linkSet;
   }
 
   // ---------- Visibility helpers ----------
-  function showOnlyLink(api, link){
+  function showOnlyLink(api, link, camera, controls, renderer, scene){
     api.robotModel.traverse(o=>{
       if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
         const inSelected = (link && (link === findAncestorLink(o, api.linkSet)));
         o.visible = !!inSelected;
       }
     });
-    fitAndCenter(api.camera, api.controls, link || api.robotModel);
-    api.renderer.render(api.scene, api.camera);
+    fitAndCenter(camera, controls, link || api.robotModel);
+    renderer.render(scene, camera);
   }
-  function showAllLinks(api){
+  function showAllLinks(api, camera, controls, renderer, scene){
     api.robotModel.traverse(o=>{
       if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay) o.visible = true;
     });
-    fitAndCenter(api.camera, api.controls, api.robotModel);
-    api.renderer.render(api.scene, api.camera);
+    fitAndCenter(camera, controls, api.robotModel);
+    renderer.render(scene, camera);
   }
 
   // ---------- Public API ----------
   URDFViewer.render = function(opts){
     if (state) URDFViewer.destroy();
     const container = opts?.container || document.body;
-    injectBaseCSSIfBody(container);
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
-    if (!container.style.minHeight) container.style.minHeight = '240px';
 
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
-    const packagesMap = (opts && opts.packages) || {}; // for package:// resolution
-    const meshDB = (opts && opts.meshDB) || {};
 
     const scene = new THREE.Scene();
     if (bg!=null) scene.background = new THREE.Color(bg);
@@ -134,16 +108,6 @@
     renderer.domElement.style.touchAction = 'none';
     container.appendChild(renderer.domElement);
 
-    // Resize
-    function onResize(){
-      const w = container.clientWidth || 1;
-      const h = container.clientHeight || 1;
-      camera.aspect = w/h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    }
-    window.addEventListener('resize', onResize);
-
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
@@ -153,11 +117,11 @@
     dirLight.position.set(2,2,2); scene.add(dirLight);
 
     const urdfLoader = new URDFLoader();
-    urdfLoader.packages = packagesMap;
-
     const textDecoder = new TextDecoder();
     const b64ToUint8 = (b64)=>Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
     const b64ToText  = (b64)=>textDecoder.decode(b64ToUint8(b64));
+    const MIME = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', stl:'model/stl', dae:'model/vnd.collada+xml' };
+    const meshDB = (opts && opts.meshDB) || {};
     const daeCache = new Map();
     let pendingMeshes = 0, fitTimer=null;
 
@@ -168,46 +132,28 @@
           rectifyUpForward(api.robotModel);
           fitAndCenter(camera, controls, api.robotModel);
         }
-      }, 80);
+      },80);
     }
-
-    // Save the original loader so we can fall back to HTTP/file loading
-    const origLoadMeshCb = urdfLoader.loadMeshCb.bind(urdfLoader);
 
     urdfLoader.loadMeshCb = (path, manager, onComplete)=>{
       const tries = variantsFor(path);
       let keyFound=null;
-      for (const k of tries){
-        const kk=normKey(k);
-        if (meshDB && Object.prototype.hasOwnProperty.call(meshDB, kk)) { keyFound=kk; break; }
-      }
-
-      // If we don't have it in meshDB, use original loader (fixes "black frame")
-      if (!keyFound) {
-        return origLoadMeshCb(path, manager, (mesh)=>{
-          // when default loader finishes, still try to keep materials robust
-          if (mesh) applyDoubleSided(mesh);
-          onComplete(mesh);
-          // we don't track pendingMeshes here (external); do a delayed fit anyway
-          setTimeout(()=>scheduleFit(), 120);
-        });
-      }
-
+      for (const k of tries){ const kk=normKey(k); if (meshDB[kk]){ keyFound=kk; break; } }
+      if (!keyFound){ onComplete(new THREE.Mesh()); return; }
       pendingMeshes++;
       const done=(mesh)=>{
         applyDoubleSided(mesh);
         onComplete(mesh);
         pendingMeshes--; scheduleFit();
       };
-
+      const ext = keyFound.split('.').pop();
       try{
-        const ext = keyFound.split('.').pop().toLowerCase();
         if (ext==='stl'){
           const bytes=b64ToUint8(meshDB[keyFound]);
           const loader=new THREE.STLLoader();
           const geom=loader.parse(bytes.buffer);
           geom.computeVertexNormals();
-          done(new THREE.Mesh(geom,new THREE.MeshStandardMaterial({roughness:0.85,metalness:0.15,side:THREE.DoubleSide})));
+          done(new THREE.Mesh(geom,new THREE.MeshStandardMaterial({color:0x8aa1ff,roughness:0.85,metalness:0.15,side:THREE.DoubleSide})));
           return;
         }
         if (ext==='dae'){
@@ -220,40 +166,29 @@
           done(obj.clone(true));
           return;
         }
-        // Unknown extension -> blank but don't crash
         done(new THREE.Mesh());
       }catch(_e){ done(new THREE.Mesh()); }
     };
 
     const api = { scene, camera, renderer, controls, robotModel:null, linkSet:null };
 
-    function loadURDFfromText(urdfText){
+    function loadURDF(urdfText){
       if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
+      pendingMeshes=0;
       try{
         const robot = urdfLoader.parse(urdfText||'');
         if (robot?.isObject3D){
           api.robotModel=robot; scene.add(api.robotModel);
           rectifyUpForward(api.robotModel);
           api.linkSet = markLinksAndJoints(api.robotModel);
-          // Fit a few times as meshes resolve
-          setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 80);
-          setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 300);
-          setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 800);
+          setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
         }
       } catch(_e){}
     }
 
-    async function loadURDFfromURL(url){
-      try{
-        const txt = await fetch(url, opts?.fetchOptions || {}).then(r=>r.text());
-        loadURDFfromText(txt);
-      } catch(e){ console.warn('Failed to fetch URDF:', e); }
-    }
-
     function animate(){
-      state?.raf && cancelAnimationFrame(state.raf);
-      const loop = ()=>{ state && (state.raf = requestAnimationFrame(loop)); controls.update(); renderer.render(scene, camera); };
-      loop();
+      state.raf = requestAnimationFrame(animate);
+      controls.update(); renderer.render(scene, camera);
     }
 
     // ---------- UI ----------
@@ -293,7 +228,7 @@
       const showAllBtn = document.createElement('button');
       showAllBtn.textContent = 'Show all';
       Object.assign(showAllBtn.style,{float:'right',padding:'4px 8px',fontSize:'12px',marginTop:'-2px'});
-      showAllBtn.addEventListener('click',(e)=>{e.stopPropagation();showAllLinks(api);});
+      showAllBtn.addEventListener('click',(e)=>{e.stopPropagation();showAllLinks(api,camera,controls,renderer,scene);});
 
       header.appendChild(showAllBtn);
 
@@ -312,69 +247,53 @@
           await buildGallery(list);
         }
       });
+    }
 
-      async function buildGallery(listEl){
-        listEl.innerHTML = '';
-        if (!api.robotModel || !api.linkSet || api.linkSet.size===0){
-          listEl.textContent = 'No components.'; return;
-        }
+    async function buildGallery(listEl){
+      listEl.innerHTML = '';
+      if (!api.robotModel || !api.linkSet || api.linkSet.size===0){
+        listEl.textContent = 'No components.'; return;
+      }
 
-        const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+      async function snapshotLink(link){
+        // Hide others temporarily
+        const vis=[]; api.robotModel.traverse(o=>{if(o.isMesh&&o.geometry){vis.push([o,o.visible]);}});
+        api.robotModel.traverse(o=>{if(o.isMesh&&o.geometry){o.visible=(link===findAncestorLink(o,api.linkSet));}});
+        fitAndCenter(camera,controls,link);
+        renderer.render(scene,camera);
+        await new Promise(r=>setTimeout(r,0));
+        const url=renderer.domElement.toDataURL('image/png');
+        vis.forEach(([o,v])=>o.visible=v);
+        return url;
+      }
 
-        async function snapshotLink(link){
-          // Hide others temporarily
-          const vis=[]; api.robotModel.traverse(o=>{if(o.isMesh&&o.geometry){vis.push([o,o.visible]);}});
-          api.robotModel.traverse(o=>{if(o.isMesh&&o.geometry){o.visible=(link===findAncestorLink(o,api.linkSet));}});
-          fitAndCenter(camera,controls,link);
-          renderer.render(scene,camera);
-          await sleep(100);  // ensure the new frame is on the canvas before toDataURL
-          const url=renderer.domElement.toDataURL('image/png');
-          vis.forEach(([o,v])=>o.visible=v);
-          return url;
-        }
-
-        for(const link of api.linkSet){
-          const row=document.createElement('div');
-          Object.assign(row.style,{display:'flex',alignItems:'center',gap:'10px',
-            padding:'6px',marginBottom:'6px',border:'1px solid #eee',borderRadius:'8px',cursor:'pointer'});
-          const img=document.createElement('img');
-          Object.assign(img.style,{width:'80px',height:'60px',objectFit:'contain',background:'#fafafa',border:'1px solid #eee',borderRadius:'6px'});
-          const meta=document.createElement('div');
-          meta.innerHTML=`<div style="font-weight:700;font-size:14px">${link.name||'(unnamed link)'}</div>
-                          <div style="color:#555;font-size:12px;margin-top:2px">${descriptions[link.name]||'Hello world'}</div>`;
-          row.appendChild(img); row.appendChild(meta);
-          listEl.appendChild(row);
-          row.addEventListener('click',()=>{showOnlyLink(api,link);});
-          (async()=>{ try{ img.src=await snapshotLink(link);}catch(e){ console.warn('snapshot failed', e);} })();
-        }
+      for(const link of api.linkSet){
+        const row=document.createElement('div');
+        Object.assign(row.style,{display:'flex',alignItems:'center',gap:'10px',
+          padding:'6px',marginBottom:'6px',border:'1px solid #eee',borderRadius:'8px',cursor:'pointer'});
+        const img=document.createElement('img');
+        Object.assign(img.style,{width:'80px',height:'60px',objectFit:'contain',background:'#fafafa',border:'1px solid #eee',borderRadius:'6px'});
+        const meta=document.createElement('div');
+        meta.innerHTML=`<div style="font-weight:700;font-size:14px">${link.name||'(unnamed link)'}</div>
+                        <div style="color:#555;font-size:12px;margin-top:2px">${descriptions[link.name]||'Hello world'}</div>`;
+        row.appendChild(img); row.appendChild(meta);
+        listEl.appendChild(row);
+        row.addEventListener('click',()=>{showOnlyLink(api,link,camera,controls,renderer,scene);});
+        (async()=>{img.src=await snapshotLink(link);})();
       }
     }
 
     // ---------- Start ----------
-    const api = { scene, camera, renderer, controls, robotModel:null, linkSet:null };
+    api.linkSet=null;
+    if (opts && opts.urdfContent) loadURDF(opts.urdfContent);
     createUI();
     animate();
 
-    // Initial load if provided
-    if (opts?.urdfContent) loadURDFfromText(opts.urdfContent);
-    else if (opts?.urdfUrl) loadURDFfromURL(opts.urdfUrl);
-
     state={scene,camera,renderer,controls,api};
-    return {
-      get robot(){return api.robotModel;},
-      showAll:()=>showAllLinks(api),
-      loadUrdfFromText:loadURDFfromText,
-      loadUrdfFromUrl:loadURDFfromURL,
-      api
-    };
+    return {get robot(){return api.robotModel;},showAll:()=>showAllLinks(api,camera,controls,renderer,scene)};
   };
 
-  URDFViewer.destroy=function(){
-    try{ cancelAnimationFrame(state?.raf); }catch{}
-    state = null;
-  };
+  URDFViewer.destroy=function(){try{cancelAnimationFrame(state?.raf);}catch{}; state=null;};
 
   root.URDFViewer=URDFViewer;
-
 })(typeof window!=='undefined'?window:this);
-</script>
