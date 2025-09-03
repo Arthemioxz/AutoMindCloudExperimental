@@ -146,9 +146,7 @@
     try{ state?.renderer?.dispose?.(); }catch(_){}
     try{
       state?.ui?.root && state.ui.root.remove();
-      state?.ui?.btn && state.ui.btn.remove();
     }catch(_){}
-    // dispose off-screen renderer
     try{ state?.off?.renderer?.dispose?.(); }catch(_){}
     state=null;
   };
@@ -237,14 +235,26 @@
       const tries = variantsFor(path);
       let keyFound=null;
       for (const k of tries){ const kk=normKey(k); if (meshDB[kk]){ keyFound=kk; break; } }
+
+      // If no asset, finish with empty mesh
       if (!keyFound){ onComplete(new THREE.Mesh()); return; }
+
+      const ext = keyFound.split('.').pop();
+
+      // ---- Skip image files; we don't want jpg/jpeg/png as components ----
+      if (['jpg','jpeg','png'].includes(ext)){
+        onComplete(new THREE.Mesh());
+        return;
+      }
+      // -------------------------------------------------------------------
+
       pendingMeshes++;
       const done=(mesh)=>{
         applyDoubleSided(mesh);
         onComplete(mesh);
         pendingMeshes--; scheduleFit();
       };
-      const ext = keyFound.split('.').pop();
+
       try{
         if (ext==='stl'){
           const bytes=b64ToUint8(meshDB[keyFound]);
@@ -397,12 +407,10 @@
     renderer.domElement.addEventListener('pointercancel', endJointDrag);
 
     // ---------------- OFF-SCREEN snapshot rig ----------------
-    // built once per URDF load; uses a cloned robot in a hidden WebGL canvas
     function buildOffscreenFromRobot(){
       if (!api.robotModel) return null;
 
       const offCanvas = document.createElement('canvas');
-      // Thumbnail resolution (tweak as desired)
       const OFF_W = 512, OFF_H = 384;
       offCanvas.width = OFF_W; offCanvas.height = OFF_H;
 
@@ -410,7 +418,6 @@
       offRenderer.setSize(OFF_W, OFF_H, false);
 
       const offScene = new THREE.Scene();
-      // Use a white background for clean thumbnails (or match main if you prefer)
       offScene.background = new THREE.Color(0xffffff);
 
       const amb = new THREE.AmbientLight(0xffffff, 0.9);
@@ -419,11 +426,9 @@
 
       const offCamera = new THREE.PerspectiveCamera(75, OFF_W/OFF_H, 0.01, 10000);
 
-      // Deep clone robot; visibility changes here won't affect on-screen scene
       const robotClone = api.robotModel.clone(true);
       offScene.add(robotClone);
 
-      // Map link names -> cloned link objects
       const linkNames = new Set();
       api.linkSet.forEach(l=>{ if (l && typeof l.name==='string') linkNames.add(l.name); });
 
@@ -441,13 +446,11 @@
       const link = off.linkByName.get(linkName);
       if (!link) return null;
 
-      // Save vis states
       const vis = [];
       off.robotClone.traverse(o=>{
         if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){ vis.push([o, o.visible]); }
       });
 
-      // Hide everything except the selected link subtree
       off.robotClone.traverse(o=>{
         if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
           const inSelected = (findAncestorLink(o, off.linkSet) === link);
@@ -455,7 +458,6 @@
         }
       });
 
-      // Frame the link
       const box = new THREE.Box3().setFromObject(link);
       const center = box.getCenter(new THREE.Vector3());
       const size   = box.getSize(new THREE.Vector3());
@@ -468,20 +470,27 @@
       off.camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
       off.camera.lookAt(center);
 
-      // Render OFF-SCREEN only
       off.renderer.render(off.scene, off.camera);
-
-      // Read dataURL from the hidden canvas (no on-screen change)
       const url = off.renderer.domElement.toDataURL('image/png');
 
-      // Restore vis
       vis.forEach(([o,v])=>{ o.visible = v; });
 
       return url;
     }
     // ---------------- end OFF-SCREEN ----------------
 
-    // ---------- UI: centered button + scrollable panel ----------
+    // ---------- UI helpers ----------
+    function showAllAndFrame(){
+      if (!api.robotModel) return;
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
+          o.visible = true;
+        }
+      });
+      fitAndCenter(camera, controls, api.robotModel);
+    }
+
+    // ---------- UI: bottom-left button row + scrollable panel ----------
     function createUI(){
       // Root overlay anchored to container
       const root = document.createElement('div');
@@ -494,25 +503,45 @@
         fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // Centered button (move to bottom-right if you prefer)
+      // Bottom-left button row (Components + Show all)
+      const btnRow = document.createElement('div');
+      Object.assign(btnRow.style, {
+        position: 'absolute',
+        left: '14px',
+        bottom: '14px',
+        display: 'flex',
+        gap: '10px',
+        pointerEvents: 'auto'
+      });
+
       const btn = document.createElement('button');
       btn.textContent = 'Components';
       Object.assign(btn.style, {
-        position: 'absolute',
-        left: '50%',
-        top: '50%',
-        transform: 'translate(-50%, -50%)',
-        padding: '12px 16px',
+        padding: '10px 14px',
         borderRadius: '14px',
         border: '1px solid #d0d0d0',
         background: '#ffffff',
         boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
         fontWeight: '700',
-        cursor: 'pointer',
-        pointerEvents: 'auto'
+        cursor: 'pointer'
       });
 
-      // Panel bottom-right of the render
+      const showAllBtn = document.createElement('button');
+      showAllBtn.textContent = 'Show all';
+      Object.assign(showAllBtn.style, {
+        padding: '10px 14px',
+        borderRadius: '14px',
+        border: '1px solid #d0d0d0',
+        background: '#ffffff',
+        boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
+        fontWeight: '700',
+        cursor: 'pointer'
+      });
+
+      btnRow.appendChild(btn);
+      btnRow.appendChild(showAllBtn);
+
+      // Panel (bottom-right)
       const panel = document.createElement('div');
       Object.assign(panel.style, {
         position: 'absolute',
@@ -548,7 +577,7 @@
       panel.appendChild(header);
       panel.appendChild(list);
       root.appendChild(panel);
-      root.appendChild(btn);
+      root.appendChild(btnRow);
       container.appendChild(root);
 
       let builtOnce = false;
@@ -561,7 +590,9 @@
         }
       });
 
-      return { root, btn, panel, list };
+      showAllBtn.addEventListener('click', showAllAndFrame);
+
+      return { root, btn, panel, list, showAllBtn };
     }
 
     async function buildGallery(listEl){
@@ -621,10 +652,9 @@
         row.appendChild(meta);
         listEl.appendChild(row);
 
-        // Clicking the row isolates that component in the ON-SCREEN viewer (as requested)
+        // Clicking the row isolates that component in the ON-SCREEN viewer
         row.addEventListener('click', ()=>{
           setOthersVisibility(link);
-          // optional: reframe the main camera to this link
           const box = new THREE.Box3().setFromObject(link);
           const center = box.getCenter(new THREE.Vector3());
           const size   = box.getSize(new THREE.Vector3());
