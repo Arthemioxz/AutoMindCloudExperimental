@@ -1,4 +1,4 @@
-/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer; button centered over render */
+/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer; bottom-right button; isolate-on-click */
 (function (root) {
   'use strict';
 
@@ -69,11 +69,7 @@
         mesh.geometry,
         new THREE.MeshBasicMaterial({ color:0x9e9e9e, transparent:true, opacity:0.35, depthTest:false, depthWrite:false })
       );
-      m.renderOrder = 999; m.userData.__isHoverOverlay = true; return m;
-    }
-    function showMesh(mesh){
-      const ov = overlayFor(mesh);
-      if (ov){ mesh.add(ov); overlays.push(ov); }
+        m.renderOrder = 999; m.userData.__isHoverOverlay = true; return m;
     }
     function showLink(link){
       const arr = collectMeshesInLink(link);
@@ -82,7 +78,7 @@
         if (ov){ m.add(ov); overlays.push(ov); }
       }
     }
-    return { clear, showMesh, showLink };
+    return { clear, showLink };
   }
 
   function isMovable(j){ const t = (j?.jointType||'').toString().toLowerCase(); return t && t !== 'fixed'; }
@@ -174,7 +170,6 @@
     if (state) URDFViewer.destroy();
 
     const container = opts?.container || document.body;
-    // ensure container can host absolutely-positioned UI
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
 
     const selectMode = (opts && opts.selectMode) || 'link';
@@ -368,6 +363,7 @@
       dragState=null; controls.enabled=true; renderer.domElement.style.cursor='auto';
     }
 
+    // Hover effect on links
     renderer.domElement.addEventListener('pointermove', (e)=>{
       getPointer(e);
       if (dragState){ updateJointDrag(e); return; }
@@ -381,14 +377,14 @@
       if (hits.length){
         const meshHit = hits[0].object;
         const link = findAncestorLink(meshHit, api.linkSet);
-        const joint = findAncestorJoint(meshHit);
-        if (selectMode==='link' && link) hover.showLink(link); else hover.showMesh(meshHit);
-        renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
+        if (selectMode==='link' && link) hover.showLink(link);
+        renderer.domElement.style.cursor = 'auto';
       } else {
         renderer.domElement.style.cursor='auto';
       }
     }, {passive:true});
 
+    // Drag joints on click-drag
     renderer.domElement.addEventListener('pointerdown', (e)=>{
       e.preventDefault();
       if (!api.robotModel || e.button!==0) return;
@@ -423,7 +419,28 @@
       controls.update(); renderer.render(scene, camera);
     }
 
-    // ---------- UI: centered button + scrollable panel ----------
+    // ---------- Visibility helpers (for isolate feature) ----------
+    function showOnlyLink(link){
+      if (!api.robotModel) return;
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
+          const inSelected = (link && (link === findAncestorLink(o, api.linkSet)));
+          o.visible = !!inSelected;
+        }
+      });
+      fitAndCenter(camera, controls, link || api.robotModel);
+      renderer.render(scene, camera);
+    }
+    function showAllLinks(){
+      if (!api.robotModel) return;
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay) o.visible = true;
+      });
+      fitAndCenter(camera, controls, api.robotModel);
+      renderer.render(scene, camera);
+    }
+
+    // ---------- UI: bottom-right button + scrollable panel ----------
     function createUI(){
       // Root overlay anchored to container
       const root = document.createElement('div');
@@ -436,15 +453,14 @@
         fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // Centered button
+      // Bottom-right button
       const btn = document.createElement('button');
       btn.textContent = 'Components';
       Object.assign(btn.style, {
         position: 'absolute',
-        left: '50%',
-        top: '50%',
-        transform: 'translate(-50%, -50%)',
-        padding: '12px 16px',
+        right: '14px',
+        bottom: '14px',
+        padding: '10px 14px',
         borderRadius: '14px',
         border: '1px solid #d0d0d0',
         background: '#ffffff',
@@ -454,12 +470,12 @@
         pointerEvents: 'auto'
       });
 
-      // Panel (still bottom-right of the render for practicality)
+      // Panel at bottom-right (above button)
       const panel = document.createElement('div');
       Object.assign(panel.style, {
         position: 'absolute',
         right: '14px',
-        bottom: '14px',
+        bottom: '64px',
         width: '360px',
         maxHeight: '65%',
         background: '#ffffff',
@@ -472,13 +488,34 @@
       });
 
       const header = document.createElement('div');
-      header.textContent = 'Components';
       Object.assign(header.style, {
-        padding: '10px 14px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '10px 12px',
         fontWeight: '800',
         borderBottom: '1px solid #eee',
         background: '#fafafa'
       });
+      header.textContent = 'Components';
+
+      const spacer = document.createElement('div');
+      spacer.style.flex = '1 1 auto';
+      header.appendChild(spacer);
+
+      const showAllBtn = document.createElement('button');
+      showAllBtn.textContent = 'Show all';
+      Object.assign(showAllBtn.style, {
+        padding: '6px 10px',
+        fontSize: '12px',
+        borderRadius: '10px',
+        border: '1px solid #d0d0d0',
+        background: '#fff',
+        cursor: 'pointer'
+      });
+      showAllBtn.addEventListener('click', (e)=>{ e.stopPropagation(); showAllLinks(); });
+
+      header.appendChild(showAllBtn);
 
       const list = document.createElement('div');
       Object.assign(list.style, {
@@ -503,7 +540,7 @@
         }
       });
 
-      return { root, btn, panel, list };
+      return { root, btn, panel, list, showAllBtn };
     }
 
     async function buildGallery(listEl){
@@ -512,22 +549,23 @@
         listEl.textContent = 'No components found.'; return;
       }
 
-      function setOthersVisibility(onlyLink){
-        api.robotModel.traverse(o=>{
-          if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
-            const inSelected = onlyLink && (onlyLink === findAncestorLink(o, api.linkSet));
-            o.visible = !!inSelected;
-          }
-        });
-      }
-
+      // Snapshot (thumbnail) generator — this NEVER replaces the main canvas.
       async function snapshotLink(link){
+        // Save vis flags
         const vis = [];
         api.robotModel.traverse(o=>{
           if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){ vis.push([o, o.visible]); }
         });
 
-        setOthersVisibility(link);
+        // Isolate the link to render a clean thumbnail
+        api.robotModel.traverse(o=>{
+          if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
+            const inSelected = (link && (link === findAncestorLink(o, api.linkSet)));
+            o.visible = !!inSelected;
+          }
+        });
+
+        // Frame to the component
         const box = new THREE.Box3().setFromObject(link);
         const center = box.getCenter(new THREE.Vector3());
         const size   = box.getSize(new THREE.Vector3());
@@ -540,12 +578,14 @@
         controls.target.copy(center);
         controls.update();
 
+        // Render off the main canvas (we're not swapping it out)
         renderer.render(scene, camera);
         await new Promise(r=>setTimeout(r, 0));
         renderer.render(scene, camera);
 
         const url = renderer.domElement.toDataURL('image/png');
 
+        // Restore visibility and camera
         vis.forEach(([o,v])=>{ o.visible = v; });
         camera.position.copy(prevPos);
         controls.target.copy(prevTarget);
@@ -555,6 +595,7 @@
         return url;
       }
 
+      // Build entries
       for (const link of api.linkSet){
         const row = document.createElement('div');
         Object.assign(row.style, {
@@ -566,7 +607,8 @@
           borderRadius: '12px',
           border: '1px solid #f0f0f0',
           marginBottom: '10px',
-          background: '#fff'
+          background: '#fff',
+          cursor: 'pointer'
         });
 
         const img = document.createElement('img');
@@ -596,6 +638,13 @@
         row.appendChild(meta);
         listEl.appendChild(row);
 
+        // Clicking the row isolates that component in the 3D view (hides others)
+        row.addEventListener('click', (e)=>{
+          e.stopPropagation();
+          showOnlyLink(link);
+        });
+
+        // Generate thumbnail async (does NOT replace the main renderer)
         (async ()=>{
           try{
             const url = await snapshotLink(link);
@@ -616,7 +665,13 @@
     return {
       scene, camera, renderer, controls,
       get robot(){ return api.robotModel; },
-      openGallery(){ state.ui?.btn?.click?.(); }
+      openGallery(){ state.ui?.btn?.click?.(); },
+      showAll(){ /* external helper */ if (state?.api?.robotModel) {
+        state.api.robotModel.traverse(o=>{
+          if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay) o.visible = true;
+        });
+        fitAndCenter(camera, controls, state.api.robotModel);
+      }}
     };
   };
 
