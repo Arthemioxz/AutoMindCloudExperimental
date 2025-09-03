@@ -1,7 +1,8 @@
 /* urdf_viewer.js - UMD-lite: exposes window.URDFViewer
    - Gallery shows ONLY links with visual meshes
-   - Dedup link variants (prefer *_fixed, then mesh count, then bbox volume)
-   - Off-screen thumbnails (no flicker), robust UID mapping
+   - Dedup duplicates (e.g., LF_HIP vs LF_hip_fixed); prefer *_fixed if better
+   - BUT: if *_fixed is chosen, the gallery displays the ORIGINAL name (no "_fixed")
+   - Off-screen thumbnails with hard isolation (only the selected component visible)
    - Skips images; picks best asset per basename (DAE > STL > OBJ; largest bytes)
    - Auto-scales DAE per <unit meter="...">
 */
@@ -29,7 +30,7 @@
   }
   function approxByteLenFromB64(b64){ return Math.floor(String(b64||'').length * 3 / 4); }
 
-  // Among all “tries” that exist in meshDB, keep ONE per basename: prefer ext, then largest
+  // Among all variants present in meshDB, keep ONE per basename: prefer ext, then largest
   function pickBestAsset(tries, meshDB){
     const extPriority = { dae: 3, stl: 2, obj: 1 };
     const groups = new Map(); // base -> [{key, ext, bytes, prio}]
@@ -44,7 +45,6 @@
       arr.push({ key: kk, ext, bytes: approxByteLenFromB64(b64), prio: extPriority[ext] });
       groups.set(base, arr);
     }
-    // choose the best from the first encountered base group
     for (const [,arr] of groups){
       arr.sort((a,b)=> (b.prio - a.prio) || (b.bytes - a.bytes));
       return arr[0]?.key || null;
@@ -126,7 +126,7 @@
     return { clear, showMesh, showLink };
   }
 
-  // Link selection + dedup rules
+  // Link dedup + ranking
   function canonicalLinkKey(name){
     return String(name || '').toLowerCase().replace(/_fixed$/,'').trim();
   }
@@ -154,6 +154,13 @@
       if (score > bestScore){ bestScore = score; best = l; }
     }
     return best || links[0];
+  }
+  // For display: if chosen link ends with "_fixed", try to show the original sibling name
+  function displayNameForGroup(chosen, allInGroup){
+    const name = String(chosen?.name || '');
+    if (!/_fixed$/i.test(name)) return name;
+    const orig = allInGroup.find(l => !/_fixed$/i.test(String(l.name||'')));
+    return orig ? String(orig.name) : name.replace(/_fixed$/i,'');
   }
 
   function isMovable(j){ const t = (j?.jointType||'').toString().toLowerCase(); return t && t !== 'fixed'; }
@@ -353,7 +360,7 @@
           const mgr=new THREE.LoadingManager();
           mgr.setURLModifier((url)=>{
             const tries=variantsFor(url);
-            // Reuse the same best-pick rule for subordinate assets (images, etc.)
+            // Reuse best-pick for subordinate assets
             const key = pickBestAsset(tries, meshDB) || tries.map(normKey).find(k=>meshDB[k]);
             if (key){
               const ext2 = key.split('.').pop();
@@ -517,26 +524,7 @@
         if (uid) cloneByUID.set(uid, o);
       });
 
-      // Build the deduplicated, displayable link list (only those with meshes)
-      const groups = new Map(); // canonical -> [link]
-      api.linkSet.forEach(l=>{
-        if (!l) return;
-        if (!linkHasMeshes(l)) return;
-        const key = canonicalLinkKey(l.name);
-        const arr = groups.get(key) || [];
-        arr.push(l); groups.set(key, arr);
-      });
-
-      const bestByUID = new Map(); // uid -> original link
-      for (const [, arr] of groups){
-        const best = pickBestLinkVariant(arr);
-        if (best && best.userData.__linkUID) bestByUID.set(best.userData.__linkUID, best);
-      }
-
-      return {
-        renderer: offRenderer, scene: offScene, camera: offCamera,
-        canvas: offCanvas, robotClone, cloneByUID, bestByUID
-      };
+      return { renderer: offRenderer, scene: offScene, camera: offCamera, canvas: offCanvas, robotClone, cloneByUID };
     }
 
     async function snapshotLinkOffscreen(linkUID){
@@ -545,34 +533,35 @@
       const linkClone = off.cloneByUID.get(linkUID);
       if (!linkClone) return null;
 
+      // Save all mesh vis
       const vis = [];
       off.robotClone.traverse(o=>{
-        if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){ vis.push([o, o.visible]); }
-      });
-
-      // Show only this link subtree
-      off.robotClone.traverse(o=>{
         if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
-          // find ancestor in clone: compare parents until you hit linkClone
-          let p=o;
-          let inSel=false;
-          while(p){ if (p===linkClone){ inSel=true; break; } p=p.parent; }
-          o.visible = !!inSel;
+          vis.push([o, o.visible]);
         }
       });
 
-      // Frame with a little padding and a nicer angle
+      // Hide EVERYTHING first
+      for (const [m] of vis) m.visible = false;
+
+      // Then show ONLY this link's subtree
+      linkClone.traverse(o=>{
+        if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
+          o.visible = true;
+        }
+      });
+
+      // Frame with padding and 3/4 angle
       const box = new THREE.Box3().setFromObject(linkClone);
       const center = box.getCenter(new THREE.Vector3());
       const size   = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x,size.y,size.z) || 1;
 
-      const dist = maxDim * 2.0; // bit more distance for margin
+      const dist = maxDim * 2.0;
       off.camera.near = Math.max(maxDim/1000,0.001);
       off.camera.far  = Math.max(maxDim*1000,1000);
       off.camera.updateProjectionMatrix();
 
-      // gentle 3/4 angle
       const az = Math.PI * 0.25;
       const el = Math.PI * 0.18;
       const dir = new THREE.Vector3(
@@ -586,6 +575,7 @@
       off.renderer.render(off.scene, off.camera);
       const url = off.renderer.domElement.toDataURL('image/png');
 
+      // Restore vis
       vis.forEach(([o,v])=>{ o.visible = v; });
 
       return url;
@@ -722,26 +712,36 @@
         arr.push(link); groups.set(key, arr);
       });
 
-      const dedupLinks = [];
+      const dedup = []; // { link, displayName }
       for (const [,arr] of groups){
         const best = pickBestLinkVariant(arr);
-        if (best) dedupLinks.push(best);
+        if (best){
+          const displayName = displayNameForGroup(best, arr);
+          dedup.push({ link: best, displayName });
+        }
       }
 
-      if (!dedupLinks.length){
+      if (!dedup.length){
         listEl.textContent = 'No components with visual geometry found.'; return;
       }
 
-      function setOthersVisibility(onlyLink){
+      function isolateOnScreen(onlyLink){
+        // Hide everything first
         api.robotModel.traverse(o=>{
           if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
-            const inSelected = onlyLink && (onlyLink === findAncestorLink(o, api.linkSet));
-            o.visible = !!inSelected;
+            o.visible = false;
           }
         });
+        // Show only the selected link subtree
+        onlyLink?.traverse?.(o=>{
+          if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
+            o.visible = true;
+          }
+        });
+        fitAndCenter(camera, controls, onlyLink || api.robotModel, 1.1);
       }
 
-      for (const link of dedupLinks){
+      for (const { link, displayName } of dedup){
         const row = document.createElement('div');
         Object.assign(row.style, {
           display: 'grid',
@@ -765,15 +765,15 @@
           borderRadius: '10px',
           border: '1px solid #eee'
         });
-        img.alt = link.name || 'component';
+        img.alt = displayName || link.name || 'component';
 
         const meta = document.createElement('div');
         const title = document.createElement('div');
-        title.textContent = link.name || '(unnamed link)';
+        title.textContent = displayName || link.name || '(unnamed link)';
         Object.assign(title.style, { fontWeight: '700', fontSize: '14px' });
 
         const desc = document.createElement('div');
-        desc.textContent = descriptions[link.name] || 'Hello world';
+        desc.textContent = descriptions[link.name] || descriptions[displayName] || 'Hello world';
         Object.assign(desc.style, { color: '#555', fontSize: '12px', marginTop: '4px' });
 
         meta.appendChild(title);
@@ -783,13 +783,12 @@
         row.appendChild(meta);
         listEl.appendChild(row);
 
-        // Clicking the row isolates that component in the ON-SCREEN viewer
+        // Clicking the row isolates that component in the ON-SCREEN viewer (hard isolation)
         row.addEventListener('click', ()=>{
-          setOthersVisibility(link);
-          fitAndCenter(camera, controls, link, 1.1);
+          isolateOnScreen(link);
         });
 
-        // Thumbnail captured OFF-SCREEN (no flicker) by UID
+        // Thumbnail captured OFF-SCREEN (no flicker) by UID, hard isolation
         (async ()=>{
           try{
             const uid = link?.userData?.__linkUID;
