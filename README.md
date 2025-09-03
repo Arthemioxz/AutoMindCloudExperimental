@@ -7,7 +7,9 @@ Example on Colab: https://colab.research.google.com/drive/1cwDrG9dbK1MfyaiI2gRaX
 - Automatic Evaluation Sympy
 
 
-More Examples
+**Examples**
+
+**Classic Physics and Financial Accounting**
 
 Heat Transfer by Conduction: https://colab.research.google.com/drive/1BukgVekSpaFWaPCdTEhVIUdaAJPGtnz1
 
@@ -15,7 +17,12 @@ Heat Transfer by Conduction: https://colab.research.google.com/drive/1BukgVekSpa
 
 Eletromagnetism: https://colab.research.google.com/drive/1hJzAv6H5JG4P9kzMewav-Ne3ZhjSPm31
 
+<img width="592" height="348" alt="image" src="https://github.com/user-attachments/assets/38ef2bf8-f549-484f-b7af-f692f245cde8" />
+
 Financial Accounting: https://colab.research.google.com/drive/1o4EPhvSMvY98NPEDpoawn97fGyW6YrvK
 
+<img width="789" height="329" alt="image" src="https://github.com/user-attachments/assets/40b5ccec-29ec-4dea-a114-adc05fe85f5d" />
+
+**Robotics on Colab**
 
 <img width="713" height="565" alt="image" src="https://github.com/user-attachments/assets/e8e78efd-8799-4750-994d-8dd22773efc7" />
