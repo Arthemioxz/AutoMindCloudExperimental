@@ -16,7 +16,13 @@ Heat Transfer by Conduction: https://colab.research.google.com/drive/1BukgVekSpa
 
 <img width="578" height="477" alt="image" src="https://github.com/user-attachments/assets/7d28cb70-0c31-48b4-ac1e-2e651963c006" />
 
-Electromagnetism: https://colab.research.google.com/drive/1hJzAv6H5JG4P9kzMewav-Ne3ZhjSPm31
+Electromagnetism: 
+
+- https://colab.research.google.com/drive/1iz4CehCXvmGhcEyUG_grHvigpEKraMPZ?usp=sharing
+  
+- https://colab.research.google.com/drive/1hJzAv6H5JG4P9kzMewav-Ne3ZhjSPm31?usp=sharing
+  
+- https://colab.research.google.com/drive/1ZCb9qbwzIfP00gTrYMc72NxDGK1nVhBS?usp=sharing
 
 <img width="592" height="348" alt="image" src="https://github.com/user-attachments/assets/38ef2bf8-f549-484f-b7af-f692f245cde8" />
 
