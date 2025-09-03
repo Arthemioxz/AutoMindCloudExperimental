@@ -1,10 +1,11 @@
-/* urdf_viewer.js - UMD-lite: expone window.URDFViewer */
+/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer */
 (function (root) {
   'use strict';
 
   const URDFViewer = {};
   let state = null;
 
+  // ---------- Helpers for assets/paths ----------
   function normKey(s){ return String(s||'').replace(/\\/g,'/').toLowerCase(); }
   function variantsFor(path){
     const out = new Set(), p = normKey(path);
@@ -28,7 +29,8 @@
 
   function rectifyUpForward(obj){
     if (!obj || obj.userData.__rectified) return;
-    obj.rotateX(-Math.PI/2); // ROS Z-up -> Three Y-up
+    // ROS Z-up -> Three Y-up
+    obj.rotateX(-Math.PI/2);
     obj.userData.__rectified = true;
     obj.updateMatrixWorld(true);
   }
@@ -144,12 +146,24 @@
     return linkSet;
   }
 
+  // ---------- UI host/position fixes ----------
+  function isCanvas(el){ return !!el && el.tagName && el.tagName.toLowerCase() === 'canvas'; }
+  function resolveUIHost(container){
+    // If a canvas was passed, mount UI on its parent (or body) so it can render
+    if (isCanvas(container)) return container.parentElement || document.body;
+    return container || document.body;
+  }
+  function ensureHostPositioning(host){
+    const cs = getComputedStyle(host);
+    if (cs.position === 'static') host.style.position = 'relative';
+  }
+
+  // ---------- Public API: destroy ----------
   URDFViewer.destroy = function(){
     try{ cancelAnimationFrame(state?.raf); }catch(_){}
     try{ window.removeEventListener('resize', state?.onResize); }catch(_){}
     try{ const el = state?.renderer?.domElement; el && el.parentNode && el.parentNode.removeChild(el); }catch(_){}
     try{ state?.renderer?.dispose?.(); }catch(_){}
-    // Remove UI if present
     try{
       state?.ui?.root && state.ui.root.remove();
       state?.ui?.btn && state.ui.btn.remove();
@@ -169,20 +183,28 @@
    */
   URDFViewer.render = function(opts){
     if (state) URDFViewer.destroy();
-    const container = opts.container || document.body;
-    const selectMode = opts.selectMode || 'link';
-    const bg = (opts.background==null) ? 0xf0f0f0 : opts.background;
+    const container = opts?.container || document.body;
+    const uiHost = resolveUIHost(container);
+    ensureHostPositioning(uiHost);
 
-    // Escena
+    const selectMode = (opts && opts.selectMode) || 'link';
+    const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
+
+    // Scene
     const scene = new THREE.Scene();
     if (bg!=null) scene.background = new THREE.Color(bg);
 
-    const camera = new THREE.PerspectiveCamera(75, container.clientWidth/container.clientHeight, 0.01, 10000);
+    const camera = new THREE.PerspectiveCamera(
+      75,
+      Math.max(1e-6, (container.clientWidth||1)/(container.clientHeight||1)),
+      0.01,
+      10000
+    );
     camera.position.set(0,0,3);
 
     const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
     renderer.setPixelRatio(window.devicePixelRatio||1);
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setSize(container.clientWidth||1, container.clientHeight||1);
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     renderer.domElement.style.touchAction = 'none';
@@ -194,26 +216,26 @@
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
 
-    // Luz
+    // Lights
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
     dirLight.position.set(2,2,2); scene.add(dirLight);
 
     function onResize(){
-      const w = container.clientWidth, h = container.clientHeight;
+      const w = container.clientWidth||1, h = container.clientHeight||1;
       camera.aspect = Math.max(1e-6, w/h);
       camera.updateProjectionMatrix();
       renderer.setSize(w,h);
     }
     window.addEventListener('resize', onResize);
 
-    // Loader URDF + Mesh CB desde meshDB
+    // Loader + mesh callbacks from meshDB
     const urdfLoader = new URDFLoader();
     const textDecoder = new TextDecoder();
     const b64ToUint8 = (b64)=>Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
     const b64ToText  = (b64)=>textDecoder.decode(b64ToUint8(b64));
     const MIME = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', stl:'model/stl', dae:'model/vnd.collada+xml' };
-    const meshDB = opts.meshDB || {};
+    const meshDB = (opts && opts.meshDB) || {};
     const daeCache = new Map();
     let pendingMeshes = 0, fitTimer=null;
 
@@ -273,6 +295,7 @@
           done(obj.clone(true));
           return;
         }
+        // Fallback
         done(new THREE.Mesh());
       }catch(_e){ done(new THREE.Mesh()); }
     };
@@ -389,12 +412,12 @@
     renderer.domElement.addEventListener('pointerleave', endJointDrag);
     renderer.domElement.addEventListener('pointercancel', endJointDrag);
 
-    // Cargar URDF
+    // Load URDF text
     function loadURDF(urdfText){
       if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
       pendingMeshes=0;
       try{
-        const robot = urdfLoader.parse(urdfText);
+        const robot = urdfLoader.parse(urdfText||'');
         if (robot?.isObject3D){
           api.robotModel=robot; scene.add(api.robotModel);
           rectifyUpForward(api.robotModel);
@@ -411,16 +434,16 @@
 
     // ---------- UI: Button + Scrollable Gallery Panel ----------
     function createUI(){
-      // Root wrapper to hold button & panel
+      // Root overlay
       const root = document.createElement('div');
-      root.style.position = 'absolute';
-      root.style.left = '0';
-      root.style.top = '0';
-      root.style.width = '100%';
-      root.style.height = '100%';
-      root.style.pointerEvents = 'none';
-      root.style.zIndex = '10';
-      root.style.fontFamily = 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial';
+      Object.assign(root.style, {
+        position: 'absolute',
+        left: '0', top: '0',
+        width: '100%', height: '100%',
+        pointerEvents: 'none',
+        zIndex: '9999',
+        fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
+      });
 
       // Button
       const btn = document.createElement('button');
@@ -456,7 +479,7 @@
         pointerEvents: 'auto'
       });
 
-      // Panel header
+      // Header
       const header = document.createElement('div');
       header.textContent = 'Components';
       Object.assign(header.style, {
@@ -470,7 +493,7 @@
       const list = document.createElement('div');
       Object.assign(list.style, {
         overflowY: 'auto',
-        maxHeight: 'calc(60vh - 48px)', // keep header height in mind
+        maxHeight: 'calc(60vh - 48px)',
         padding: '10px'
       });
 
@@ -478,15 +501,12 @@
       panel.appendChild(list);
       root.appendChild(panel);
       root.appendChild(btn);
-      container.style.position = container.style.position || 'relative';
-      container.appendChild(root);
+      uiHost.appendChild(root);
 
-      // Toggle panel
       let builtOnce = false;
       btn.addEventListener('click', async ()=>{
         if (panel.style.display === 'none'){
           panel.style.display = 'block';
-          // lazily build gallery once
           if (!builtOnce){ await buildGallery(list); builtOnce = true; }
         } else {
           panel.style.display = 'none';
@@ -496,24 +516,22 @@
       return { root, btn, panel, list };
     }
 
-    // Create gallery entries (thumbnail + label)
     async function buildGallery(listEl){
-      listEl.innerHTML = ''; // clear
+      listEl.innerHTML = '';
       if (!api.robotModel || !api.linkSet || api.linkSet.size===0){
         listEl.textContent = 'No components found.'; return;
       }
 
-      // Make others dim/fade utility (for snapshotting)
-      function setOthersVisibility(only, visible){
+      // Utility: show only selected link for snapshot
+      function setOthersVisibility(onlyLink){
         api.robotModel.traverse(o=>{
           if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
-            // toggle visibility unless it's within the selected link
-            const inSelected = only && (only === findAncestorLink(o, api.linkSet));
-            o.visible = inSelected ? true : (visible ?? o.visible) && false;
+            const inSelected = onlyLink && (onlyLink === findAncestorLink(o, api.linkSet));
+            o.visible = !!inSelected;
           }
         });
       }
-      // Snapshot a link to data URL
+
       async function snapshotLink(link){
         // Save vis flags
         const vis = [];
@@ -522,13 +540,13 @@
         });
 
         // Isolate
-        setOthersVisibility(link, false);
+        setOthersVisibility(link);
         const box = new THREE.Box3().setFromObject(link);
         const center = box.getCenter(new THREE.Vector3());
         const size   = box.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x,size.y,size.z) || 1;
 
-        // Camera framing for the component
+        // Frame camera to the component
         const prevPos = camera.position.clone();
         const prevTarget = controls.target.clone();
         const dist = maxDim * 1.8;
@@ -536,7 +554,7 @@
         controls.target.copy(center);
         controls.update();
 
-        // Render twice to ensure updated matrices
+        // Render twice for safety
         renderer.render(scene, camera);
         await new Promise(r=>setTimeout(r, 0));
         renderer.render(scene, camera);
@@ -553,7 +571,6 @@
         return url;
       }
 
-      // Build entries
       for (const link of api.linkSet){
         const row = document.createElement('div');
         Object.assign(row.style, {
@@ -595,14 +612,12 @@
         row.appendChild(meta);
         listEl.appendChild(row);
 
-        // Generate thumbnail async (don’t freeze UI)
+        // Generate thumbnail async
         (async ()=>{
           try{
             const url = await snapshotLink(link);
             img.src = url;
-          }catch(_e){
-            // if snapshot fails, leave empty
-          }
+          }catch(_e){ /* ignore */ }
         })();
       }
     }
@@ -610,17 +625,15 @@
 
     // Public state
     state = { scene, camera, renderer, controls, api, onResize, raf:null, ui: null };
-    loadURDF(opts.urdfContent||'');
 
-    // mount UI after initial render (so canvas exists)
+    loadURDF((opts && opts.urdfContent) || '');
     state.ui = createUI();
-
     animate();
 
     return {
       scene, camera, renderer, controls,
       get robot(){ return api.robotModel; },
-      openGallery(){ state.ui?.btn?.click?.(); } // helper if you want to open via code
+      openGallery(){ state.ui?.btn?.click?.(); }
     };
   };
 
