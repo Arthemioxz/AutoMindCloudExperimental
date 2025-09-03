@@ -16,3 +16,4 @@ Eletromagnetism: https://colab.research.google.com/drive/1hJzAv6H5JG4P9kzMewav-N
 Financial Accounting: https://colab.research.google.com/drive/1o4EPhvSMvY98NPEDpoawn97fGyW6YrvK
 
 
+<img width="713" height="565" alt="image" src="https://github.com/user-attachments/assets/e8e78efd-8799-4750-994d-8dd22773efc7" />
