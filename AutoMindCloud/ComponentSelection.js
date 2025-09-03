@@ -1,10 +1,9 @@
 /* urdf_viewer.js - UMD-lite: exposes window.URDFViewer
-   - Gallery shows ONLY links with visual meshes
-   - Dedup duplicates (e.g., LF_HIP vs LF_hip_fixed); prefer *_fixed if better
-   - BUT: if *_fixed is chosen, the gallery displays the ORIGINAL name (no "_fixed")
-   - Off-screen thumbnails with hard isolation (only the selected component visible)
-   - Skips images; picks best asset per basename (DAE > STL > OBJ; largest bytes)
-   - Auto-scales DAE per <unit meter="...">
+   ✅ Gallery lists EVERY visual component (each Mesh) as its own item
+   ✅ Thumbnails and on-screen view are HARD-ISOLATED (only that component visible)
+   ✅ Skips images; picks best asset variant per basename (DAE > STL > OBJ; then largest)
+   ✅ Auto-scales DAE using its <unit meter="...">
+   ✅ “Components” toggle button bottom-left; “Show all” inside the gallery header
 */
 (function (root) {
   'use strict';
@@ -12,6 +11,7 @@
   const URDFViewer = {};
   let state = null;
   let __LINK_UID_SEQ = 1;
+  let __COMP_UID_SEQ = 1;
 
   // ---------- Helpers ----------
   function normKey(s){ return String(s||'').replace(/\\/g,'/').toLowerCase(); }
@@ -30,7 +30,7 @@
   }
   function approxByteLenFromB64(b64){ return Math.floor(String(b64||'').length * 3 / 4); }
 
-  // Among all variants present in meshDB, keep ONE per basename: prefer ext, then largest
+  // Pick ONE asset per basename among available variants (prefer DAE > STL > OBJ; then largest bytes)
   function pickBestAsset(tries, meshDB){
     const extPriority = { dae: 3, stl: 2, obj: 1 };
     const groups = new Map(); // base -> [{key, ext, bytes, prio}]
@@ -39,7 +39,7 @@
       const b64 = meshDB[kk];
       if (!b64) continue;
       const ext = kk.split('.').pop();
-      if (!extPriority[ext]) continue; // skip images etc
+      if (!extPriority[ext]) continue; // skip images etc.
       const base = basenameNoExt(kk);
       const arr = groups.get(base) || [];
       arr.push({ key: kk, ext, bytes: approxByteLenFromB64(b64), prio: extPriority[ext] });
@@ -82,87 +82,14 @@
     camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
     controls.target.copy(center); controls.update();
   }
-  function collectMeshesInLink(linkObj){
-    const t=[], stack=[linkObj];
-    while (stack.length){
-      const n = stack.pop(); if (!n) continue;
-      if (n.isMesh && n.geometry && !n.userData.__isHoverOverlay) t.push(n);
-      const kids = n.children ? n.children.slice() : [];
-      for (let i=0;i<kids.length;i++) stack.push(kids[i]);
-    }
-    return t;
-  }
-  function linkHasMeshes(rootObj){
-    let found = false;
-    rootObj?.traverse?.(o=>{
-      if (found) return;
-      if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay) found = true;
-    });
-    return found;
-  }
 
-  function buildHoverAPI(){
-    const overlays=[];
-    function clear(){ for(const o of overlays){ if (o?.parent) o.parent.remove(o); } overlays.length=0; }
-    function overlayFor(mesh){
-      if (!mesh || !mesh.isMesh || !mesh.geometry) return null;
-      const m = new THREE.Mesh(
-        mesh.geometry,
-        new THREE.MeshBasicMaterial({ color:0x9e9e9e, transparent:true, opacity:0.35, depthTest:false, depthWrite:false })
-      );
-      m.renderOrder = 999; m.userData.__isHoverOverlay = true; return m;
+  function findAncestorLink(o, linkSet){
+    while (o){
+      if (linkSet && linkSet.has(o)) return o;
+      o = o.parent;
     }
-    function showMesh(mesh){
-      const ov = overlayFor(mesh);
-      if (ov){ mesh.add(ov); overlays.push(ov); }
-    }
-    function showLink(link){
-      const arr = collectMeshesInLink(link);
-      for(const m of arr){
-        const ov = overlayFor(m);
-        if (ov){ m.add(ov); overlays.push(ov); }
-      }
-    }
-    return { clear, showMesh, showLink };
+    return null;
   }
-
-  // Link dedup + ranking
-  function canonicalLinkKey(name){
-    return String(name || '').toLowerCase().replace(/_fixed$/,'').trim();
-  }
-  function linkMeshStats(link){
-    let meshCount = 0;
-    link.traverse(o=>{
-      if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay) meshCount++;
-    });
-    const box = new THREE.Box3().setFromObject(link);
-    const s = box.getSize(new THREE.Vector3());
-    const volume = (s.x||0)*(s.y||0)*(s.z||0);
-    return { meshCount, volume };
-  }
-  function pickBestLinkVariant(links){
-    if (!links.length) return null;
-    // prefer *_fixed
-    const fixed = links.filter(l => /_fixed$/i.test(String(l.name||'')));
-    if (fixed.length === 1) return fixed[0];
-    if (fixed.length > 1) links = fixed; // continue tie-break on fixed set
-
-    let best=null, bestScore=-Infinity;
-    for (const l of links){
-      const { meshCount, volume } = linkMeshStats(l);
-      const score = meshCount*1000 + volume; // heavy weight on mesh count
-      if (score > bestScore){ bestScore = score; best = l; }
-    }
-    return best || links[0];
-  }
-  // For display: if chosen link ends with "_fixed", try to show the original sibling name
-  function displayNameForGroup(chosen, allInGroup){
-    const name = String(chosen?.name || '');
-    if (!/_fixed$/i.test(name)) return name;
-    const orig = allInGroup.find(l => !/_fixed$/i.test(String(l.name||'')));
-    return orig ? String(orig.name) : name.replace(/_fixed$/i,'');
-  }
-
   function isMovable(j){ const t = (j?.jointType||'').toString().toLowerCase(); return t && t !== 'fixed'; }
   function isPrismatic(j){ return (j?.jointType||'').toString().toLowerCase()==='prismatic'; }
   function getJointValue(j){ return isPrismatic(j) ? (typeof j.position==='number'?j.position:0) : (typeof j.angle==='number'?j.angle:0); }
@@ -182,13 +109,6 @@
     while (o){
       if (o.jointType && isMovable(o)) return o;
       if (o.userData && o.userData.__joint && isMovable(o.userData.__joint)) return o.userData.__joint;
-      o = o.parent;
-    }
-    return null;
-  }
-  function findAncestorLink(o, linkSet){
-    while (o){
-      if (linkSet && linkSet.has(o)) return o;
       o = o.parent;
     }
     return null;
@@ -244,9 +164,8 @@
    *   container: HTMLElement (opcional, default document.body),
    *   urdfContent: string,
    *   meshDB: { key -> base64 },
-   *   selectMode: 'link'|'mesh' (default 'link'),
    *   background: number (hex) o null,
-   *   descriptions: { [linkName]: string }  // optional per-component text
+   *   descriptions: { [componentKey]: string } // optional per-component text (key = "link/meshIndex" or mesh.name)
    * }
    */
   URDFViewer.render = function(opts){
@@ -255,7 +174,6 @@
     const container = opts?.container || document.body;
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
 
-    const selectMode = (opts && opts.selectMode) || 'link';
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
 
@@ -382,12 +300,11 @@
       }catch(_e){ done(new THREE.Mesh()); }
     };
 
-    const api = { scene, camera, renderer, controls, robotModel:null, linkSet:null };
+    const api = { scene, camera, renderer, controls, robotModel:null, linkSet:null, components:[] };
 
-    // ----------- interaction helpers -----------
+    // ----------- interactions for joints -----------
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    const hover = buildHoverAPI();
     let dragState=null;
     const ROT_PER_PIXEL=0.01, PRISM_PER_PIXEL=0.003;
 
@@ -435,7 +352,6 @@
         ds.value += delta * fine; setJointValue(api.robotModel, ds.joint, ds.value); return;
       }
 
-      // revolute/continuous
       let applied=false; const hit=new THREE.Vector3();
       if (raycaster.ray.intersectPlane(ds.dragPlane, hit)){
         let r1 = hit.clone().sub(ds.originW);
@@ -463,28 +379,16 @@
       getPointer(e);
       if (dragState){ updateJointDrag(e); return; }
       if (!api.robotModel) return;
-
-      raycaster.setFromCamera(pointer, camera);
-      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay) pickables.push(o); });
-      const hits = raycaster.intersectObjects(pickables, true);
-
-      hover.clear();
-      if (hits.length){
-        const meshHit = hits[0].object;
-        const link = findAncestorLink(meshHit, api.linkSet);
-        const joint = findAncestorJoint(meshHit);
-        if (selectMode==='link' && link) hover.showLink(link); else hover.showMesh(meshHit);
-        renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
-      } else {
-        renderer.domElement.style.cursor='auto';
-      }
+      // keep pointer interactions smooth even when many parts hidden
+      renderer.domElement.style.cursor='auto';
     }, {passive:true});
 
     renderer.domElement.addEventListener('pointerdown', (e)=>{
       e.preventDefault();
       if (!api.robotModel || e.button!==0) return;
+      // allow joint dragging when visible mesh under pointer (optional)
+      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && o.visible) pickables.push(o); });
       raycaster.setFromCamera(pointer, camera);
-      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay) pickables.push(o); });
       const hits = raycaster.intersectObjects(pickables, true);
       if (!hits.length) return;
       const joint = findAncestorJoint(hits[0].object);
@@ -493,6 +397,40 @@
     renderer.domElement.addEventListener('pointerup', endJointDrag);
     renderer.domElement.addEventListener('pointerleave', endJointDrag);
     renderer.domElement.addEventListener('pointercancel', endJointDrag);
+
+    // ---------------- COMPONENT INDEX (each Mesh = one component) ----------------
+    function indexComponents(){
+      api.components.length = 0;
+      const perLinkCounter = new Map();
+
+      // Ensure we know which nodes are links
+      const linkSet = api.linkSet;
+
+      api.robotModel.traverse(o=>{
+        if (!(o && o.isMesh && o.geometry)) return;
+        if (o.userData.__isHoverOverlay) return;
+
+        // component UID
+        if (!o.userData.__compUID) o.userData.__compUID = __COMP_UID_SEQ++;
+
+        // find link ancestor (optional metadata)
+        const link = findAncestorLink(o, linkSet);
+        const linkName = link && typeof link.name==='string' ? link.name : '';
+
+        // label
+        const baseName = (o.name && o.name.trim()) || '';
+        let idx = perLinkCounter.get(link) || 0;
+        perLinkCounter.set(link, idx+1);
+        const label = baseName || (linkName ? `${linkName} / mesh #${idx+1}` : `mesh #${o.userData.__compUID}`);
+
+        api.components.push({
+          uid: o.userData.__compUID,
+          label,
+          linkName,
+          meshRef: o
+        });
+      });
+    }
 
     // ---------------- OFF-SCREEN snapshot rig ----------------
     function buildOffscreenFromRobot(){
@@ -517,21 +455,21 @@
       const robotClone = api.robotModel.clone(true);
       offScene.add(robotClone);
 
-      // Map original linkUID -> cloned link
-      const cloneByUID = new Map();
+      // Map original compUID -> cloned mesh
+      const cloneByCompUID = new Map();
       robotClone.traverse(o=>{
-        const uid = o?.userData?.__linkUID;
-        if (uid) cloneByUID.set(uid, o);
+        const uid = o?.userData?.__compUID;
+        if (uid && o.isMesh && o.geometry) cloneByCompUID.set(uid, o);
       });
 
-      return { renderer: offRenderer, scene: offScene, camera: offCamera, canvas: offCanvas, robotClone, cloneByUID };
+      return { renderer: offRenderer, scene: offScene, camera: offCamera, canvas: offCanvas, robotClone, cloneByCompUID };
     }
 
-    async function snapshotLinkOffscreen(linkUID){
+    async function snapshotComponentOffscreen(compUID){
       const off = state.off;
       if (!off) return null;
-      const linkClone = off.cloneByUID.get(linkUID);
-      if (!linkClone) return null;
+      const meshClone = off.cloneByCompUID.get(compUID);
+      if (!meshClone) return null;
 
       // Save all mesh vis
       const vis = [];
@@ -544,15 +482,11 @@
       // Hide EVERYTHING first
       for (const [m] of vis) m.visible = false;
 
-      // Then show ONLY this link's subtree
-      linkClone.traverse(o=>{
-        if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
-          o.visible = true;
-        }
-      });
+      // Then show ONLY this component mesh
+      meshClone.visible = true;
 
       // Frame with padding and 3/4 angle
-      const box = new THREE.Box3().setFromObject(linkClone);
+      const box = new THREE.Box3().setFromObject(meshClone);
       const center = box.getCenter(new THREE.Vector3());
       const size   = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x,size.y,size.z) || 1;
@@ -593,6 +527,23 @@
       fitAndCenter(camera, controls, api.robotModel, 1.05);
     }
 
+    function isolateComponentOnScreen(compUID){
+      // Hide everything
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
+          o.visible = false;
+        }
+      });
+      // Show only the selected mesh
+      let target=null;
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry && o.userData.__compUID === compUID){
+          o.visible = true; target = o;
+        }
+      });
+      if (target) fitAndCenter(camera, controls, target, 1.1);
+    }
+
     // ---------- UI: bottom-left toggle + right panel with header Show-all ----------
     function createUI(){
       // Root overlay
@@ -629,8 +580,8 @@
         position: 'absolute',
         right: '14px',
         bottom: '14px',
-        width: '380px',
-        maxHeight: '70%',
+        width: '420px',
+        maxHeight: '72%',
         background: '#ffffff',
         border: '1px solid #e4e4e7',
         boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
@@ -674,7 +625,7 @@
       const list = document.createElement('div');
       Object.assign(list.style, {
         overflowY: 'auto',
-        maxHeight: 'calc(70vh - 52px)',
+        maxHeight: 'calc(72vh - 52px)',
         padding: '10px'
       });
 
@@ -697,55 +648,24 @@
       return { root, btn, panel, list, showAllBtn };
     }
 
-    // Build deduped list and UI
+    // Build per-component (per-mesh) gallery
     async function buildGallery(listEl){
       listEl.innerHTML = '';
       if (!api.robotModel || !api.linkSet){ listEl.textContent = 'No components found.'; return; }
 
-      // Group links (with meshes) by canonical name, then pick best variant
-      const groups = new Map(); // canon -> [link]
-      api.linkSet.forEach(link=>{
-        if (!link) return;
-        if (!linkHasMeshes(link)) return;
-        const key = canonicalLinkKey(link.name);
-        const arr = groups.get(key) || [];
-        arr.push(link); groups.set(key, arr);
-      });
+      // Build component index (each mesh = a component)
+      indexComponents();
 
-      const dedup = []; // { link, displayName }
-      for (const [,arr] of groups){
-        const best = pickBestLinkVariant(arr);
-        if (best){
-          const displayName = displayNameForGroup(best, arr);
-          dedup.push({ link: best, displayName });
-        }
-      }
-
-      if (!dedup.length){
+      if (!api.components.length){
         listEl.textContent = 'No components with visual geometry found.'; return;
       }
 
-      function isolateOnScreen(onlyLink){
-        // Hide everything first
-        api.robotModel.traverse(o=>{
-          if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
-            o.visible = false;
-          }
-        });
-        // Show only the selected link subtree
-        onlyLink?.traverse?.(o=>{
-          if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
-            o.visible = true;
-          }
-        });
-        fitAndCenter(camera, controls, onlyLink || api.robotModel, 1.1);
-      }
-
-      for (const { link, displayName } of dedup){
+      // UI rows
+      for (const comp of api.components){
         const row = document.createElement('div');
         Object.assign(row.style, {
           display: 'grid',
-          gridTemplateColumns: '112px 1fr',
+          gridTemplateColumns: '128px 1fr',
           gap: '12px',
           alignItems: 'center',
           padding: '10px',
@@ -758,26 +678,32 @@
 
         const img = document.createElement('img');
         Object.assign(img.style, {
-          width: '112px',
-          height: '84px',
+          width: '128px',
+          height: '96px',
           objectFit: 'contain',
           background: '#fafafa',
           borderRadius: '10px',
           border: '1px solid #eee'
         });
-        img.alt = displayName || link.name || 'component';
+        img.alt = comp.label;
 
         const meta = document.createElement('div');
         const title = document.createElement('div');
-        title.textContent = displayName || link.name || '(unnamed link)';
+        title.textContent = comp.label;
         Object.assign(title.style, { fontWeight: '700', fontSize: '14px' });
 
+        const small = document.createElement('div');
+        small.textContent = comp.linkName ? comp.linkName : '';
+        Object.assign(small.style, { color: '#777', fontSize: '12px', marginTop: '2px' });
+
         const desc = document.createElement('div');
-        desc.textContent = descriptions[link.name] || descriptions[displayName] || 'Hello world';
+        const descKey = comp.meshRef.name || `${comp.linkName}/mesh#${comp.uid}`;
+        desc.textContent = descriptions[descKey] || ' ';
         Object.assign(desc.style, { color: '#555', fontSize: '12px', marginTop: '4px' });
 
         meta.appendChild(title);
-        meta.appendChild(desc);
+        if (small.textContent) meta.appendChild(small);
+        if (desc.textContent.trim()) meta.appendChild(desc);
 
         row.appendChild(img);
         row.appendChild(meta);
@@ -785,14 +711,13 @@
 
         // Clicking the row isolates that component in the ON-SCREEN viewer (hard isolation)
         row.addEventListener('click', ()=>{
-          isolateOnScreen(link);
+          isolateComponentOnScreen(comp.uid);
         });
 
-        // Thumbnail captured OFF-SCREEN (no flicker) by UID, hard isolation
+        // Thumbnail captured OFF-SCREEN (no flicker), hard isolation
         (async ()=>{
           try{
-            const uid = link?.userData?.__linkUID;
-            const url = uid ? await snapshotLinkOffscreen(uid) : null;
+            const url = await snapshotComponentOffscreen(comp.uid);
             if (url) img.src = url;
           }catch(_e){ /* ignore */ }
         })();
@@ -807,6 +732,7 @@
     function loadURDF(urdfText){
       if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
       if (state.off){ try{ state.off.renderer.dispose(); }catch(_){} state.off=null; }
+      api.components.length = 0;
 
       try{
         const robot = urdfLoader.parse(urdfText||'');
@@ -816,8 +742,9 @@
           api.linkSet = markLinksAndJoints(api.robotModel);
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
 
-          // Build OFF-SCREEN rig now that links exist
+          // Build OFF-SCREEN rig now that links exist; index components afterwards
           state.off = buildOffscreenFromRobot();
+          indexComponents();
         }
       } catch(_e){}
     }
