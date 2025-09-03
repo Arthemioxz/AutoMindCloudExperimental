@@ -296,4 +296,7 @@
   URDFViewer.destroy=function(){try{cancelAnimationFrame(state?.raf);}catch{}; state=null;};
 
   root.URDFViewer=URDFViewer;
+
+  console.log("Actualizado 1");
+
 })(typeof window!=='undefined'?window:this);
