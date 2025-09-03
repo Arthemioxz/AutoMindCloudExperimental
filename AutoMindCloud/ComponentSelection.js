@@ -1,9 +1,16 @@
-/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer; off-screen thumbnails; gallery shows ONLY visual links */
+/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer
+   - Gallery shows ONLY links with visual meshes
+   - Dedup link variants (prefer *_fixed, then mesh count, then bbox volume)
+   - Off-screen thumbnails (no flicker), robust UID mapping
+   - Skips images; picks best asset per basename (DAE > STL > OBJ; largest bytes)
+   - Auto-scales DAE per <unit meter="...">
+*/
 (function (root) {
   'use strict';
 
   const URDFViewer = {};
   let state = null;
+  let __LINK_UID_SEQ = 1;
 
   // ---------- Helpers ----------
   function normKey(s){ return String(s||'').replace(/\\/g,'/').toLowerCase(); }
@@ -15,6 +22,36 @@
     const parts = p.split('/'); for (let i=1;i<parts.length;i++) out.add(parts.slice(i).join('/'));
     return Array.from(out);
   }
+  function basenameNoExt(p){
+    const q = String(p||'').split('/').pop().split('?')[0].split('#')[0];
+    const dot = q.lastIndexOf('.');
+    return dot>=0 ? q.slice(0,dot) : q;
+  }
+  function approxByteLenFromB64(b64){ return Math.floor(String(b64||'').length * 3 / 4); }
+
+  // Among all “tries” that exist in meshDB, keep ONE per basename: prefer ext, then largest
+  function pickBestAsset(tries, meshDB){
+    const extPriority = { dae: 3, stl: 2, obj: 1 };
+    const groups = new Map(); // base -> [{key, ext, bytes, prio}]
+    for (const k of tries){
+      const kk = normKey(k);
+      const b64 = meshDB[kk];
+      if (!b64) continue;
+      const ext = kk.split('.').pop();
+      if (!extPriority[ext]) continue; // skip images etc
+      const base = basenameNoExt(kk);
+      const arr = groups.get(base) || [];
+      arr.push({ key: kk, ext, bytes: approxByteLenFromB64(b64), prio: extPriority[ext] });
+      groups.set(base, arr);
+    }
+    // choose the best from the first encountered base group
+    for (const [,arr] of groups){
+      arr.sort((a,b)=> (b.prio - a.prio) || (b.bytes - a.bytes));
+      return arr[0]?.key || null;
+    }
+    return null;
+  }
+
   function applyDoubleSided(obj){
     obj?.traverse?.(n=>{
       if (n.isMesh && n.geometry){
@@ -32,11 +69,11 @@
     obj.userData.__rectified = true;
     obj.updateMatrixWorld(true);
   }
-  function fitAndCenter(camera, controls, object){
+  function fitAndCenter(camera, controls, object, pad=1.0){
     const box = new THREE.Box3().setFromObject(object);
     if (box.isEmpty()) return;
     const center = box.getCenter(new THREE.Vector3());
-    const size   = box.getSize(new THREE.Vector3());
+    const size   = box.getSize(new THREE.Vector3()).multiplyScalar(pad);
     const maxDim = Math.max(size.x,size.y,size.z)||1;
     const dist   = maxDim * 1.8;
     camera.near = Math.max(maxDim/1000,0.001);
@@ -63,6 +100,7 @@
     });
     return found;
   }
+
   function buildHoverAPI(){
     const overlays=[];
     function clear(){ for(const o of overlays){ if (o?.parent) o.parent.remove(o); } overlays.length=0; }
@@ -87,6 +125,37 @@
     }
     return { clear, showMesh, showLink };
   }
+
+  // Link selection + dedup rules
+  function canonicalLinkKey(name){
+    return String(name || '').toLowerCase().replace(/_fixed$/,'').trim();
+  }
+  function linkMeshStats(link){
+    let meshCount = 0;
+    link.traverse(o=>{
+      if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay) meshCount++;
+    });
+    const box = new THREE.Box3().setFromObject(link);
+    const s = box.getSize(new THREE.Vector3());
+    const volume = (s.x||0)*(s.y||0)*(s.z||0);
+    return { meshCount, volume };
+  }
+  function pickBestLinkVariant(links){
+    if (!links.length) return null;
+    // prefer *_fixed
+    const fixed = links.filter(l => /_fixed$/i.test(String(l.name||'')));
+    if (fixed.length === 1) return fixed[0];
+    if (fixed.length > 1) links = fixed; // continue tie-break on fixed set
+
+    let best=null, bestScore=-Infinity;
+    for (const l of links){
+      const { meshCount, volume } = linkMeshStats(l);
+      const score = meshCount*1000 + volume; // heavy weight on mesh count
+      if (score > bestScore){ bestScore = score; best = l; }
+    }
+    return best || links[0];
+  }
+
   function isMovable(j){ const t = (j?.jointType||'').toString().toLowerCase(); return t && t !== 'fixed'; }
   function isPrismatic(j){ return (j?.jointType||'').toString().toLowerCase()==='prismatic'; }
   function getJointValue(j){ return isPrismatic(j) ? (typeof j.position==='number'?j.position:0) : (typeof j.angle==='number'?j.angle:0); }
@@ -117,10 +186,15 @@
     }
     return null;
   }
+
   function markLinksAndJoints(robot){
     const linkSet = new Set(Object.values(robot.links||{}));
     const joints  = Object.values(robot.joints||{});
     const linkBy  = robot.links||{};
+    // Stamp stable UIDs on links we manage
+    linkSet.forEach(l=>{
+      if (l && !l.userData.__linkUID) l.userData.__linkUID = __LINK_UID_SEQ++;
+    });
     joints.forEach(j=>{
       try{
         j.userData.__isURDFJoint = true;
@@ -222,7 +296,7 @@
     const textDecoder = new TextDecoder();
     const b64ToUint8 = (b64)=>Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
     const b64ToText  = (b64)=>textDecoder.decode(b64ToUint8(b64));
-    const MIME = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', stl:'model/stl', dae:'model/vnd.collada+xml' };
+    const MIME = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', stl:'model/stl', dae:'model/vnd.collada+xml', obj:'text/plain' };
     const meshDB = (opts && opts.meshDB) || {};
     const daeCache = new Map();
     let pendingMeshes = 0, fitTimer=null;
@@ -238,19 +312,14 @@
     }
 
     urdfLoader.loadMeshCb = (path, manager, onComplete)=>{
-      const tries = variantsFor(path);
-      let keyFound=null;
-      for (const k of tries){ const kk=normKey(k); if (meshDB[kk]){ keyFound=kk; break; } }
+      // choose best asset among available variants
+      const bestKey = pickBestAsset(variantsFor(path), meshDB);
+      if (!bestKey){ onComplete(new THREE.Mesh()); return; }
 
-      if (!keyFound){ onComplete(new THREE.Mesh()); return; }
+      const ext = bestKey.split('.').pop();
 
-      const ext = keyFound.split('.').pop();
-
-      // Skip image files – do not treat jpg/jpeg/png as components
-      if (['jpg','jpeg','png'].includes(ext)){
-        onComplete(new THREE.Mesh());
-        return;
-      }
+      // Skip image files (safety)
+      if (['jpg','jpeg','png'].includes(ext)){ onComplete(new THREE.Mesh()); return; }
 
       pendingMeshes++;
       const done=(mesh)=>{
@@ -261,7 +330,7 @@
 
       try{
         if (ext==='stl'){
-          const bytes=b64ToUint8(meshDB[keyFound]);
+          const bytes=b64ToUint8(meshDB[bestKey]);
           const loader=new THREE.STLLoader();
           const geom=loader.parse(bytes.buffer);
           geom.computeVertexNormals();
@@ -272,24 +341,32 @@
           return;
         }
         if (ext==='dae'){
-          if (daeCache.has(keyFound)){ done(daeCache.get(keyFound).clone(true)); return; }
-          const daeText=b64ToText(meshDB[keyFound]);
+          // cache by key
+          if (daeCache.has(bestKey)){ done(daeCache.get(bestKey).clone(true)); return; }
+          const daeText=b64ToText(meshDB[bestKey]);
+
+          // scale from <unit meter="...">
+          let scale = 1.0;
+          const m = /<unit[^>]*meter\s*=\s*"([\d.eE+\-]+)"/i.exec(daeText);
+          if (m){ const meter = parseFloat(m[1]); if (isFinite(meter) && meter>0) scale = meter; }
+
           const mgr=new THREE.LoadingManager();
           mgr.setURLModifier((url)=>{
-            const tries2=variantsFor(url);
-            for (const k2 of tries2){
-              const key2=normKey(k2);
-              if (meshDB[key2]){
-                const mime = MIME[key2.split('.').pop()] || 'application/octet-stream';
-                return `data:${mime};base64,${meshDB[key2]}`;
-              }
+            const tries=variantsFor(url);
+            // Reuse the same best-pick rule for subordinate assets (images, etc.)
+            const key = pickBestAsset(tries, meshDB) || tries.map(normKey).find(k=>meshDB[k]);
+            if (key){
+              const ext2 = key.split('.').pop();
+              const mime = MIME[ext2] || 'application/octet-stream';
+              return `data:${mime};base64,${meshDB[key]}`;
             }
             return url;
           });
           const loader=new THREE.ColladaLoader(mgr);
           const collada=loader.parse(daeText,'');
-          const obj=collada.scene || new THREE.Object3D();
-          daeCache.set(keyFound, obj);
+          const obj=(collada.scene || new THREE.Object3D());
+          if (scale !== 1.0) obj.scale.setScalar(scale);
+          daeCache.set(bestKey, obj);
           done(obj.clone(true));
           return;
         }
@@ -415,7 +492,7 @@
       if (!api.robotModel) return null;
 
       const offCanvas = document.createElement('canvas');
-      const OFF_W = 512, OFF_H = 384;
+      const OFF_W = 640, OFF_H = 480;
       offCanvas.width = OFF_W; offCanvas.height = OFF_H;
 
       const offRenderer = new THREE.WebGLRenderer({ canvas: offCanvas, antialias:true, preserveDrawingBuffer:true });
@@ -424,59 +501,86 @@
       const offScene = new THREE.Scene();
       offScene.background = new THREE.Color(0xffffff);
 
-      const amb = new THREE.AmbientLight(0xffffff, 0.9);
-      const d = new THREE.DirectionalLight(0xffffff, 1.0); d.position.set(2,2,2);
+      const amb = new THREE.AmbientLight(0xffffff, 0.95);
+      const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(2.5,2.5,2.5);
       offScene.add(amb); offScene.add(d);
 
-      const offCamera = new THREE.PerspectiveCamera(75, OFF_W/OFF_H, 0.01, 10000);
+      const offCamera = new THREE.PerspectiveCamera(60, OFF_W/OFF_H, 0.01, 10000);
 
       const robotClone = api.robotModel.clone(true);
       offScene.add(robotClone);
 
-      // Only clone/track links that actually have meshes
-      const linkNames = new Set();
-      api.linkSet.forEach(l=>{
-        if (l && typeof l.name==='string' && linkHasMeshes(l)) linkNames.add(l.name);
-      });
-
-      const linkByName = new Map();
+      // Map original linkUID -> cloned link
+      const cloneByUID = new Map();
       robotClone.traverse(o=>{
-        if (o && typeof o.name==='string' && linkNames.has(o.name)) linkByName.set(o.name, o);
+        const uid = o?.userData?.__linkUID;
+        if (uid) cloneByUID.set(uid, o);
       });
 
-      const linkSetClone = new Set(linkByName.values());
+      // Build the deduplicated, displayable link list (only those with meshes)
+      const groups = new Map(); // canonical -> [link]
+      api.linkSet.forEach(l=>{
+        if (!l) return;
+        if (!linkHasMeshes(l)) return;
+        const key = canonicalLinkKey(l.name);
+        const arr = groups.get(key) || [];
+        arr.push(l); groups.set(key, arr);
+      });
 
-      return { renderer: offRenderer, scene: offScene, camera: offCamera, canvas: offCanvas, robotClone, linkByName, linkSet: linkSetClone };
+      const bestByUID = new Map(); // uid -> original link
+      for (const [, arr] of groups){
+        const best = pickBestLinkVariant(arr);
+        if (best && best.userData.__linkUID) bestByUID.set(best.userData.__linkUID, best);
+      }
+
+      return {
+        renderer: offRenderer, scene: offScene, camera: offCamera,
+        canvas: offCanvas, robotClone, cloneByUID, bestByUID
+      };
     }
 
-    async function snapshotLinkOffscreen(linkName){
+    async function snapshotLinkOffscreen(linkUID){
       const off = state.off;
       if (!off) return null;
-      const link = off.linkByName.get(linkName);
-      if (!link) return null;
+      const linkClone = off.cloneByUID.get(linkUID);
+      if (!linkClone) return null;
 
       const vis = [];
       off.robotClone.traverse(o=>{
         if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){ vis.push([o, o.visible]); }
       });
 
+      // Show only this link subtree
       off.robotClone.traverse(o=>{
         if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
-          const inSelected = (findAncestorLink(o, off.linkSet) === link);
-          o.visible = !!inSelected;
+          // find ancestor in clone: compare parents until you hit linkClone
+          let p=o;
+          let inSel=false;
+          while(p){ if (p===linkClone){ inSel=true; break; } p=p.parent; }
+          o.visible = !!inSel;
         }
       });
 
-      const box = new THREE.Box3().setFromObject(link);
+      // Frame with a little padding and a nicer angle
+      const box = new THREE.Box3().setFromObject(linkClone);
       const center = box.getCenter(new THREE.Vector3());
       const size   = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x,size.y,size.z) || 1;
 
-      const dist = maxDim * 1.8;
+      const dist = maxDim * 2.0; // bit more distance for margin
       off.camera.near = Math.max(maxDim/1000,0.001);
       off.camera.far  = Math.max(maxDim*1000,1000);
       off.camera.updateProjectionMatrix();
-      off.camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
+
+      // gentle 3/4 angle
+      const az = Math.PI * 0.25;
+      const el = Math.PI * 0.18;
+      const dir = new THREE.Vector3(
+        Math.cos(el)*Math.cos(az),
+        Math.sin(el),
+        Math.cos(el)*Math.sin(az)
+      ).multiplyScalar(dist);
+      off.camera.position.copy(center.clone().add(dir));
       off.camera.lookAt(center);
 
       off.renderer.render(off.scene, off.camera);
@@ -496,7 +600,7 @@
           o.visible = true;
         }
       });
-      fitAndCenter(camera, controls, api.robotModel);
+      fitAndCenter(camera, controls, api.robotModel, 1.05);
     }
 
     // ---------- UI: bottom-left toggle + right panel with header Show-all ----------
@@ -535,8 +639,8 @@
         position: 'absolute',
         right: '14px',
         bottom: '14px',
-        width: '360px',
-        maxHeight: '65%',
+        width: '380px',
+        maxHeight: '70%',
         background: '#ffffff',
         border: '1px solid #e4e4e7',
         boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
@@ -546,7 +650,7 @@
         pointerEvents: 'auto'
       });
 
-      // Header with title + Show all (in the header, next to "Components")
+      // Header with title + Show all
       const header = document.createElement('div');
       Object.assign(header.style, {
         display: 'flex',
@@ -560,9 +664,7 @@
 
       const headerTitle = document.createElement('div');
       headerTitle.textContent = 'Components';
-      Object.assign(headerTitle.style, {
-        fontWeight: '800'
-      });
+      Object.assign(headerTitle.style, { fontWeight: '800' });
 
       const showAllBtn = document.createElement('button');
       showAllBtn.textContent = 'Show all';
@@ -582,7 +684,7 @@
       const list = document.createElement('div');
       Object.assign(list.style, {
         overflowY: 'auto',
-        maxHeight: 'calc(65vh - 48px)',
+        maxHeight: 'calc(70vh - 52px)',
         padding: '10px'
       });
 
@@ -605,9 +707,30 @@
       return { root, btn, panel, list, showAllBtn };
     }
 
+    // Build deduped list and UI
     async function buildGallery(listEl){
       listEl.innerHTML = '';
       if (!api.robotModel || !api.linkSet){ listEl.textContent = 'No components found.'; return; }
+
+      // Group links (with meshes) by canonical name, then pick best variant
+      const groups = new Map(); // canon -> [link]
+      api.linkSet.forEach(link=>{
+        if (!link) return;
+        if (!linkHasMeshes(link)) return;
+        const key = canonicalLinkKey(link.name);
+        const arr = groups.get(key) || [];
+        arr.push(link); groups.set(key, arr);
+      });
+
+      const dedupLinks = [];
+      for (const [,arr] of groups){
+        const best = pickBestLinkVariant(arr);
+        if (best) dedupLinks.push(best);
+      }
+
+      if (!dedupLinks.length){
+        listEl.textContent = 'No components with visual geometry found.'; return;
+      }
 
       function setOthersVisibility(onlyLink){
         api.robotModel.traverse(o=>{
@@ -618,19 +741,14 @@
         });
       }
 
-      let any = false;
-      for (const link of api.linkSet){
-        // ONLY include links that actually have visual geometry
-        if (!linkHasMeshes(link)) continue;
-        any = true;
-
+      for (const link of dedupLinks){
         const row = document.createElement('div');
         Object.assign(row.style, {
           display: 'grid',
-          gridTemplateColumns: '96px 1fr',
-          gap: '10px',
+          gridTemplateColumns: '112px 1fr',
+          gap: '12px',
           alignItems: 'center',
-          padding: '8px',
+          padding: '10px',
           borderRadius: '12px',
           border: '1px solid #f0f0f0',
           marginBottom: '10px',
@@ -640,8 +758,8 @@
 
         const img = document.createElement('img');
         Object.assign(img.style, {
-          width: '96px',
-          height: '72px',
+          width: '112px',
+          height: '84px',
           objectFit: 'contain',
           background: '#fafafa',
           borderRadius: '10px',
@@ -668,27 +786,17 @@
         // Clicking the row isolates that component in the ON-SCREEN viewer
         row.addEventListener('click', ()=>{
           setOthersVisibility(link);
-          const box = new THREE.Box3().setFromObject(link);
-          const center = box.getCenter(new THREE.Vector3());
-          const size   = box.getSize(new THREE.Vector3());
-          const maxDim = Math.max(size.x,size.y,size.z) || 1;
-          const dist = maxDim * 1.8;
-          camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
-          controls.target.copy(center);
-          controls.update();
+          fitAndCenter(camera, controls, link, 1.1);
         });
 
-        // Thumbnail captured OFF-SCREEN (no flicker)
+        // Thumbnail captured OFF-SCREEN (no flicker) by UID
         (async ()=>{
           try{
-            const url = await snapshotLinkOffscreen(link.name);
+            const uid = link?.userData?.__linkUID;
+            const url = uid ? await snapshotLinkOffscreen(uid) : null;
             if (url) img.src = url;
           }catch(_e){ /* ignore */ }
         })();
-      }
-
-      if (!any){
-        listEl.textContent = 'No components with visual geometry found.';
       }
     }
     // ---------- end UI ----------
