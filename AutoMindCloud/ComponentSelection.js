@@ -1,4 +1,4 @@
-/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer; button centered over render */
+/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer; gallery thumbnails are shot OFF-SCREEN */
 (function (root) {
   'use strict';
 
@@ -15,7 +15,6 @@
     const parts = p.split('/'); for (let i=1;i<parts.length;i++) out.add(parts.slice(i).join('/'));
     return Array.from(out);
   }
-
   function applyDoubleSided(obj){
     obj?.traverse?.(n=>{
       if (n.isMesh && n.geometry){
@@ -26,7 +25,6 @@
       }
     });
   }
-
   function rectifyUpForward(obj){
     if (!obj || obj.userData.__rectified) return;
     // ROS Z-up -> Three Y-up
@@ -34,7 +32,6 @@
     obj.userData.__rectified = true;
     obj.updateMatrixWorld(true);
   }
-
   function fitAndCenter(camera, controls, object){
     const box = new THREE.Box3().setFromObject(object);
     if (box.isEmpty()) return;
@@ -48,7 +45,6 @@
     camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
     controls.target.copy(center); controls.update();
   }
-
   function collectMeshesInLink(linkObj){
     const t=[], stack=[linkObj];
     while (stack.length){
@@ -59,7 +55,6 @@
     }
     return t;
   }
-
   function buildHoverAPI(){
     const overlays=[];
     function clear(){ for(const o of overlays){ if (o?.parent) o.parent.remove(o); } overlays.length=0; }
@@ -84,7 +79,6 @@
     }
     return { clear, showMesh, showLink };
   }
-
   function isMovable(j){ const t = (j?.jointType||'').toString().toLowerCase(); return t && t !== 'fixed'; }
   function isPrismatic(j){ return (j?.jointType||'').toString().toLowerCase()==='prismatic'; }
   function getJointValue(j){ return isPrismatic(j) ? (typeof j.position==='number'?j.position:0) : (typeof j.angle==='number'?j.angle:0); }
@@ -100,7 +94,6 @@
     else if (robot && j.name) robot.setJointValue(j.name, v);
     robot?.updateMatrixWorld(true);
   }
-
   function findAncestorJoint(o){
     while (o){
       if (o.jointType && isMovable(o)) return o;
@@ -116,7 +109,6 @@
     }
     return null;
   }
-
   function markLinksAndJoints(robot){
     const linkSet = new Set(Object.values(robot.links||{}));
     const joints  = Object.values(robot.joints||{});
@@ -156,6 +148,8 @@
       state?.ui?.root && state.ui.root.remove();
       state?.ui?.btn && state.ui.btn.remove();
     }catch(_){}
+    // dispose off-screen renderer
+    try{ state?.off?.renderer?.dispose?.(); }catch(_){}
     state=null;
   };
 
@@ -174,7 +168,6 @@
     if (state) URDFViewer.destroy();
 
     const container = opts?.container || document.body;
-    // ensure container can host absolutely-positioned UI
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
 
     const selectMode = (opts && opts.selectMode) || 'link';
@@ -292,10 +285,11 @@
     };
 
     const api = { scene, camera, renderer, controls, robotModel:null, linkSet:null };
+
+    // ----------- interaction helpers -----------
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     const hover = buildHoverAPI();
-
     let dragState=null;
     const ROT_PER_PIXEL=0.01, PRISM_PER_PIXEL=0.003;
 
@@ -304,7 +298,6 @@
       pointer.x = ((e.clientX - r.left)/r.width)*2 - 1;
       pointer.y = -((e.clientY - r.top)/r.height)*2 + 1;
     }
-
     function startJointDrag(joint, ev){
       const originW = joint.getWorldPosition(new THREE.Vector3());
       const qWorld  = joint.getWorldQuaternion(new THREE.Quaternion());
@@ -403,25 +396,90 @@
     renderer.domElement.addEventListener('pointerleave', endJointDrag);
     renderer.domElement.addEventListener('pointercancel', endJointDrag);
 
-    // Load URDF text
-    function loadURDF(urdfText){
-      if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
-      pendingMeshes=0;
-      try{
-        const robot = urdfLoader.parse(urdfText||'');
-        if (robot?.isObject3D){
-          api.robotModel=robot; scene.add(api.robotModel);
-          rectifyUpForward(api.robotModel);
-          api.linkSet = markLinksAndJoints(api.robotModel);
-          setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
-        }
-      } catch(_e){}
+    // ---------------- OFF-SCREEN snapshot rig ----------------
+    // built once per URDF load; uses a cloned robot in a hidden WebGL canvas
+    function buildOffscreenFromRobot(){
+      if (!api.robotModel) return null;
+
+      const offCanvas = document.createElement('canvas');
+      // Thumbnail resolution (tweak as desired)
+      const OFF_W = 512, OFF_H = 384;
+      offCanvas.width = OFF_W; offCanvas.height = OFF_H;
+
+      const offRenderer = new THREE.WebGLRenderer({ canvas: offCanvas, antialias:true, preserveDrawingBuffer:true });
+      offRenderer.setSize(OFF_W, OFF_H, false);
+
+      const offScene = new THREE.Scene();
+      // Use a white background for clean thumbnails (or match main if you prefer)
+      offScene.background = new THREE.Color(0xffffff);
+
+      const amb = new THREE.AmbientLight(0xffffff, 0.9);
+      const d = new THREE.DirectionalLight(0xffffff, 1.0); d.position.set(2,2,2);
+      offScene.add(amb); offScene.add(d);
+
+      const offCamera = new THREE.PerspectiveCamera(75, OFF_W/OFF_H, 0.01, 10000);
+
+      // Deep clone robot; visibility changes here won't affect on-screen scene
+      const robotClone = api.robotModel.clone(true);
+      offScene.add(robotClone);
+
+      // Map link names -> cloned link objects
+      const linkNames = new Set();
+      api.linkSet.forEach(l=>{ if (l && typeof l.name==='string') linkNames.add(l.name); });
+
+      const linkByName = new Map();
+      robotClone.traverse(o=>{ if (o && typeof o.name==='string' && linkNames.has(o.name)) linkByName.set(o.name, o); });
+
+      const linkSetClone = new Set(linkByName.values());
+
+      return { renderer: offRenderer, scene: offScene, camera: offCamera, canvas: offCanvas, robotClone, linkByName, linkSet: linkSetClone };
     }
 
-    function animate(){
-      state.raf = requestAnimationFrame(animate);
-      controls.update(); renderer.render(scene, camera);
+    async function snapshotLinkOffscreen(linkName){
+      const off = state.off;
+      if (!off) return null;
+      const link = off.linkByName.get(linkName);
+      if (!link) return null;
+
+      // Save vis states
+      const vis = [];
+      off.robotClone.traverse(o=>{
+        if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){ vis.push([o, o.visible]); }
+      });
+
+      // Hide everything except the selected link subtree
+      off.robotClone.traverse(o=>{
+        if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){
+          const inSelected = (findAncestorLink(o, off.linkSet) === link);
+          o.visible = !!inSelected;
+        }
+      });
+
+      // Frame the link
+      const box = new THREE.Box3().setFromObject(link);
+      const center = box.getCenter(new THREE.Vector3());
+      const size   = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x,size.y,size.z) || 1;
+
+      const dist = maxDim * 1.8;
+      off.camera.near = Math.max(maxDim/1000,0.001);
+      off.camera.far  = Math.max(maxDim*1000,1000);
+      off.camera.updateProjectionMatrix();
+      off.camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
+      off.camera.lookAt(center);
+
+      // Render OFF-SCREEN only
+      off.renderer.render(off.scene, off.camera);
+
+      // Read dataURL from the hidden canvas (no on-screen change)
+      const url = off.renderer.domElement.toDataURL('image/png');
+
+      // Restore vis
+      vis.forEach(([o,v])=>{ o.visible = v; });
+
+      return url;
     }
+    // ---------------- end OFF-SCREEN ----------------
 
     // ---------- UI: centered button + scrollable panel ----------
     function createUI(){
@@ -436,7 +494,7 @@
         fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // Centered button
+      // Centered button (move to bottom-right if you prefer)
       const btn = document.createElement('button');
       btn.textContent = 'Components';
       Object.assign(btn.style, {
@@ -454,7 +512,7 @@
         pointerEvents: 'auto'
       });
 
-      // Panel (still bottom-right of the render for practicality)
+      // Panel bottom-right of the render
       const panel = document.createElement('div');
       Object.assign(panel.style, {
         position: 'absolute',
@@ -521,40 +579,6 @@
         });
       }
 
-      async function snapshotLink(link){
-        const vis = [];
-        api.robotModel.traverse(o=>{
-          if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay){ vis.push([o, o.visible]); }
-        });
-
-        setOthersVisibility(link);
-        const box = new THREE.Box3().setFromObject(link);
-        const center = box.getCenter(new THREE.Vector3());
-        const size   = box.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x,size.y,size.z) || 1;
-
-        const prevPos = camera.position.clone();
-        const prevTarget = controls.target.clone();
-        const dist = maxDim * 1.8;
-        camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
-        controls.target.copy(center);
-        controls.update();
-
-        renderer.render(scene, camera);
-        await new Promise(r=>setTimeout(r, 0));
-        renderer.render(scene, camera);
-
-        const url = renderer.domElement.toDataURL('image/png');
-
-        vis.forEach(([o,v])=>{ o.visible = v; });
-        camera.position.copy(prevPos);
-        controls.target.copy(prevTarget);
-        controls.update();
-        renderer.render(scene, camera);
-
-        return url;
-      }
-
       for (const link of api.linkSet){
         const row = document.createElement('div');
         Object.assign(row.style, {
@@ -566,7 +590,8 @@
           borderRadius: '12px',
           border: '1px solid #f0f0f0',
           marginBottom: '10px',
-          background: '#fff'
+          background: '#fff',
+          cursor: 'pointer'
         });
 
         const img = document.createElement('img');
@@ -596,18 +621,57 @@
         row.appendChild(meta);
         listEl.appendChild(row);
 
+        // Clicking the row isolates that component in the ON-SCREEN viewer (as requested)
+        row.addEventListener('click', ()=>{
+          setOthersVisibility(link);
+          // optional: reframe the main camera to this link
+          const box = new THREE.Box3().setFromObject(link);
+          const center = box.getCenter(new THREE.Vector3());
+          const size   = box.getSize(new THREE.Vector3());
+          const maxDim = Math.max(size.x,size.y,size.z) || 1;
+          const dist = maxDim * 1.8;
+          camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
+          controls.target.copy(center);
+          controls.update();
+        });
+
+        // Generate thumbnail OFF-SCREEN (no on-screen flicker)
         (async ()=>{
           try{
-            const url = await snapshotLink(link);
-            img.src = url;
+            const url = await snapshotLinkOffscreen(link.name);
+            if (url) img.src = url;
           }catch(_e){ /* ignore */ }
         })();
       }
     }
     // ---------- end UI ----------
 
-    // Public state
-    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui: null };
+    // Public state holder
+    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui: null, off: null };
+
+    // Load URDF text
+    function loadURDF(urdfText){
+      if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
+      if (state.off){ try{ state.off.renderer.dispose(); }catch(_){} state.off=null; }
+
+      try{
+        const robot = urdfLoader.parse(urdfText||'');
+        if (robot?.isObject3D){
+          api.robotModel=robot; scene.add(api.robotModel);
+          rectifyUpForward(api.robotModel);
+          api.linkSet = markLinksAndJoints(api.robotModel);
+          setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
+
+          // Build the OFF-SCREEN clone rig now that links exist
+          state.off = buildOffscreenFromRobot();
+        }
+      } catch(_e){}
+    }
+
+    function animate(){
+      state.raf = requestAnimationFrame(animate);
+      controls.update(); renderer.render(scene, camera);
+    }
 
     loadURDF((opts && opts.urdfContent) || '');
     state.ui = createUI();
