@@ -1,9 +1,14 @@
 /* urdf_viewer.js - UMD-lite: exposes window.URDFViewer
-   - Gallery is PER FILE (DAE/STL/STEP) — not per link, not per submesh
-   - Clicking a gallery item HARD-ISOLATES all instances of that file in the main view
-   - Thumbnails are also HARD-ISOLATED (only that file’s meshes visible in the off-screen rig)
-   - Skips images; dedup path variants per basename (DAE > STL > STEP; then largest)
-   - Auto-scales DAE via <unit meter="...">
+   - Keeps original interactions:
+     * OrbitControls camera rotate/zoom/pan
+     * Gray hover overlay (mesh or link, via selectMode)
+     * Joint drag (revolute/prismatic) with limits and Shift for fine control
+   - Gallery is PER FILE (DAE/STL/STEP) — not per link/mesh fragment.
+     Clicking an item HARD-ISOLATES all instances of that asset in the main view.
+   - Thumbnails are captured OFF-SCREEN with the same isolation (no flicker).
+   - Skips images; dedup path variants per basename (DAE > STL > STEP; then largest).
+   - Auto-scales DAE via <unit meter="...">.
+   - UI: bottom-left “Components” toggle, “Show all” button in the gallery header.
 */
 (function (root) {
   'use strict';
@@ -33,11 +38,10 @@
   }
   function approxByteLenFromB64(b64){ return Math.floor(String(b64||'').length * 3 / 4); }
 
-  // Only consider these as *component files*:
+  // Component files allowed for gallery isolation
   const ALLOWED_EXTS = new Set(['dae','stl','step','stp']);
 
-  // Choose ONE asset per basename among available variants:
-  // prefer DAE > STL > STEP/STP; then largest approximate byte size.
+  // Dedup per basename with priority: DAE > STL > STEP/STP, then largest byte size
   function pickBestAsset(tries, meshDB){
     const extPriority = { dae: 3, stl: 2, step: 1, stp: 1 };
     const groups = new Map(); // base -> [{key, ext, bytes, prio}]
@@ -46,7 +50,7 @@
       const b64 = meshDB[kk];
       if (!b64) continue;
       const ext = extOf(kk);
-      if (!ALLOWED_EXTS.has(ext)) continue; // ignore images and others
+      if (!ALLOWED_EXTS.has(ext)) continue; // skip images/others
       const base = basenameNoExt(kk);
       const arr = groups.get(base) || [];
       arr.push({ key: kk, ext, bytes: approxByteLenFromB64(b64), prio: extPriority[ext] ?? 0 });
@@ -69,6 +73,7 @@
       }
     });
   }
+
   function rectifyUpForward(obj){
     if (!obj || obj.userData.__rectified) return;
     // ROS Z-up -> Three Y-up
@@ -76,6 +81,7 @@
     obj.userData.__rectified = true;
     obj.updateMatrixWorld(true);
   }
+
   function fitAndCenter(camera, controls, object, pad=1.0){
     const box = new THREE.Box3().setFromObject(object);
     if (box.isEmpty()) return;
@@ -90,7 +96,17 @@
     controls.target.copy(center); controls.update();
   }
 
-  // Compute a union box over a set of meshes (Object3D[])
+  function collectMeshesInLink(linkObj){
+    const t=[], stack=[linkObj];
+    while (stack.length){
+      const n = stack.pop(); if (!n) continue;
+      if (n.isMesh && n.geometry && !n.userData.__isHoverOverlay) t.push(n);
+      const kids = n.children ? n.children.slice() : [];
+      for (let i=0;i<kids.length;i++) stack.push(kids[i]);
+    }
+    return t;
+  }
+
   function computeUnionBox(meshes){
     const box = new THREE.Box3();
     let has=false;
@@ -101,6 +117,94 @@
       if (!has){ box.copy(tmp); has=true; } else { box.union(tmp); }
     }
     return has ? box : null;
+  }
+
+  // ---------- Hover overlay (gray marker) ----------
+  function buildHoverAPI(){
+    const overlays=[];
+    function clear(){ for(const o of overlays){ if (o?.parent) o.parent.remove(o); } overlays.length=0; }
+    function overlayFor(mesh){
+      if (!mesh || !mesh.isMesh || !mesh.geometry) return null;
+      const m = new THREE.Mesh(
+        mesh.geometry,
+        new THREE.MeshBasicMaterial({ color:0x9e9e9e, transparent:true, opacity:0.35, depthTest:false, depthWrite:false })
+      );
+      m.renderOrder = 999; m.userData.__isHoverOverlay = true; return m;
+    }
+    function showMesh(mesh){
+      const ov = overlayFor(mesh);
+      if (ov){ mesh.add(ov); overlays.push(ov); }
+    }
+    function showLink(link){
+      const arr = collectMeshesInLink(link);
+      for(const m of arr){
+        const ov = overlayFor(m);
+        if (ov){ m.add(ov); overlays.push(ov); }
+      }
+    }
+    return { clear, showMesh, showLink };
+  }
+
+  // ---------- Joint helpers ----------
+  function isMovable(j){ const t = (j?.jointType||'').toString().toLowerCase(); return t && t !== 'fixed'; }
+  function isPrismatic(j){ return (j?.jointType||'').toString().toLowerCase()==='prismatic'; }
+  function getJointValue(j){ return isPrismatic(j) ? (typeof j.position==='number'?j.position:0) : (typeof j.angle==='number'?j.angle:0); }
+  function setJointValue(robot,j,v){
+    if (!j) return;
+    const t = (j.jointType||'').toString().toLowerCase();
+    const lim=j.limit||{};
+    if (t!=='continuous'){
+      if (typeof lim.lower==='number') v=Math.max(v, lim.lower);
+      if (typeof lim.upper==='number') v=Math.min(v, lim.upper);
+    }
+    if (typeof j.setJointValue==='function') j.setJointValue(v);
+    else if (robot && j.name) robot.setJointValue(j.name, v);
+    robot?.updateMatrixWorld(true);
+  }
+
+  function findAncestorJoint(o){
+    while (o){
+      if (o.jointType && isMovable(o)) return o;
+      if (o.userData && o.userData.__joint && isMovable(o.userData.__joint)) return o.userData.__joint;
+      o = o.parent;
+    }
+    return null;
+  }
+  function findAncestorLink(o, linkSet){
+    while (o){
+      if (linkSet && linkSet.has(o)) return o;
+      o = o.parent;
+    }
+    return null;
+  }
+
+  function markLinksAndJoints(robot){
+    const linkSet = new Set(Object.values(robot.links||{}));
+    const joints  = Object.values(robot.joints||{});
+    const linkBy  = robot.links||{};
+    joints.forEach(j=>{
+      try{
+        j.userData.__isURDFJoint = true;
+        let childLinkObj = j.child && j.child.isObject3D ? j.child : null;
+        const childName =
+          (typeof j.childLink==='string' && j.childLink) ||
+          (j.child && typeof j.child.name==='string' && j.child.name) ||
+          (typeof j.child==='string' && j.child) ||
+          (typeof j.child_link==='string' && j.child_link) || null;
+        if (!childLinkObj && childName && linkBy[childName]) childLinkObj = linkBy[childName];
+        if (!childLinkObj && childName && j.children && j.children.length){
+          const stack=j.children.slice();
+          while (stack.length){
+            const n=stack.pop(); if (!n) continue;
+            if (n.name===childName){ childLinkObj=n; break; }
+            const kids=n.children?n.children.slice():[];
+            for (let i=0;i<kids.length;i++) stack.push(kids[i]);
+          }
+        }
+        if (childLinkObj && isMovable(j)) childLinkObj.userData.__joint = j;
+      }catch(_e){}
+    });
+    return linkSet;
   }
 
   // ---------- Public API: destroy ----------
@@ -115,13 +219,14 @@
   };
 
   /**
-   * Renderiza un URDF embebido.
+   * Render a URDF with a per-file gallery.
    * opts = {
-   *   container: HTMLElement (opcional, default document.body),
+   *   container: HTMLElement (default document.body),
    *   urdfContent: string,
    *   meshDB: { key -> base64 },
-   *   background: number (hex) o null,
-   *   descriptions: { [assetBaseName]: string } // optional text per file (basename w/o ext)
+   *   selectMode: 'link'|'mesh' (default 'link')  // for gray hover overlay behavior
+   *   background: number (hex) or null,
+   *   descriptions: { [assetBaseName]: string }
    * }
    */
   URDFViewer.render = function(opts){
@@ -130,6 +235,7 @@
     const container = opts?.container || document.body;
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
 
+    const selectMode = (opts && opts.selectMode) || 'link';
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
 
@@ -172,17 +278,20 @@
     }
     window.addEventListener('resize', onResize);
 
-    // Loader + mesh callbacks from meshDB
+    // Loader + mesh callbacks
     const urdfLoader = new URDFLoader();
     const textDecoder = new TextDecoder();
     const b64ToUint8 = (b64)=>Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
     const b64ToText  = (b64)=>textDecoder.decode(b64ToUint8(b64));
-    const MIME = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', stl:'model/stl', dae:'model/vnd.collada+xml', step:'model/step', stp:'model/step' };
+    const MIME = {
+      png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg',
+      stl:'model/stl', dae:'model/vnd.collada+xml', step:'model/step', stp:'model/step'
+    };
     const meshDB = (opts && opts.meshDB) || {};
     const daeCache = new Map();
     let pendingMeshes = 0, fitTimer=null;
 
-    // Map: assetKey -> array of scene meshes (instances)
+    // assetKey -> [scene meshes]
     const assetToMeshes = new Map();
 
     function scheduleFit(){
@@ -196,16 +305,12 @@
     }
 
     urdfLoader.loadMeshCb = (path, manager, onComplete)=>{
-      // Pick the best asset variant for this referenced path
       const bestKey = pickBestAsset(variantsFor(path), meshDB);
       if (!bestKey){ onComplete(new THREE.Mesh()); return; }
-
       const ext = extOf(bestKey);
       if (!ALLOWED_EXTS.has(ext)){ onComplete(new THREE.Mesh()); return; } // safety
 
-      // helper to record meshes to asset map
-      const tagAndDone = (obj)=>{
-        // Tag the returned object and all its meshes with the originating assetKey
+      const tagAndComplete = (obj)=>{
         obj.userData.__assetKey = bestKey;
         obj.traverse(o=>{
           if (o.isMesh && o.geometry){
@@ -221,7 +326,6 @@
       };
 
       pendingMeshes++;
-
       try{
         if (ext==='stl'){
           const bytes=b64ToUint8(meshDB[bestKey]);
@@ -232,23 +336,22 @@
             geom,
             new THREE.MeshStandardMaterial({ color:0x8aa1ff, roughness:0.85, metalness:0.15, side:THREE.DoubleSide })
           );
-          tagAndDone(mesh);
+          tagAndComplete(mesh);
           return;
         }
         if (ext==='dae'){
-          if (daeCache.has(bestKey)){ tagAndDone(daeCache.get(bestKey).clone(true)); return; }
+          if (daeCache.has(bestKey)){ tagAndComplete(daeCache.get(bestKey).clone(true)); return; }
           const daeText=b64ToText(meshDB[bestKey]);
 
-          // DAE scaling via <unit meter="...">
+          // scale using <unit meter="...">
           let scale = 1.0;
           const m = /<unit[^>]*meter\s*=\s*"([\d.eE+\-]+)"/i.exec(daeText);
           if (m){ const meter = parseFloat(m[1]); if (isFinite(meter) && meter>0) scale = meter; }
 
           const mgr=new THREE.LoadingManager();
           mgr.setURLModifier((url)=>{
+            // for referenced resources in DAE (textures, etc.)
             const tries=variantsFor(url);
-            // Within a DAE, subordinate references might be images or other stuff.
-            // We’ll return raw data if present (even if images; they won’t become components).
             const key = tries.map(normKey).find(k=>meshDB[k]);
             if (key){
               const mime = MIME[extOf(key)] || 'application/octet-stream';
@@ -261,18 +364,15 @@
           const obj=(collada.scene || new THREE.Object3D());
           if (scale !== 1.0) obj.scale.setScalar(scale);
           daeCache.set(bestKey, obj);
-          tagAndDone(obj.clone(true));
+          tagAndComplete(obj.clone(true));
           return;
         }
         if (ext==='step' || ext==='stp'){
-          // No built-in STEP loader here; return empty mesh so scene remains valid.
-          // (The component will not render because we can't parse STEP,
-          // but it also won't pollute gallery since we index from actual meshes.)
+          // No STEP parser in this bundle—return empty mesh so scene remains valid.
           onComplete(new THREE.Mesh());
           pendingMeshes--; scheduleFit();
           return;
         }
-        // Fallback
         onComplete(new THREE.Mesh());
         pendingMeshes--; scheduleFit();
       }catch(_e){
@@ -281,7 +381,121 @@
       }
     };
 
-    const api = { scene, camera, renderer, controls, robotModel:null, assets:[] };
+    const api = { scene, camera, renderer, controls, robotModel:null, linkSet:null };
+
+    // ---------- Pointer + hover + joint drag ----------
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    const hover = buildHoverAPI();
+
+    let dragState=null;
+    const ROT_PER_PIXEL=0.01, PRISM_PER_PIXEL=0.003;
+
+    function getPointer(e){
+      const r = renderer.domElement.getBoundingClientRect();
+      pointer.x = ((e.clientX - r.left)/r.width)*2 - 1;
+      pointer.y = -((e.clientY - r.top)/r.height)*2 + 1;
+    }
+
+    function startJointDrag(joint, ev){
+      const originW = joint.getWorldPosition(new THREE.Vector3());
+      const qWorld  = joint.getWorldQuaternion(new THREE.Quaternion());
+      const axisW   = (joint.axis||new THREE.Vector3(1,0,0)).clone().normalize().applyQuaternion(qWorld).normalize();
+      const dragPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(axisW.clone(), originW);
+
+      raycaster.setFromCamera(pointer, camera);
+      const p0 = new THREE.Vector3();
+      let r0=null;
+      if (raycaster.ray.intersectPlane(dragPlane, p0)){
+        r0 = p0.clone().sub(originW);
+        if (r0.lengthSq()>1e-12) r0.normalize(); else r0=null;
+      }
+
+      dragState = { joint, originW, axisW, dragPlane, r0, value:getJointValue(joint), lastClientX:ev.clientX, lastClientY:ev.clientY };
+      controls.enabled=false;
+      renderer.domElement.style.cursor='grabbing';
+      renderer.domElement.setPointerCapture?.(ev.pointerId);
+    }
+
+    function updateJointDrag(ev){
+      const ds=dragState; if (!ds) return;
+      const fine = ev.shiftKey ? 0.35 : 1.0;
+      getPointer(ev); raycaster.setFromCamera(pointer, camera);
+
+      const dX = (ev.clientX - (ds.lastClientX ?? ev.clientX));
+      const dY = (ev.clientY - (ds.lastClientY ?? ev.clientY));
+      ds.lastClientX = ev.clientX; ds.lastClientY = ev.clientY;
+
+      if (isPrismatic(ds.joint)){
+        const hit=new THREE.Vector3(); let delta=0;
+        if (raycaster.ray.intersectPlane(ds.dragPlane, hit)){
+          const t1 = hit.clone().sub(ds.originW).dot(ds.axisW);
+          delta = (t1 - (ds.lastT ?? t1)); ds.lastT = t1;
+        } else {
+          delta = -(dY * PRISM_PER_PIXEL);
+        }
+        ds.value += delta * fine; setJointValue(api.robotModel, ds.joint, ds.value); return;
+      }
+
+      // revolute/continuous
+      let applied=false; const hit=new THREE.Vector3();
+      if (raycaster.ray.intersectPlane(ds.dragPlane, hit)){
+        let r1 = hit.clone().sub(ds.originW);
+        if (r1.lengthSq()>=1e-12){
+          r1.normalize(); if (!ds.r0) ds.r0 = r1.clone();
+          const cross = new THREE.Vector3().crossVectors(ds.r0, r1);
+          const dot = THREE.MathUtils.clamp(ds.r0.dot(r1), -1, 1);
+          const sign = Math.sign(ds.axisW.dot(cross)) || 1;
+          const delta = Math.atan2(cross.length(), dot) * sign;
+          ds.value += (delta * fine); ds.r0 = r1;
+          setJointValue(api.robotModel, ds.joint, ds.value); applied=true;
+        }
+      }
+      if (!applied){
+        const delta = (dX * ROT_PER_PIXEL) * fine;
+        ds.value += delta; setJointValue(api.robotModel, ds.joint, ds.value);
+      }
+    }
+
+    function endJointDrag(ev){
+      if (dragState){ renderer.domElement.releasePointerCapture?.(ev.pointerId); }
+      dragState=null; controls.enabled=true; renderer.domElement.style.cursor='auto';
+    }
+
+    renderer.domElement.addEventListener('pointermove', (e)=>{
+      getPointer(e);
+      if (dragState){ updateJointDrag(e); return; }
+      if (!api.robotModel) return;
+
+      raycaster.setFromCamera(pointer, camera);
+      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
+      const hits = raycaster.intersectObjects(pickables, true);
+
+      hover.clear();
+      if (hits.length){
+        const meshHit = hits[0].object;
+        const link = findAncestorLink(meshHit, api.linkSet);
+        const joint = findAncestorJoint(meshHit);
+        if (selectMode==='link' && link) hover.showLink(link); else hover.showMesh(meshHit);
+        renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
+      } else {
+        renderer.domElement.style.cursor='auto';
+      }
+    }, {passive:true});
+
+    renderer.domElement.addEventListener('pointerdown', (e)=>{
+      e.preventDefault();
+      if (!api.robotModel || e.button!==0) return;
+      raycaster.setFromCamera(pointer, camera);
+      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
+      const hits = raycaster.intersectObjects(pickables, true);
+      if (!hits.length) return;
+      const joint = findAncestorJoint(hits[0].object);
+      if (joint && isMovable(joint)) startJointDrag(joint, e);
+    }, {passive:false});
+    renderer.domElement.addEventListener('pointerup', endJointDrag);
+    renderer.domElement.addEventListener('pointerleave', endJointDrag);
+    renderer.domElement.addEventListener('pointercancel', endJointDrag);
 
     // ---------------- OFF-SCREEN snapshot rig ----------------
     function buildOffscreenFromRobot(){
@@ -333,7 +547,7 @@
 
       // Hide ALL
       for (const [m] of vis) m.visible = false;
-      // Show ONLY meshes belonging to this asset
+      // Show ONLY this asset's meshes
       for (const m of meshes) m.visible = true;
 
       // Frame
@@ -347,7 +561,6 @@
       off.camera.far  = Math.max(maxDim*1000,1000);
       off.camera.updateProjectionMatrix();
 
-      // nice 3/4 angle
       const az = Math.PI * 0.25, el = Math.PI * 0.18;
       const dir = new THREE.Vector3(
         Math.cos(el)*Math.cos(az),
@@ -382,7 +595,7 @@
       api.robotModel.traverse(o=>{
         if (o.isMesh && o.geometry) o.visible = false;
       });
-      // Show ONLY asset meshes
+      // Show ONLY that asset's meshes
       for (const m of meshes) m.visible = true;
 
       // Frame
@@ -395,7 +608,6 @@
         camera.near = Math.max(maxDim/1000,0.001);
         camera.far  = Math.max(maxDim*1000,1000);
         camera.updateProjectionMatrix();
-        // similar 3/4 angle
         const az = Math.PI * 0.25, el = Math.PI * 0.18;
         const dir = new THREE.Vector3(
           Math.cos(el)*Math.cos(az),
@@ -407,7 +619,7 @@
       }
     }
 
-    // ---------- UI: bottom-left toggle + right panel with header Show-all ----------
+    // ---------- UI: bottom-left toggle + right panel ----------
     function createUI(){
       // Root overlay
       const root = document.createElement('div');
@@ -420,7 +632,7 @@
         fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // Bottom-left toggle button (opens/closes panel)
+      // Bottom-left toggle button
       const btn = document.createElement('button');
       btn.textContent = 'Components';
       Object.assign(btn.style, {
@@ -437,7 +649,7 @@
         pointerEvents: 'auto'
       });
 
-      // Panel (bottom-right)
+      // Panel
       const panel = document.createElement('div');
       Object.assign(panel.style, {
         position: 'absolute',
@@ -511,11 +723,11 @@
       return { root, btn, panel, list, showAllBtn };
     }
 
-    // Build PER-FILE gallery (one item per assetKey with at least one mesh)
+    // Build PER-FILE gallery (one item per assetKey that produced meshes)
     async function buildGallery(listEl){
       listEl.innerHTML = '';
 
-      // Build asset index from the scene (assetToMeshes was filled during loading)
+      // Collect entries
       const entries = [];
       assetToMeshes.forEach((meshes, assetKey)=>{
         if (!meshes || !meshes.length) return;
@@ -525,7 +737,6 @@
         entries.push({ assetKey, base, ext, meshes });
       });
 
-      // Sort nicely by base name
       entries.sort((a,b)=> a.base.localeCompare(b.base, undefined, {numeric:true, sensitivity:'base'}));
 
       if (!entries.length){
@@ -579,29 +790,26 @@
         row.appendChild(meta);
         listEl.appendChild(row);
 
-        // Clicking the row isolates that FILE in the ON-SCREEN viewer
         row.addEventListener('click', ()=>{
           isolateAssetOnScreen(ent.assetKey);
         });
 
-        // Thumbnail captured OFF-SCREEN (hard isolation of that file)
         (async ()=>{
           try{
             const url = await snapshotAssetOffscreen(ent.assetKey);
             if (url) img.src = url;
-          }catch(_e){ /* ignore */ }
+          }catch(_e){}
         })();
       }
     }
     // ---------- end UI ----------
 
     // Public state holder
-    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui: null, off: null };
+    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
 
-    // Load URDF text
+    // Load URDF
     function loadURDF(urdfText){
-      // reset maps and state
-      assetToMeshes.clear();
+      // reset scene + maps
       if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
       if (state.off){ try{ state.off.renderer.dispose(); }catch(_){} state.off=null; }
 
@@ -610,9 +818,10 @@
         if (robot?.isObject3D){
           api.robotModel=robot; scene.add(api.robotModel);
           rectifyUpForward(api.robotModel);
+          api.linkSet = markLinksAndJoints(api.robotModel);
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
 
-          // Build OFF-SCREEN rig now that meshes exist and assetToMeshes is populated
+          // Build OFF-SCREEN rig now that meshes exist
           state.off = buildOffscreenFromRobot();
         }
       } catch(_e){}
