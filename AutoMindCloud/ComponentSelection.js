@@ -1,23 +1,11 @@
-/* urdf_viewer.js - URDFViewer with ultra-visible, body-mounted UI + debug */
+/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer; button centered over render */
 (function (root) {
   'use strict';
 
   const URDFViewer = {};
   let state = null;
 
-  // ---------- Debug helpers ----------
-  const MAX_Z = 2147483647;
-  function log(...args){ if (root.URDF_DEBUG) console.log('[URDFViewer]', ...args); }
-  function warn(...args){ console.warn('[URDFViewer]', ...args); }
-
-  // ---------- UI mount mode ----------
-  const DEFAULT_UIMOUNT = 'body';
-  function pickUIHost(container, mode){
-    if (mode === 'container') return container || document.body;
-    return document.body;
-  }
-
-  // ---------- Path helpers ----------
+  // ---------- Helpers for assets/paths ----------
   function normKey(s){ return String(s||'').replace(/\\/g,'/').toLowerCase(); }
   function variantsFor(path){
     const out = new Set(), p = normKey(path);
@@ -41,7 +29,8 @@
 
   function rectifyUpForward(obj){
     if (!obj || obj.userData.__rectified) return;
-    obj.rotateX(-Math.PI/2); // ROS Z-up -> Three Y-up
+    // ROS Z-up -> Three Y-up
+    obj.rotateX(-Math.PI/2);
     obj.userData.__rectified = true;
     obj.updateMatrixWorld(true);
   }
@@ -178,24 +167,21 @@
    *   meshDB: { key -> base64 },
    *   selectMode: 'link'|'mesh' (default 'link'),
    *   background: number (hex) o null,
-   *   uiMount: 'body' | 'container' (default 'body'),
-   *   descriptions: { [linkName]: string }
+   *   descriptions: { [linkName]: string }  // optional per-component text
    * }
    */
   URDFViewer.render = function(opts){
     if (state) URDFViewer.destroy();
 
     const container = opts?.container || document.body;
-    const uiMount   = (opts && opts.uiMount) || DEFAULT_UIMOUNT;
-    const uiHost    = pickUIHost(container, uiMount);
+    // ensure container can host absolutely-positioned UI
+    if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+
     const selectMode = (opts && opts.selectMode) || 'link';
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
 
-    log('render start',{uiMount, uiHost, container});
-
     // Scene
-    if (!root.THREE){ warn('THREE not found. UI will still render.'); }
     const scene = new THREE.Scene();
     if (bg!=null) scene.background = new THREE.Color(bg);
 
@@ -217,8 +203,7 @@
     renderer.domElement.style.position = 'relative';
     container.appendChild(renderer.domElement);
 
-    if (!THREE.OrbitControls){ warn('OrbitControls missing. Camera will be static.'); }
-    const controls = THREE.OrbitControls ? new THREE.OrbitControls(camera, renderer.domElement) : { update(){}, enabled:true, target:new THREE.Vector3() };
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
 
@@ -236,8 +221,7 @@
     window.addEventListener('resize', onResize);
 
     // Loader + mesh callbacks from meshDB
-    if (!root.URDFLoader){ warn('URDFLoader missing. Model won’t load, but UI shows.'); }
-    const urdfLoader = root.URDFLoader ? new URDFLoader() : null;
+    const urdfLoader = new URDFLoader();
     const textDecoder = new TextDecoder();
     const b64ToUint8 = (b64)=>Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
     const b64ToText  = (b64)=>textDecoder.decode(b64ToUint8(b64));
@@ -256,59 +240,56 @@
       },80);
     }
 
-    if (urdfLoader){
-      urdfLoader.loadMeshCb = (path, manager, onComplete)=>{
-        const tries = variantsFor(path);
-        let keyFound=null;
-        for (const k of tries){ const kk=normKey(k); if (meshDB[kk]){ keyFound=kk; break; } }
-        if (!keyFound){ onComplete(new THREE.Mesh()); return; }
-        pendingMeshes++;
-        const done=(mesh)=>{
-          applyDoubleSided(mesh);
-          onComplete(mesh);
-          pendingMeshes--; scheduleFit();
-        };
-        const ext = keyFound.split('.').pop();
-        try{
-          if (ext==='stl'){
-            if (!THREE.STLLoader){ warn('STLLoader missing.'); done(new THREE.Mesh()); return; }
-            const bytes=b64ToUint8(meshDB[keyFound]);
-            const loader=new THREE.STLLoader();
-            const geom=loader.parse(bytes.buffer);
-            geom.computeVertexNormals();
-            done(new THREE.Mesh(
-              geom,
-              new THREE.MeshStandardMaterial({ color:0x8aa1ff, roughness:0.85, metalness:0.15, side:THREE.DoubleSide })
-            ));
-            return;
-          }
-          if (ext==='dae'){
-            if (daeCache.has(keyFound)){ done(daeCache.get(keyFound).clone(true)); return; }
-            if (!THREE.ColladaLoader){ warn('ColladaLoader missing.'); done(new THREE.Mesh()); return; }
-            const daeText=b64ToText(meshDB[keyFound]);
-            const mgr=new THREE.LoadingManager();
-            mgr.setURLModifier((url)=>{
-              const tries2=variantsFor(url);
-              for (const k2 of tries2){
-                const key2=normKey(k2);
-                if (meshDB[key2]){
-                  const mime = MIME[key2.split('.').pop()] || 'application/octet-stream';
-                  return `data:${mime};base64,${meshDB[key2]}`;
-                }
-              }
-              return url;
-            });
-            const loader=new THREE.ColladaLoader(mgr);
-            const collada=loader.parse(daeText,'');
-            const obj=collada.scene || new THREE.Object3D();
-            daeCache.set(keyFound, obj);
-            done(obj.clone(true));
-            return;
-          }
-          done(new THREE.Mesh());
-        }catch(e){ warn('loadMeshCb error', e); done(new THREE.Mesh()); }
+    urdfLoader.loadMeshCb = (path, manager, onComplete)=>{
+      const tries = variantsFor(path);
+      let keyFound=null;
+      for (const k of tries){ const kk=normKey(k); if (meshDB[kk]){ keyFound=kk; break; } }
+      if (!keyFound){ onComplete(new THREE.Mesh()); return; }
+      pendingMeshes++;
+      const done=(mesh)=>{
+        applyDoubleSided(mesh);
+        onComplete(mesh);
+        pendingMeshes--; scheduleFit();
       };
-    }
+      const ext = keyFound.split('.').pop();
+      try{
+        if (ext==='stl'){
+          const bytes=b64ToUint8(meshDB[keyFound]);
+          const loader=new THREE.STLLoader();
+          const geom=loader.parse(bytes.buffer);
+          geom.computeVertexNormals();
+          done(new THREE.Mesh(
+            geom,
+            new THREE.MeshStandardMaterial({ color:0x8aa1ff, roughness:0.85, metalness:0.15, side:THREE.DoubleSide })
+          ));
+          return;
+        }
+        if (ext==='dae'){
+          if (daeCache.has(keyFound)){ done(daeCache.get(keyFound).clone(true)); return; }
+          const daeText=b64ToText(meshDB[keyFound]);
+          const mgr=new THREE.LoadingManager();
+          mgr.setURLModifier((url)=>{
+            const tries2=variantsFor(url);
+            for (const k2 of tries2){
+              const key2=normKey(k2);
+              if (meshDB[key2]){
+                const mime = MIME[key2.split('.').pop()] || 'application/octet-stream';
+                return `data:${mime};base64,${meshDB[key2]}`;
+              }
+            }
+            return url;
+          });
+          const loader=new THREE.ColladaLoader(mgr);
+          const collada=loader.parse(daeText,'');
+          const obj=collada.scene || new THREE.Object3D();
+          daeCache.set(keyFound, obj);
+          done(obj.clone(true));
+          return;
+        }
+        // Fallback
+        done(new THREE.Mesh());
+      }catch(_e){ done(new THREE.Mesh()); }
+    };
 
     const api = { scene, camera, renderer, controls, robotModel:null, linkSet:null };
     const raycaster = new THREE.Raycaster();
@@ -363,6 +344,7 @@
         ds.value += delta * fine; setJointValue(api.robotModel, ds.joint, ds.value); return;
       }
 
+      // revolute/continuous
       let applied=false; const hit=new THREE.Vector3();
       if (raycaster.ray.intersectPlane(ds.dragPlane, hit)){
         let r1 = hit.clone().sub(ds.originW);
@@ -423,7 +405,6 @@
 
     // Load URDF text
     function loadURDF(urdfText){
-      if (!root.URDFLoader){ return; }
       if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
       pendingMeshes=0;
       try{
@@ -434,7 +415,7 @@
           api.linkSet = markLinksAndJoints(api.robotModel);
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
         }
-      } catch(e){ warn('URDF parse error', e); }
+      } catch(_e){}
     }
 
     function animate(){
@@ -442,138 +423,93 @@
       controls.update(); renderer.render(scene, camera);
     }
 
-    // ---------- UI (BODY-mounted) ----------
+    // ---------- UI: centered button + scrollable panel ----------
     function createUI(){
-      const isBody = (uiHost === document.body);
-
-      // Visible frame + banner for 3s so you SEE the layer
-      (function showDebugOverlay(){
-        const border = document.createElement('div');
-        Object.assign(border.style, {
-          position: isBody ? 'fixed' : 'absolute',
-          inset: '0',
-          border: '10px solid red',
-          boxSizing: 'border-box',
-          zIndex: String(MAX_Z),
-          pointerEvents: 'none',
-          animation: 'urdf-blink 600ms step-end infinite'
-        });
-        const banner = document.createElement('div');
-        banner.textContent = 'UI LAYER MOUNTED';
-        Object.assign(banner.style, {
-          position: isBody ? 'fixed' : 'absolute',
-          left: '12px', top: '12px',
-          padding: '6px 10px',
-          background: 'red',
-          color: '#fff',
-          fontWeight: '800',
-          borderRadius: '8px',
-          zIndex: String(MAX_Z),
-          pointerEvents: 'none'
-        });
-        const style = document.createElement('style');
-        style.textContent = '@keyframes urdf-blink { 50% { opacity: 0.35; } }';
-        document.head.appendChild(style);
-        document.body.appendChild(border);
-        document.body.appendChild(banner);
-        setTimeout(()=>{ border.remove(); banner.remove(); style.remove(); }, 3000);
-      })();
-
-      // Root overlay
-      const rootEl = document.createElement('div');
-      Object.assign(rootEl.style, {
-        position: isBody ? 'fixed' : 'absolute',
-        left: '0', top: '0', width: '100%', height: '100%',
+      // Root overlay anchored to container
+      const root = document.createElement('div');
+      Object.assign(root.style, {
+        position: 'absolute',
+        left: '0', top: '0',
+        width: '100%', height: '100%',
         pointerEvents: 'none',
-        zIndex: String(MAX_Z),
+        zIndex: '9999',
         fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // Button (huge + red so you cannot miss it)
+      // Centered button
       const btn = document.createElement('button');
       btn.textContent = 'Components';
       Object.assign(btn.style, {
         position: 'absolute',
-        right: '16px',
-        bottom: '16px',
-        padding: '14px 18px',
-        borderRadius: '16px',
-        border: '2px solid #b91c1c',
-        background: '#ef4444',
-        color: '#fff',
-        fontSize: '16px',
-        fontWeight: '800',
+        left: '50%',
+        top: '50%',
+        transform: 'translate(-50%, -50%)',
+        padding: '12px 16px',
+        borderRadius: '14px',
+        border: '1px solid #d0d0d0',
+        background: '#ffffff',
+        boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
+        fontWeight: '700',
         cursor: 'pointer',
-        boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
-        pointerEvents: 'auto',
-        zIndex: String(MAX_Z)
+        pointerEvents: 'auto'
       });
 
-      // Panel
+      // Panel (still bottom-right of the render for practicality)
       const panel = document.createElement('div');
       Object.assign(panel.style, {
         position: 'absolute',
-        right: '16px',
-        bottom: '84px',
-        width: '380px',
-        maxWidth: 'calc(100vw - 32px)',
+        right: '14px',
+        bottom: '14px',
+        width: '360px',
         maxHeight: '65%',
         background: '#ffffff',
-        border: '2px solid #111827',
-        boxShadow: '0 20px 40px rgba(0,0,0,0.25)',
-        borderRadius: '18px',
+        border: '1px solid #e4e4e7',
+        boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
+        borderRadius: '16px',
         overflow: 'hidden',
         display: 'none',
-        pointerEvents: 'auto',
-        zIndex: String(MAX_Z)
+        pointerEvents: 'auto'
       });
 
       const header = document.createElement('div');
       header.textContent = 'Components';
       Object.assign(header.style, {
-        padding: '12px 16px',
+        padding: '10px 14px',
         fontWeight: '800',
-        borderBottom: '1px solid #e5e7eb',
-        background: '#f9fafb'
+        borderBottom: '1px solid #eee',
+        background: '#fafafa'
       });
 
       const list = document.createElement('div');
       Object.assign(list.style, {
         overflowY: 'auto',
-        maxHeight: 'calc(65vh - 56px)',
-        padding: '12px'
+        maxHeight: 'calc(65vh - 48px)',
+        padding: '10px'
       });
 
       panel.appendChild(header);
       panel.appendChild(list);
-      rootEl.appendChild(panel);
-      rootEl.appendChild(btn);
-      uiHost.appendChild(rootEl);
+      root.appendChild(panel);
+      root.appendChild(btn);
+      container.appendChild(root);
 
       let builtOnce = false;
       btn.addEventListener('click', async ()=>{
-        panel.style.display = (panel.style.display === 'none') ? 'block' : 'none';
-        if (panel.style.display === 'block' && !builtOnce){
-          await buildGallery(list);
-          builtOnce = true;
+        if (panel.style.display === 'none'){
+          panel.style.display = 'block';
+          if (!builtOnce){ await buildGallery(list); builtOnce = true; }
+        } else {
+          panel.style.display = 'none';
         }
       });
 
-      // Auto-open after 1.5s so you still see it even if button missed
-      setTimeout(()=>{ btn.click(); }, 1500);
-
-      log('UI created on', uiHost);
-      return { root: rootEl, btn, panel, list };
+      return { root, btn, panel, list };
     }
 
     async function buildGallery(listEl){
       listEl.innerHTML = '';
       if (!api.robotModel || !api.linkSet || api.linkSet.size===0){
-        const p = document.createElement('div');
-        p.textContent = 'No components found (links not parsed yet).';
-        p.style.padding = '8px';
-        listEl.appendChild(p);
-        return;
+        listEl.textContent = 'No components found.'; return;
       }
 
       function setOthersVisibility(onlyLink){
@@ -623,35 +559,35 @@
         const row = document.createElement('div');
         Object.assign(row.style, {
           display: 'grid',
-          gridTemplateColumns: '104px 1fr',
-          gap: '12px',
+          gridTemplateColumns: '96px 1fr',
+          gap: '10px',
           alignItems: 'center',
-          padding: '10px',
+          padding: '8px',
           borderRadius: '12px',
-          border: '1px solid #e5e7eb',
-          marginBottom: '12px',
+          border: '1px solid #f0f0f0',
+          marginBottom: '10px',
           background: '#fff'
         });
 
         const img = document.createElement('img');
         Object.assign(img.style, {
-          width: '104px',
-          height: '78px',
+          width: '96px',
+          height: '72px',
           objectFit: 'contain',
-          background: '#f3f4f6',
+          background: '#fafafa',
           borderRadius: '10px',
-          border: '1px solid #e5e7eb'
+          border: '1px solid #eee'
         });
         img.alt = link.name || 'component';
 
         const meta = document.createElement('div');
         const title = document.createElement('div');
         title.textContent = link.name || '(unnamed link)';
-        Object.assign(title.style, { fontWeight: '800', fontSize: '14px' });
+        Object.assign(title.style, { fontWeight: '700', fontSize: '14px' });
 
         const desc = document.createElement('div');
         desc.textContent = descriptions[link.name] || 'Hello world';
-        Object.assign(desc.style, { color: '#4b5563', fontSize: '12px', marginTop: '4px' });
+        Object.assign(desc.style, { color: '#555', fontSize: '12px', marginTop: '4px' });
 
         meta.appendChild(title);
         meta.appendChild(desc);
@@ -664,7 +600,7 @@
           try{
             const url = await snapshotLink(link);
             img.src = url;
-          }catch(e){ warn('snapshot failed', e); }
+          }catch(_e){ /* ignore */ }
         })();
       }
     }
@@ -673,7 +609,7 @@
     // Public state
     state = { scene, camera, renderer, controls, api, onResize, raf:null, ui: null };
 
-    if (opts && opts.urdfContent && urdfLoader){ loadURDF(opts.urdfContent); }
+    loadURDF((opts && opts.urdfContent) || '');
     state.ui = createUI();
     animate();
 
