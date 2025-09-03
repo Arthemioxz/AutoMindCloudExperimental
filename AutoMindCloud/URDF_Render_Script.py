@@ -140,7 +140,7 @@ def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
-  <script src="https://cdn.jsdelivr.net/gh/ArtemioA/AutoMindCloudExperimental@989e373/AutoMindCloud/ComponentSelection.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/ArtemioA/AutoMindCloudExperimental@7a58842/AutoMindCloud/ComponentSelection.js"></script>
 
 "></script>
 
