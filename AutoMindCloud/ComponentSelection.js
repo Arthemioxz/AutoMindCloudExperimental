@@ -6,6 +6,8 @@
   let state = null;
 
   // ---------- Helpers ----------
+  console.log("Actualizado 1");
+  
   function normKey(s){ return String(s||'').replace(/\\/g,'/').toLowerCase(); }
   function variantsFor(path){
     const out = new Set(), p = normKey(path);
@@ -296,7 +298,5 @@
   URDFViewer.destroy=function(){try{cancelAnimationFrame(state?.raf);}catch{}; state=null;};
 
   root.URDFViewer=URDFViewer;
-
-  console.log("Actualizado 1");
 
 })(typeof window!=='undefined'?window:this);
