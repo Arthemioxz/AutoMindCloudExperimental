@@ -32,22 +32,11 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
     shutil.rmtree(tmp_extract, ignore_errors=True)
     return final_dir
 
-
 # -------------------------------
-# Genera el visor: carga JS (por URL o inline) y manda urdfContent + meshDB + sound
+# Genera el visor: carga JS (por URL o inline) y manda urdfContent + meshDB
 # -------------------------------
-def URDF_Render(
-    folder_path="Model",
-    js_url=None,
-    inline_js_text=None,
-    select_mode="link",
-    background=0xf0f0f0,
-    *,
-    # ---- NEW: sound integration ----
-    sound_base64=None,  # string con base64 del MP3 (con o sin prefijo data:)
-    click_volume=1.0,   # volumen [0..1]
-    sound_js_url="https://cdn.jsdelivr.net/gh/ArtemioA/AutoMindCloudExperimental@master/AutoMindCloud/Sound.js",
-):
+def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
+                select_mode="link", background=0xf0f0f0):
     """
     Args:
       folder_path: carpeta con /urdf y /meshes
@@ -55,9 +44,6 @@ def URDF_Render(
       inline_js_text: contenido del archivo JS (fallback si no usas URL)
       select_mode: 'link' o 'mesh'
       background: color de fondo (int hex) o None
-      sound_base64: cadena base64 del MP3 para clicks
-      click_volume: volumen 0..1 para el sonido
-      sound_js_url: URL a Sound.js (debe cargarse antes del viewer)
     """
     # 1) localizar /urdf y /meshes
     def find_dirs(root):
@@ -72,9 +58,7 @@ def URDF_Render(
 
     urdf_dir, meshes_dir = find_dirs(folder_path)
     if not urdf_dir or not meshes_dir:
-        raise FileNotFoundError(
-            f"Could not find urdf/ and meshes/ inside '{folder_path}' (or one nested level)."
-        )
+        raise FileNotFoundError(f"Could not find urdf/ and meshes/ inside '{folder_path}' (or one nested level).")
 
     # 2) elegir el .urdf principal
     urdf_files = [f for f in os.listdir(urdf_dir) if f.lower().endswith(".urdf")]
@@ -124,28 +108,13 @@ def URDF_Render(
             add_entry(bn, p)
 
     # 5) HTML minimal que monta el visor y llama a URDFViewer.render
-    esc = lambda s: (s.replace('\\','\\\\')
-                      .replace('`','\\`')
-                      .replace('$','\\$')
-                      .replace("</script>","<\\/script>"))
+    esc = lambda s: (s.replace('\\','\\\\').replace('`','\\`').replace('$','\\$').replace("</script>","<\\/script>"))
     urdf_js  = esc(urdf_raw)
     mesh_js  = json.dumps(mesh_db)
     bg_js    = 'null' if (background is None) else str(int(background))
     sel_js   = json.dumps(select_mode)
 
-    # Normalizar base64 (permitir con o sin prefijo data:)
-    def sanitize_b64(b64s):
-        if not b64s:
-            return ""
-        s = str(b64s).strip()
-        # quitar posibles saltos de línea para evitar errores de inyección
-        s = s.replace("\n", "").replace("\r", "")
-        return s
-
-    sound_b64_js = json.dumps(sanitize_b64(sound_base64))
-    click_volume_js = json.dumps(float(click_volume))
-
-    # Contenedor + estilos + librerías
+    # Contenedor + estilos
     base_html = f"""
 <!doctype html>
 <html lang="en">
@@ -171,13 +140,13 @@ def URDF_Render(
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/ArtemioA/AutoMindCloudExperimental@2316a55/AutoMindCloud/ComponentSelection.js"></script>
+
+"></script>
+
 """
 
-    # Cargar Sound.js si se proporcionó URL (antes del viewer)
-    if sound_js_url:
-        base_html += f'  <script src="{sound_js_url}"></script>\n'
-
-    # Cargar el viewer JS de dos formas: por URL (preferido) o inline (fallback)
+    # Cargar el JS de dos formas: por URL (preferido) o inline (fallback)
     if js_url:
         base_html += f'  <script src="{js_url}"></script>\n'
     elif inline_js_text:
@@ -191,7 +160,6 @@ def URDF_Render(
   <script>
     (function(){{
       const container = document.getElementById('app');
-
       // asegurar tamaño al cargar
       const ensureSize = () => {{
         container.style.width = window.innerWidth + 'px';
@@ -204,12 +172,8 @@ def URDF_Render(
         urdfContent: `{urdf_js}`,
         meshDB: {mesh_js},
         selectMode: {sel_js},
-        background: {bg_js},
-        // ---- Sound options passed into URDFViewer ----
-        soundBase64: {sound_b64_js},
-        clickVolume: {click_volume_js}
+        background: {bg_js}
       }};
-
       if (!window.URDFViewer || !window.URDFViewer.render) {{
         console.error("URDFViewer not loaded");
         return;
