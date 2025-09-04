@@ -256,5 +256,5 @@ def show_latex_paragraph(s: str):
 
 def Resume():
   global documento
-  IPython.display.display(show_latex_paragraph(polli_text("Primero haz un resumen general de lo que crees que hace esa secuencia de pasos sin entrar al detalle. Después haz una enumeración profesional explicando paso por paso (y pon un espacio entre cada enumeración). Di lo que crees que son las funciones (no digas como probablemente es...): "+ documento)))
+  IPython.display.display(show_latex_paragraph(polli_text("Primero haz un resumen general de lo que crees que hace esa secuencia de pasos sin entrar al detalle. Después haz una enumeración explicando paso por paso (y pon un espacio entre cada enumeración). Di lo que crees que son las funciones (no digas como probablemente es...): "+ documento)))
   
