@@ -256,5 +256,5 @@ def show_latex_paragraph(s: str):
 
 def Resume():
   global documento
-  IPython.display.display(show_latex_paragraph(polli_text("Explicame de forma enumerada que hace esta secuencia de pasos  y inicialmente pon (Resumen, no digas algo como Claro, aquí...) en terminos generales, sin entrar al detalle. No me expliques paso por paso, solo dime que hace de forma Precisa y profesional (y pon un espacio entre cada enumeracion). Arriesgate en decir que son las funciones, no digas como probablemente es..., intenta predecir de que area de la ingeniería son (física, economía, finanzas, etc...): " + documento)))
+  IPython.display.display(show_latex_paragraph(polli_text("Explicame de forma enumerada que hace esta secuencia de pasos  y inicialmente pon (Resumen, no digas algo como Claro, aquí...) en terminos generales, sin entrar al detalle. No me expliques paso por paso, solo dime que hace de forma Precisa y profesional (y pon un espacio entre cada enumeracion). Di exactamente que crees que son las funciones (no digas como probablemente es..): " + documento)))
   
