@@ -49,6 +49,7 @@ def URDF_Render(folder_path="Model",
     - If inject_three_libs=True, injects three/controls/URDFLoader/Collada (optional).
     """
     import os, re, json, base64
+    from IPython.display import HTML
 
     # Find optional urdf/meshes so we can render if a viewer exists elsewhere
     def find_dirs(root):
@@ -124,5 +125,98 @@ def URDF_Render(folder_path="Model",
 """
 
     html = f"""<!doctype html>
-<html
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>ComponentSelection Loader Only</title>
+<style>
+  html,body {{ margin:0; height:100%; overflow:hidden; background:#f0f0f0; }}
+  #app {{ position:fixed; inset:0; }}
+  .badge{{ position:fixed; right:14px; bottom:12px; z-index:10; user-select:none; pointer-events:none; }}
+  .badge img{{ max-height:40px; display:block; }}
+</style>
+</head>
+<body>
+  <div id="app"></div>
+  <div class="badge">
+    <img src="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png" alt="badge"/>
+  </div>
+{libs_html}
+  <!-- Dynamic loader: ONLY ComponentSelection.js from latest commit (fallback to @branch) -->
+  <script>
+    (async function() {{
+      const repo = {json.dumps(repo)};
+      const branch = {json.dumps(branch)};
+      const compFile = {json.dumps(compFile)};
+
+      function loadScript(url) {{
+        return new Promise((resolve, reject) => {{
+          const s = document.createElement("script");
+          s.src = url;
+          s.defer = true;
+          s.onload = () => {{ console.log("Loaded:", url); resolve(url); }};
+          s.onerror = () => {{ console.warn("Failed:", url); reject(new Error("load fail")); }};
+          document.head.appendChild(s);
+        }});
+      }}
+
+      async function getVersion() {{
+        try {{
+          const api = `https://api.github.com/repos/${{repo}}/commits/${{branch}}?_=${{Date.now()}}`;
+          const r = await fetch(api, {{ headers: {{ "Accept":"application/vnd.github+json" }}, cache: "no-store" }});
+          if (!r.ok) throw new Error("GitHub API " + r.status);
+          const j = await r.json();
+          const sha = (j.sha||"").slice(0,7);
+          return sha || branch;
+        }} catch(e) {{
+          console.warn("Using fallback @branch due to API error:", e);
+          return branch;
+        }}
+      }}
+
+      const ver = await getVersion();
+      const base = `https://cdn.jsdelivr.net/gh/${{repo}}@${{ver}}/`;
+
+      try {{
+        await loadScript(base + compFile);
+      }} catch(e) {{
+        await loadScript(`https://cdn.jsdelivr.net/gh/${{repo}}@${{branch}}/` + compFile);
+      }}
+
+      // Render ONLY if THREE + URDFViewer.render + URDF data exist
+      const haveTHREE = (typeof window.THREE !== 'undefined');
+      const haveViewer = (window.URDFViewer && typeof window.URDFViewer.render === 'function');
+      const haveURDF = {json.dumps(bool(urdf_raw))};
+
+      if (haveTHREE && haveViewer && haveURDF) {{
+        const container = document.getElementById('app');
+        const ensureSize = () => {{
+          container.style.width = window.innerWidth + 'px';
+          container.style.height = window.innerHeight + 'px';
+        }};
+        ensureSize(); window.addEventListener('resize', ensureSize);
+
+        const opts = {{
+          container,
+          urdfContent: `{urdf_js}`,
+          meshDB: {mesh_js},
+          selectMode: {sel_js},
+          background: {bg_js}
+        }};
+
+        try {{
+          window.__URDF_APP__ = window.URDFViewer.render(opts);
+          console.log("URDFViewer.render executed.");
+        }} catch (err) {{
+          console.warn("URDFViewer.render failed (skipping):", err);
+        }}
+      }} else {{
+        console.log("Skipping render: haveTHREE=", haveTHREE, " haveViewer=", haveViewer, " haveURDF=", haveURDF);
+      }}
+    }})();
+  </script>
+</body>
+</html>
+"""
+    return HTML(html)
 
