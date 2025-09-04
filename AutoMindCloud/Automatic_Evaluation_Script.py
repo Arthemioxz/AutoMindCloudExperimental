@@ -38,6 +38,10 @@ Color = ""
 def Inicializar(n,color):
   
   global DatosList,Orden,Color#Documento
+
+  global documento
+
+  documento = ""
   
   DatosList = []
 
@@ -123,6 +127,9 @@ def D(elemento):#Por default se imprime en rojo, para indicar que es un derivado
     texto = a + b + c
     #texto = texto.replace("text", Estilo)
 
+    global docymento
+
+    documento += "$\\textcolor{"+Color+"}{"+texto+"}$"
     IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+texto+"}$"))
     #Documento.append(texto)
 
@@ -135,18 +142,27 @@ def D(elemento):#Por default se imprime en rojo, para indicar que es un derivado
     b = " = "
 
     if c_componente[1] == c_componente[0]:#== None:<---------------------------------------------------------------------------------------------------------------------------
-      c = "?"
+      c = "None"
     else:
       c = sympy.latex(Redondear(c_componente[1]))
     
     texto = a + b + c
       #texto = texto.replace("text", Estilo)
+
+    global documento
+
+    documento = "$\\textcolor{"+Color+"}{"+texto+"}$"
+    
     IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+texto+"}$"))
     #Documento.append(texto)
 
 
 def R(string):
   #global DatosList,Orden,Color#Documento
+
+  global documento
+
+  documento += "$\\textcolor{"+Color+"}{"+string+"}$"
   IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+string+"}$"))
   
 def E(expr):
@@ -160,17 +176,32 @@ def E(expr):
   #display(Color)
 
   #IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+"400"+"}$"))
-
+  global documento
+  
   if isinstance(expr,sympy.core.relational.Equality):#Si tenemos una igualdad
     izquierda = expr.args[0]
     derecha = expr.args[1]
     #texto = RenderLatex(izquierda) + " = " + RenderLatex(derecha)
     texto = RenderLatex([izquierda,DatosList]) + " = " + RenderLatex([derecha,DatosList])
 
+    
+
+    documento += "$\\textcolor{"+Color+"}{"+texto+"}$"
+    
     return IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+texto+"}$"))
   elif isinstance(expr,list):#Si tenemos un componente
     texto = sympy.latex(expr[0]) + " = " + RenderLatex([expr[1],DatosList])
+
+    documento += "$\\textcolor{"+Color+"}{"+texto+"}$"
     return IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+texto+"}$"))
   elif isinstance(expr,sympy.core.mul.Mul):
     texto = RenderLatex([expr,DatosList])#latemix(expr)
+
+    documento += "$\\textcolor{"+Color+"}{"+texto+"}$"
+    
     return IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+texto+"}$"))
+
+def DisplayDocumento():
+  global documento
+
+  IPython.display.display(documento)
