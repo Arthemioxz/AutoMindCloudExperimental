@@ -258,7 +258,7 @@ def Resume(numero):
   global documento
 
   if numero == 1:
-    IPython.display.display(show_latex_paragraph(polli_text("Primero haz un resumen general formalmente de lo que crees que hacen los calculos sin entrar al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración explicando paso por paso (y pon un espacio entre cada enumeración).: "+ documento)))
+    IPython.display.display(show_latex_paragraph(polli_text("Primero haz un resumen general formalmente de lo que crees que hacen los calculos sin entrar al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración explicando paso por paso (y pon un espacio entre cada enumeración) (Recuerda usar $$ para el latex que usaste).: "+ documento)))
   elif numero ==2:
-    IPython.display.display(show_latex_paragraph(polli_text("Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración más precisa explicando paso por paso (y pon un espacio entre cada enumeración). Finalmente quiero que uses latex para renderizar las expresiones simbolicas: "+ documento)))
+    IPython.display.display(show_latex_paragraph(polli_text("Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración más precisa explicando paso por paso (y pon un espacio entre cada enumeración). (Recuerda usar $$ para el latex que usaste): "+ documento)))
   
