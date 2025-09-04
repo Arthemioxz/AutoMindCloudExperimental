@@ -226,7 +226,7 @@ def E(expr):
     
     return IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+texto+"}$"))
 
-def Documento():
+def DocumentoStr():
   global documento
 
   return documento
