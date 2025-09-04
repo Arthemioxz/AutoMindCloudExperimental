@@ -4,15 +4,21 @@
    - Opens a scrollable panel with off-screen thumbnails (no flicker)
    - Click an item => HARD-ISOLATE that asset on screen
    - "Show all" button restores visibility & frames model
-   - Plays click sound via window.Sound (if available), else fallback beep
-   - Assumes URDFViewer has tagged meshes with userData.__assetKey (as in your urdf_viewer.js)
+   - Plays click sound via window.Sound for EVERY <button> click (global delegation)
+   - Also plays on component-row clicks (div rows)
+   - Assumes URDFViewer has tagged meshes with userData.__assetKey
+
+   How audio is wired:
+   - Load AutoMindCloud/Sound.js before this file.
+   - Either call Sound.setFromBase64(yourB64) yourself, or set window.AUDIO_B64 = "data:audio/mp3;base64,...."
+     and this file will auto-initialize Sound once.
 
    API:
      ComponentSelection.attach(viewer, {
        descriptions?: { [assetBaseName]: string },
-       panelWidth?: number,   // default 420
-       panelMaxHeightVh?: number, // default 72
-       buttonLabel?: string,  // default "Components"
+       panelWidth?: number,        // default 420
+       panelMaxHeightVh?: number,  // default 72
+       buttonLabel?: string,       // default "Components"
      })
 */
 (function (root) {
@@ -59,7 +65,7 @@
     controls.target.copy(center); controls.update();
   }
 
-  // ----- Sound helpers -----
+  // ----- Sound wiring -----
   function fallbackBeep(){
     const AC = root.AudioContext || root.webkitAudioContext;
     if (!AC) return;
@@ -76,18 +82,43 @@
     osc.start(now);
     osc.stop(now + 0.08);
   }
-  async function playClick(){
-    if (root.Sound && root.Sound.isReady) {
-      try{
-        if (root.Sound.isReady()){
-          const ok = await root.Sound.play(1.0);
-          if (!ok) fallbackBeep();
-          return;
-        }
-      }catch(_e){}
+
+  async function ensureSoundReadyOnce(){
+    // If developer set window.AUDIO_B64, auto-prepare Sound
+    if (root.AUDIO_B64 && root.Sound && root.Sound.setFromBase64) {
+      try { await root.Sound.setFromBase64(root.AUDIO_B64); } catch(_e){}
     }
-    fallbackBeep();
   }
+  let _soundInitStarted = false;
+  function lazyInitSound(){
+    if (_soundInitStarted) return;
+    _soundInitStarted = true;
+    ensureSoundReadyOnce();
+  }
+
+  async function playClick(){
+    if (root.Sound && root.Sound.isReady && root.Sound.isReady()){
+      try {
+        const ok = await root.Sound.play(1.0);
+        if (!ok) fallbackBeep();
+      } catch (_e) {
+        fallbackBeep();
+      }
+    } else {
+      fallbackBeep();
+    }
+  }
+
+  // Global delegation: play sound for EVERY <button> click (even future buttons)
+  document.addEventListener('click', (e)=>{
+    const btn = e.target && e.target.closest && e.target.closest('button');
+    if (btn){
+      lazyInitSound(); // make sure Sound is prepared if AUDIO_B64 provided
+      // Avoid double-trigger if the click was programmatically generated quickly
+      // A single play per user click is fine.
+      playClick();
+    }
+  }, { passive: true, capture: false });
 
   // ----- Build a per-asset index from the viewer's robot model -----
   function buildAssetIndexFromRobot(robot){
@@ -263,7 +294,7 @@
       cursor: 'pointer',
       pointerEvents: 'auto'
     });
-    btn.addEventListener('click', ()=>{ playClick(); });
+    // NOTE: no direct playClick here; global button delegation handles sound.
 
     // Panel (right side)
     const panel = document.createElement('div');
@@ -308,8 +339,8 @@
       fontWeight: '700',
       cursor: 'pointer'
     });
+    // NOTE: no direct playClick here; global button delegation handles sound.
     showAllBtn.addEventListener('click', ()=>{
-      playClick();
       showAllAndFrame(viewer);
     });
 
@@ -393,7 +424,7 @@
         objectFit: 'contain',
         background: '#fafafa',
         borderRadius: '10px',
-        border: '1px solid #eee'
+        border: '1px solid '#eee'
       });
       img.alt = ent.base;
 
@@ -418,8 +449,9 @@
       row.appendChild(meta);
       listEl.appendChild(row);
 
-      // Click isolates
+      // Component row clicks (div), not a button → explicitly play sound here
       row.addEventListener('click', ()=>{
+        lazyInitSound();
         playClick();
         isolateAssetOnScreen(viewer, assetToMeshes, ent.assetKey);
       });
@@ -440,6 +472,8 @@
       console.warn('[ComponentSelection] Invalid viewer instance.');
       return null;
     }
+    // Attempt to init sound if AUDIO_B64 exists (safe no-op otherwise)
+    lazyInitSound();
     return createUI(viewer, options || {});
   };
 
