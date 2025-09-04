@@ -42,7 +42,7 @@ def URDF_Render(
     background=0xf0f0f0,
     repo="ArtemioA/AutoMindCloudExperimental",      # owner/repo
     compFile="AutoMindCloud/ComponentSelection.js", # JS to load from latest commit
-    ensure_three=True
+    ensure_three=False
 ):
     import os, re, json, base64
     from IPython.display import HTML
