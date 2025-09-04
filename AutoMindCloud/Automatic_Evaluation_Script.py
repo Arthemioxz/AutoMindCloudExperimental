@@ -49,7 +49,7 @@ def Inicializar(n,color):
 
   Color = color
 
-  return DatosList
+  return DatosList,documento
 
 def search(symbolo,DatosList):
 
