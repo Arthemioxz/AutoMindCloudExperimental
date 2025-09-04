@@ -114,7 +114,6 @@ def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
     bg_js    = 'null' if (background is None) else str(int(background))
     sel_js   = json.dumps(select_mode)
 
-    # Contenedor + estilos
     base_html = f"""
 <!doctype html>
 <html lang="en">
@@ -140,13 +139,35 @@ def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
-  <script src="https://cdn.jsdelivr.net/gh/ArtemioA/AutoMindCloudExperimental@9417382/AutoMindCloud/ComponentSelection.js"></script>
 
-"></script>
+  <!-- Dynamic loader: always pull latest commit's ComponentSelection.js from main -->
+  <script>
+    (async function() {{
+      const repo = "ArtemioA/AutoMindCloudExperimental";
+      const branch = "main";
+      const filePath = "AutoMindCloud/ComponentSelection.js";
+      try {{
+        const r = await fetch(`https://api.github.com/repos/${{repo}}/commits/${{branch}}`);
+        if (!r.ok) throw new Error("GitHub API HTTP " + r.status);
+        const j = await r.json();
+        const shortSha = (j.sha || "").slice(0, 7);
+        if (!shortSha) throw new Error("No SHA from GitHub API");
 
+        const cdnUrl = `https://cdn.jsdelivr.net/gh/${{repo}}@${{shortSha}}/${{filePath}}`;
+        const s = document.createElement("script");
+        s.src = cdnUrl;
+        s.defer = true;
+        s.onload = () => console.log("ComponentSelection loaded:", cdnUrl);
+        s.onerror = () => console.error("Failed to load ComponentSelection:", cdnUrl);
+        document.head.appendChild(s);
+      }} catch (err) {{
+        console.error("Dynamic ComponentSelection load failed:", err);
+      }}
+    }})();
+  </script>
 """
 
-    # Cargar el JS de dos formas: por URL (preferido) o inline (fallback)
+    # Cargar el JS principal del visor: por URL (preferido) o inline (fallback)
     if js_url:
         base_html += f'  <script src="{js_url}"></script>\n'
     elif inline_js_text:
@@ -160,7 +181,6 @@ def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
   <script>
     (function(){{
       const container = document.getElementById('app');
-      // asegurar tamaño al cargar
       const ensureSize = () => {{
         container.style.width = window.innerWidth + 'px';
         container.style.height = window.innerHeight + 'px';
@@ -185,3 +205,4 @@ def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
 </html>
 """
     return HTML(base_html)
+
