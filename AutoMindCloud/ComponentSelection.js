@@ -9,12 +9,36 @@
    - Skips images; dedup path variants per basename (DAE > STL > STEP; then largest).
    - Auto-scales DAE via <unit meter="...">.
    - UI: bottom-left “Components” toggle, “Show all” button in the gallery header.
+
+   Sound integration:
+   - Load AutoMindCloud/Sound.js before this file.
+   - Pass { soundBase64: '...base64...' , clickVolume: 1.0 } to URDFViewer.render(opts)
+   - Every UI button click will call Sound.play(volume) if ready.
 */
 (function (root) {
   'use strict';
 
   const URDFViewer = {};
   let state = null;
+
+  // ---------- Sound helpers ----------
+  let CLICK_VOLUME = 1.0;
+  async function tryInitSound(b64){
+    try {
+      if (b64 && root.Sound && typeof root.Sound.setFromBase64 === 'function') {
+        await root.Sound.setFromBase64(b64);
+      }
+    } catch (e) {
+      console.warn('[URDFViewer] Failed to init sound from base64:', e);
+    }
+  }
+  function playClick(){
+    try {
+      if (root.Sound && typeof root.Sound.play === 'function' && root.Sound.isReady && root.Sound.isReady()) {
+        root.Sound.play(CLICK_VOLUME);
+      }
+    } catch (_e) {}
+  }
 
   // ---------- Helpers ----------
   function normKey(s){ return String(s||'').replace(/\\/g,'/').toLowerCase(); }
@@ -224,13 +248,19 @@
    *   container: HTMLElement (default document.body),
    *   urdfContent: string,
    *   meshDB: { key -> base64 },
-   *   selectMode: 'link'|'mesh' (default 'link')  // for gray hover overlay behavior
+   *   selectMode: 'link'|'mesh' (default 'link')
    *   background: number (hex) or null,
-   *   descriptions: { [assetBaseName]: string }
+   *   descriptions: { [assetBaseName]: string },
+   *   soundBase64?: string,     // <-- NEW: Base64 MP3 to init Sound
+   *   clickVolume?: number      // <-- NEW: default 1.0
    * }
    */
   URDFViewer.render = function(opts){
     if (state) URDFViewer.destroy();
+
+    // Sound init (non-blocking)
+    CLICK_VOLUME = (opts && typeof opts.clickVolume === 'number') ? opts.clickVolume : 1.0;
+    if (opts && opts.soundBase64) { tryInitSound(opts.soundBase64); }
 
     const container = opts?.container || document.body;
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
@@ -692,7 +722,8 @@
         fontWeight: '700',
         cursor: 'pointer'
       });
-      showAllBtn.addEventListener('click', showAllAndFrame);
+      // SOUND on click
+      showAllBtn.addEventListener('click', ()=>{ playClick(); showAllAndFrame(); });
 
       header.appendChild(headerTitle);
       header.appendChild(showAllBtn);
@@ -712,6 +743,7 @@
 
       let builtOnce = false;
       btn.addEventListener('click', async ()=>{
+        playClick(); // SOUND on toggle
         if (panel.style.display === 'none'){
           panel.style.display = 'block';
           if (!builtOnce){ await buildGallery(list); builtOnce = true; }
@@ -779,7 +811,7 @@
         Object.assign(small.style, { color: '#777', fontSize: '12px', marginTop: '2px' });
 
         const desc = document.createElement('div');
-        desc.textContent = descriptions[ent.base] || ' ';
+        desc.textContent = (descriptions && descriptions[ent.base]) || ' ';
         Object.assign(desc.style, { color: '#555', fontSize: '12px', marginTop: '4px' });
 
         meta.appendChild(title);
@@ -790,7 +822,9 @@
         row.appendChild(meta);
         listEl.appendChild(row);
 
+        // SOUND + action on row click
         row.addEventListener('click', ()=>{
+          playClick();
           isolateAssetOnScreen(ent.assetKey);
         });
 
