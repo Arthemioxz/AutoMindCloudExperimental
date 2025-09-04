@@ -76,7 +76,7 @@ def Inicializar(n,color):
 
   Color = color
 
-  return DatosList,documento
+  return DatosList
 
 def search(symbolo,DatosList):
 
@@ -254,7 +254,7 @@ def show_latex_paragraph(s: str):
     # 4) Mostrar como párrafo Markdown (MathJax renderiza \( ... \), \[ ... \], $$ ... $$)
     return IPython.display.Markdown(s)
 
-def Resumen():
+def Resume():
   global documento
   IPython.display.display(show_latex_paragraph(polli_text("Explicame de forma enumerada que hace esta secuencia de pasos de Sympy y inicialmente pon (Resumen, no digas algo como Claro, aquí...) en terminos generales, ""sin entrar al detalle. No me expliques paso por paso, solo dime que hace de forma Precisa y profesional (y pon un espacio entre cada enumeracion): " + documento)))
   
