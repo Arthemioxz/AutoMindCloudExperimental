@@ -8,37 +8,17 @@
    - Thumbnails are captured OFF-SCREEN with the same isolation (no flicker).
    - Skips images; dedup path variants per basename (DAE > STL > STEP; then largest).
    - Auto-scales DAE via <unit meter="...">.
-   - UI: bottom-left “Components” toggle, “Show all” button in the gallery header.
-
-   Sound integration:
-   - Load AutoMindCloud/Sound.js before this file.
-   - Pass { soundBase64: '...base64...' , clickVolume: 1.0 } to URDFViewer.render(opts)
-   - Every UI button click will call Sound.play(volume) if ready.
+   - UI: bottom-left "Components" toggle, "Show all" button in the gallery header.
+   - NEW:
+     * Plays a click sound on any <button> click and component-row click
+     * Logs + on-screen toast: "sound played"
+     * Accepts opts.audioB64 (base64 MP3) or opts.audioUrl
 */
 (function (root) {
   'use strict';
 
   const URDFViewer = {};
   let state = null;
-
-  // ---------- Sound helpers ----------
-  let CLICK_VOLUME = 1.0;
-  async function tryInitSound(b64){
-    try {
-      if (b64 && root.Sound && typeof root.Sound.setFromBase64 === 'function') {
-        await root.Sound.setFromBase64(b64);
-      }
-    } catch (e) {
-      console.warn('[URDFViewer] Failed to init sound from base64:', e);
-    }
-  }
-  function playClick(){
-    try {
-      if (root.Sound && typeof root.Sound.play === 'function' && root.Sound.isReady && root.Sound.isReady()) {
-        root.Sound.play(CLICK_VOLUME);
-      }
-    } catch (_e) {}
-  }
 
   // ---------- Helpers ----------
   function normKey(s){ return String(s||'').replace(/\\/g,'/').toLowerCase(); }
@@ -52,13 +32,11 @@
   }
   function basenameNoExt(p){
     const q = String(p||'').split('/').pop().split('?')[0].split('#')[0];
-    const dot = q.lastIndexOf('.');
-    return dot>=0 ? q.slice(0,dot) : q;
+    const dot = q.lastIndexOf('.'); return dot>=0 ? q.slice(0,dot) : q;
   }
   function extOf(p){
     const q = String(p||'').split('?')[0].split('#')[0];
-    const dot = q.lastIndexOf('.');
-    return dot>=0 ? q.slice(dot+1).toLowerCase() : '';
+    const dot = q.lastIndexOf('.'); return dot>=0 ? q.slice(dot+1).toLowerCase() : '';
   }
   function approxByteLenFromB64(b64){ return Math.floor(String(b64||'').length * 3 / 4); }
 
@@ -74,7 +52,7 @@
       const b64 = meshDB[kk];
       if (!b64) continue;
       const ext = extOf(kk);
-      if (!ALLOWED_EXTS.has(ext)) continue; // skip images/others
+      if (!ALLOWED_EXTS.has(ext)) continue;
       const base = basenameNoExt(kk);
       const arr = groups.get(base) || [];
       arr.push({ key: kk, ext, bytes: approxByteLenFromB64(b64), prio: extPriority[ext] ?? 0 });
@@ -251,16 +229,12 @@
    *   selectMode: 'link'|'mesh' (default 'link')
    *   background: number (hex) or null,
    *   descriptions: { [assetBaseName]: string },
-   *   soundBase64?: string,     // <-- NEW: Base64 MP3 to init Sound
-   *   clickVolume?: number      // <-- NEW: default 1.0
+   *   audioB64: string (base64 MP3)   // <<< NEW
+   *   audioUrl: string (URL to MP3)   // <<< NEW
    * }
    */
   URDFViewer.render = function(opts){
     if (state) URDFViewer.destroy();
-
-    // Sound init (non-blocking)
-    CLICK_VOLUME = (opts && typeof opts.clickVolume === 'number') ? opts.clickVolume : 1.0;
-    if (opts && opts.soundBase64) { tryInitSound(opts.soundBase64); }
 
     const container = opts?.container || document.body;
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
@@ -308,6 +282,50 @@
     }
     window.addEventListener('resize', onResize);
 
+    // ---------- === SOUND ENGINE === ----------
+    // Converts base64 MP3 -> Blob URL; or uses provided URL as-is.
+    function b64ToBlobUrl(b64, mime='audio/mpeg'){
+      if (!b64) return null;
+      try{
+        const bin = atob(b64);
+        const len = bin.length;
+        const bytes = new Uint8Array(len);
+        for (let i=0;i<len;i++) bytes[i] = bin.charCodeAt(i);
+        const blob = new Blob([bytes], {type: mime});
+        return URL.createObjectURL(blob);
+      }catch(_){ return `data:${mime};base64,${b64}`; }
+    }
+
+    const soundUrl =
+      (opts && typeof opts.audioB64 === 'string' && opts.audioB64.trim()
+        ? b64ToBlobUrl(opts.audioB64.trim(), 'audio/mpeg')
+        : (opts && typeof opts.audioUrl === 'string' ? opts.audioUrl : null));
+
+    // Simple play function that tolerates parallel clicks (clones the audio).
+    function playClick(){
+      if (!soundUrl) return;
+      try{
+        const a = new Audio(soundUrl);
+        a.play().catch(()=>{ /* autoplay restrictions or user gesture needed */ });
+      }catch(_){}
+      // "print"
+      console.log("sound played");
+      toast("sound played");
+    }
+
+    // Small floating toast
+    let toastTimer=null;
+    function toast(msg){
+      // build once
+      if (!state?.ui?.toastEl) return;
+      const el = state.ui.toastEl;
+      el.textContent = msg;
+      el.style.opacity = '1';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(()=>{ el.style.opacity = '0'; }, 700);
+    }
+    // ---------- === END SOUND ENGINE === ----------
+
     // Loader + mesh callbacks
     const urdfLoader = new URDFLoader();
     const textDecoder = new TextDecoder();
@@ -338,7 +356,7 @@
       const bestKey = pickBestAsset(variantsFor(path), meshDB);
       if (!bestKey){ onComplete(new THREE.Mesh()); return; }
       const ext = extOf(bestKey);
-      if (!ALLOWED_EXTS.has(ext)){ onComplete(new THREE.Mesh()); return; } // safety
+      if (!ALLOWED_EXTS.has(ext)){ onComplete(new THREE.Mesh()); return; }
 
       const tagAndComplete = (obj)=>{
         obj.userData.__assetKey = bestKey;
@@ -380,7 +398,6 @@
 
           const mgr=new THREE.LoadingManager();
           mgr.setURLModifier((url)=>{
-            // for referenced resources in DAE (textures, etc.)
             const tries=variantsFor(url);
             const key = tries.map(normKey).find(k=>meshDB[k]);
             if (key){
@@ -398,7 +415,6 @@
           return;
         }
         if (ext==='step' || ext==='stp'){
-          // No STEP parser in this bundle—return empty mesh so scene remains valid.
           onComplete(new THREE.Mesh());
           pendingMeshes--; scheduleFit();
           return;
@@ -662,6 +678,26 @@
         fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
+      // Toast (for "sound played")
+      const toastEl = document.createElement('div');
+      Object.assign(toastEl.style, {
+        position: 'absolute',
+        left: '50%',
+        bottom: '18px',
+        transform: 'translateX(-50%)',
+        padding: '6px 10px',
+        borderRadius: '999px',
+        border: '1px solid #e5e7eb',
+        background: 'rgba(255,255,255,0.95)',
+        boxShadow: '0 8px 28px rgba(0,0,0,0.12)',
+        fontSize: '12px',
+        fontWeight: '600',
+        opacity: '0',
+        transition: 'opacity .18s ease',
+        pointerEvents: 'none'
+      });
+      root.appendChild(toastEl);
+
       // Bottom-left toggle button
       const btn = document.createElement('button');
       btn.textContent = 'Components';
@@ -678,6 +714,7 @@
         cursor: 'pointer',
         pointerEvents: 'auto'
       });
+      btn.addEventListener('click', ()=>{ playClick(); });
 
       // Panel
       const panel = document.createElement('div');
@@ -722,7 +759,6 @@
         fontWeight: '700',
         cursor: 'pointer'
       });
-      // SOUND on click
       showAllBtn.addEventListener('click', ()=>{ playClick(); showAllAndFrame(); });
 
       header.appendChild(headerTitle);
@@ -743,7 +779,6 @@
 
       let builtOnce = false;
       btn.addEventListener('click', async ()=>{
-        playClick(); // SOUND on toggle
         if (panel.style.display === 'none'){
           panel.style.display = 'block';
           if (!builtOnce){ await buildGallery(list); builtOnce = true; }
@@ -752,7 +787,12 @@
         }
       });
 
-      return { root, btn, panel, list, showAllBtn };
+      // Global button sound hook (any buttons we add later inside root)
+      root.addEventListener('click', (ev)=>{
+        if (ev.target && ev.target.tagName === 'BUTTON') playClick();
+      });
+
+      return { root, btn, panel, list, showAllBtn, toastEl };
     }
 
     // Build PER-FILE gallery (one item per assetKey that produced meshes)
@@ -811,7 +851,7 @@
         Object.assign(small.style, { color: '#777', fontSize: '12px', marginTop: '2px' });
 
         const desc = document.createElement('div');
-        desc.textContent = (descriptions && descriptions[ent.base]) || ' ';
+        desc.textContent = descriptions[ent.base] || ' ';
         Object.assign(desc.style, { color: '#555', fontSize: '12px', marginTop: '4px' });
 
         meta.appendChild(title);
@@ -822,9 +862,8 @@
         row.appendChild(meta);
         listEl.appendChild(row);
 
-        // SOUND + action on row click
         row.addEventListener('click', ()=>{
-          playClick();
+          playClick(); // sound + print
           isolateAssetOnScreen(ent.assetKey);
         });
 
@@ -843,7 +882,6 @@
 
     // Load URDF
     function loadURDF(urdfText){
-      // reset scene + maps
       if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
       if (state.off){ try{ state.off.renderer.dispose(); }catch(_){} state.off=null; }
 
