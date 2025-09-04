@@ -1,4 +1,4 @@
-/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer
+/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer 
    - Keeps original interactions:
      * OrbitControls camera rotate/zoom/pan
      * Gray hover overlay (mesh or link, via selectMode)
@@ -37,6 +37,28 @@
     return dot>=0 ? q.slice(dot+1).toLowerCase() : '';
   }
   function approxByteLenFromB64(b64){ return Math.floor(String(b64||'').length * 3 / 4); }
+
+  // --- Click sound (configurable via opts.clickSoundURL) ---
+  const DEFAULT_CLICK_URL =
+    'https://raw.githubusercontent.com/ArtemioA/AutoMindCloudExperimental/main/AutoMindCloud/click_sound.mp3';
+
+  function makeClickPlayer(url){
+    const audio = new Audio(url || DEFAULT_CLICK_URL);
+    audio.preload = 'auto';
+    audio.volume = 0.6;
+    let locked = false; // avoid overlapping replays in the same tick
+    return function playClick(){
+      if (locked) return;
+      locked = true;
+      try {
+        audio.currentTime = 0;
+        const p = audio.play();
+        if (p && typeof p.catch === 'function') p.catch(()=>{ /* ignore autoplay-policy errors */ });
+      } finally {
+        setTimeout(()=>{ locked = false; }, 0);
+      }
+    };
+  }
 
   // Component files allowed for gallery isolation
   const ALLOWED_EXTS = new Set(['dae','stl','step','stp']);
@@ -226,7 +248,8 @@
    *   meshDB: { key -> base64 },
    *   selectMode: 'link'|'mesh' (default 'link')  // for gray hover overlay behavior
    *   background: number (hex) or null,
-   *   descriptions: { [assetBaseName]: string }
+   *   descriptions: { [assetBaseName]: string },
+   *   clickSoundURL: string (optional)  // custom click SFX
    * }
    */
   URDFViewer.render = function(opts){
@@ -238,6 +261,9 @@
     const selectMode = (opts && opts.selectMode) || 'link';
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
+
+    // Click-sound player
+    const playClick = makeClickPlayer(opts && opts.clickSoundURL);
 
     // Scene
     const scene = new THREE.Scene();
@@ -692,7 +718,10 @@
         fontWeight: '700',
         cursor: 'pointer'
       });
-      showAllBtn.addEventListener('click', showAllAndFrame);
+      showAllBtn.addEventListener('click', ()=>{
+        playClick();
+        showAllAndFrame();
+      });
 
       header.appendChild(headerTitle);
       header.appendChild(showAllBtn);
@@ -712,6 +741,7 @@
 
       let builtOnce = false;
       btn.addEventListener('click', async ()=>{
+        playClick();
         if (panel.style.display === 'none'){
           panel.style.display = 'block';
           if (!builtOnce){ await buildGallery(list); builtOnce = true; }
@@ -791,6 +821,7 @@
         listEl.appendChild(row);
 
         row.addEventListener('click', ()=>{
+          playClick();
           isolateAssetOnScreen(ent.assetKey);
         });
 
