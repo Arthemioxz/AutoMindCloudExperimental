@@ -1,62 +1,15 @@
-# urdf_render.py
-import base64, re, os, json, shutil, zipfile
-from IPython.display import HTML
-import gdown
-
-# -------------------------------
-# Descarga y extracción de ZIP con /urdf y /meshes
-# -------------------------------
-def Download_URDF(Drive_Link, Output_Name="Model"):
-    root_dir = "/content"
-    file_id = Drive_Link.split('/d/')[1].split('/')[0]
-    download_url = f"https://drive.google.com/uc?id={file_id}"
-    zip_path = os.path.join(root_dir, Output_Name + ".zip")
-    tmp_extract = os.path.join(root_dir, f"__tmp_extract_{Output_Name}")
-    final_dir = os.path.join(root_dir, Output_Name)
-
-    if os.path.exists(tmp_extract): shutil.rmtree(tmp_extract)
-    os.makedirs(tmp_extract, exist_ok=True)
-    if os.path.exists(final_dir): shutil.rmtree(final_dir)
-
-    gdown.download(download_url, zip_path, quiet=True)
-    with zipfile.ZipFile(zip_path, 'r') as zf:
-        zf.extractall(tmp_extract)
-
-    def is_junk(n): return n.startswith('.') or n == '__MACOSX'
-    top = [n for n in os.listdir(tmp_extract) if not is_junk(n)]
-    if len(top) == 1 and os.path.isdir(os.path.join(tmp_extract, top[0])):
-        shutil.move(os.path.join(tmp_extract, top[0]), final_dir)
-    else:
-        os.makedirs(final_dir, exist_ok=True)
-        for n in top:
-            shutil.move(os.path.join(tmp_extract, n), os.path.join(final_dir, n))
-    shutil.rmtree(tmp_extract, ignore_errors=True)
-    return final_dir
-
-
-# -------------------------------
-# Render + carga automática del último commit de un archivo JS de tu repo
-# -------------------------------
 def URDF_Render(
     folder_path="Model",
     select_mode="link",
     background=0xf0f0f0,
     repo="ArtemioA/AutoMindCloudExperimental",      # owner/repo
-    compFile="AutoMindCloud/ComponentSelection.js", # JS a cargar desde el último commit
+    compFile="AutoMindCloud/ComponentSelection.js", # JS to load from latest commit
     ensure_three=True
 ):
-    """
-    - Auto-detecta la default branch (main/master) del repo.
-    - Pide a la API de GitHub el último commit SHA de esa rama.
-    - Carga compFile desde jsDelivr pinneado al commit (evita el caché de @latest).
-      Fallbacks: jsDelivr @branch -> raw.githubusercontent.com @commit -> raw @branch.
-    - Si existen URDF y meshes, intenta renderizar con URDFViewer (si ya está presente).
-    - Si THREE no existe y ensure_three=True, carga THREE + OrbitControls + loaders.
-    """
     import os, re, json, base64
     from IPython.display import HTML
 
-    # ---- Buscar URDF + meshes y empaquetarlos en base64 para la vista ----
+    # ---- find URDF + meshes ----
     def find_dirs(root):
         d_u, d_m = os.path.join(root, "urdf"), os.path.join(root, "meshes")
         if os.path.isdir(d_u) and os.path.isdir(d_m):
@@ -80,7 +33,7 @@ def URDF_Render(
                 urdf_raw = f.read()
 
             mesh_refs = re.findall(r'filename="([^"]+\.(?:stl|dae))"', urdf_raw, re.IGNORECASE)
-            mesh_refs = list(dict.fromkeys(mesh_refs))  # unique preserve order
+            mesh_refs = list(dict.fromkeys(mesh_refs))
 
             disk_files = []
             for root, _, files in os.walk(meshes_dir):
@@ -114,7 +67,6 @@ def URDF_Render(
                 if bn.endswith((".png", ".jpg", ".jpeg")) and bn not in mesh_db:
                     add_entry(bn, p)
 
-    # ---- Preparar HTML seguro ----
     esc = lambda s: (s.replace('\\', '\\\\')
                       .replace('`', '\\`')
                       .replace('$', '\\$')
@@ -132,14 +84,10 @@ def URDF_Render(
 <style>
   html,body {{ margin:0; height:100%; overflow:hidden; background:#f0f0f0; }}
   #app {{ position:fixed; inset:0; }}
-  .badge {{
-    position:fixed; right:14px; bottom:12px; z-index:10; user-select:none; pointer-events:none;
-  }}
+  .badge {{ position:fixed; right:14px; bottom:12px; z-index:10; user-select:none; pointer-events:none; }}
   .badge img {{ max-height:40px; display:block; }}
-  .ver {{
-    position:fixed; left:10px; bottom:10px; font:12px/1.2 monospace; background:#fff8;
-    padding:6px 8px; border-radius:8px; z-index:20;
-  }}
+  .ver {{ position:fixed; left:10px; bottom:10px; font:12px/1.2 monospace; background:#fff8;
+          padding:6px 8px; border-radius:8px; z-index:20; }}
 </style>
 </head>
 <body>
@@ -151,18 +99,16 @@ def URDF_Render(
 
 <script>
 (async function() {{
-  const repo = {json.dumps(repo)};                         // "owner/repo"
-  const filePath = {json.dumps(compFile)};                 // e.g. "AutoMindCloud/ComponentSelection.js"
+  const repo = {json.dumps(repo)};
+  const filePath = {json.dumps(compFile)};
   const needThree = {str(bool(ensure_three)).lower()};
   const haveURDF = {json.dumps(bool(urdf_raw))};
   const verBox = document.getElementById('verBox');
 
-  // --- helpers ---
   function loadScript(url) {{
     return new Promise((resolve, reject) => {{
       const s = document.createElement('script');
-      s.src = url;
-      s.async = true;
+      s.src = url; s.async = true;
       s.onload = () => resolve(url);
       s.onerror = () => reject(new Error("Failed to load " + url));
       document.head.appendChild(s);
@@ -170,16 +116,13 @@ def URDF_Render(
   }}
   async function fetchJson(url) {{
     const r = await fetch(url, {{
-      headers: {{
-        "Accept":"application/vnd.github+json"
-      }},
+      headers: {{ "Accept":"application/vnd.github+json" }},
       cache: "no-store"
     }});
     if (!r.ok) throw new Error("HTTP " + r.status + " for " + url);
     return r.json();
   }}
   async function getDefaultBranch() {{
-    // GET /repos/{{repo}} -> default_branch
     try {{
       const j = await fetchJson(`https://api.github.com/repos/${{repo}}?_=${{Date.now()}}`);
       return j.default_branch || 'main';
@@ -189,36 +132,28 @@ def URDF_Render(
     }}
   }}
   async function getLatestCommitSha(branch) {{
-    // GET /repos/{{repo}}/commits?sha={{branch}}&per_page=1
     try {{
       const j = await fetchJson(`https://api.github.com/repos/${{repo}}/commits?sha=${{branch}}&per_page=1&_=${{Date.now()}}`);
-      // API returns an array (newer endpoint) or an object if you call /commits/{branch}
+      // NOTE: API returns an array (newer endpoint) or an object if you call /commits/${{branch}}
       if (Array.isArray(j) && j[0] && j[0].sha) return j[0].sha;
       if (!Array.isArray(j) && j.sha) return j.sha;
       throw new Error("No SHA in response");
     }} catch (e) {{
       console.warn("Latest commit fallback to branch due to:", e);
-      return null; // caller will fallback to branch
+      return null;
     }}
   }}
-  function jsDelivrAt(ref) {{
-    // ref can be commit SHA or branch name
-    return `https://cdn.jsdelivr.net/gh/${{repo}}@${{ref}}/${{filePath}}`;
-  }}
-  function rawAt(ref) {{
-    return `https://raw.githubusercontent.com/${{repo}}/${{ref}}/${{filePath}}`;
-  }}
+  function jsDelivrAt(ref) {{ return `https://cdn.jsdelivr.net/gh/${{repo}}@${{ref}}/${{filePath}}`; }}
+  function rawAt(ref)      {{ return `https://raw.githubusercontent.com/${{repo}}/${{ref}}/${{filePath}}`; }}
 
-  // --- resolve version and load target file, with layered fallbacks ---
   const branch = await getDefaultBranch();
-  let sha = await getLatestCommitSha(branch);  // may be null on failure
+  let sha = await getLatestCommitSha(branch);
   let resolvedRef = sha || branch;
   let loadedFrom = "jsDelivr@commit";
 
   verBox.textContent = "repo: " + repo + " | branch: " + branch + (sha ? (" | commit: " + sha.slice(0,7)) : " | (using branch)");
 
   try {{
-    // Primary: jsDelivr pinned to commit
     if (sha) {{
       await loadScript(jsDelivrAt(sha));
     }} else {{
@@ -227,35 +162,27 @@ def URDF_Render(
   }} catch (e1) {{
     console.warn("Primary failed:", e1);
     try {{
-      // Fallback 1: jsDelivr @branch
       await loadScript(jsDelivrAt(branch) + "?_=" + Date.now());
-      loadedFrom = "jsDelivr@branch";
-      resolvedRef = branch;
+      loadedFrom = "jsDelivr@branch"; resolvedRef = branch;
     }} catch (e2) {{
       console.warn("Fallback 1 failed:", e2);
       try {{
-        // Fallback 2: raw.githubusercontent.com @commit
         if (sha) {{
           await loadScript(rawAt(sha) + "?_=" + Date.now());
-          loadedFrom = "raw@commit";
-          resolvedRef = sha;
+          loadedFrom = "raw@commit"; resolvedRef = sha;
         }} else {{
           throw new Error("No SHA for raw@commit");
         }}
       }} catch (e3) {{
         console.warn("Fallback 2 failed:", e3);
-        // Fallback 3: raw.githubusercontent.com @branch
         await loadScript(rawAt(branch) + "?_=" + Date.now());
-        loadedFrom = "raw@branch";
-        resolvedRef = branch;
+        loadedFrom = "raw@branch"; resolvedRef = branch;
       }}
     }}
   }}
 
-  verBox.textContent += " | loaded: " + loadedFrom +
-                        " | ref: " + (resolvedRef ? resolvedRef.slice(0,7) : branch);
+  verBox.textContent += " | loaded: " + loadedFrom + " | ref: " + (resolvedRef ? resolvedRef.slice(0,7) : branch);
 
-  // --- optionally ensure THREE if we'll render a URDF and URDFViewer exists ---
   const haveViewer = (window.URDFViewer && typeof window.URDFViewer.render === 'function');
   let haveTHREE = (typeof window.THREE !== 'undefined');
 
@@ -272,7 +199,6 @@ def URDF_Render(
     }}
   }}
 
-  // --- render if everything's available ---
   if (haveTHREE && haveViewer && haveURDF) {{
     const container = document.getElementById('app');
     const ensureSize = () => {{
@@ -283,7 +209,7 @@ def URDF_Render(
 
     const opts = {{
       container,
-      urdfContent: `{urdf_js}`,
+      urdfContent: `{esc(urdf_raw) if urdf_raw else ""}`,
       meshDB: {mesh_js},
       selectMode: {sel_js},
       background: {bg_js}
