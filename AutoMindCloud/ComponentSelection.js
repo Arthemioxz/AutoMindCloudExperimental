@@ -38,25 +38,75 @@
   }
   function approxByteLenFromB64(b64){ return Math.floor(String(b64||'').length * 3 / 4); }
 
-  // --- Click sound (configurable via opts.clickSoundURL) ---
+  // --- Click sound (WebAudio with HTMLAudio fallback) ---
   const DEFAULT_CLICK_URL =
     'https://raw.githubusercontent.com/ArtemioA/AutoMindCloudExperimental/main/AutoMindCloud/click_sound.mp3';
 
-  function makeClickPlayer(url){
-    const audio = new Audio(url || DEFAULT_CLICK_URL);
-    audio.preload = 'auto';
-    audio.volume = 0.6;
-    let locked = false; // avoid overlapping replays in the same tick
-    return function playClick(){
-      if (locked) return;
-      locked = true;
-      try {
-        audio.currentTime = 0;
-        const p = audio.play();
-        if (p && typeof p.catch === 'function') p.catch(()=>{ /* ignore autoplay-policy errors */ });
-      } finally {
-        setTimeout(()=>{ locked = false; }, 0);
+  function makeWebAudioClick(url){
+    const soundURL = url || DEFAULT_CLICK_URL;
+    let ctx = null, buffer = null, ready = false, loading = false;
+    let htmlAudio = null; // fallback
+
+    async function ensureCtx(ev){
+      if (!ctx){
+        const AC = window.AudioContext || window.webkitAudioContext;
+        ctx = AC ? new AC() : null;
       }
+      if (ctx && ctx.state === 'suspended'){
+        try { await ctx.resume(); } catch(_) {}
+      }
+      return !!ctx;
+    }
+
+    async function loadBuffer(){
+      if (ready || loading) return;
+      loading = true;
+      try{
+        const resp = await fetch(soundURL, { mode:'cors', cache:'force-cache' });
+        const arr = await resp.arrayBuffer();
+        const decoded = await (ctx.decodeAudioData
+          ? new Promise((res,rej)=>ctx.decodeAudioData(arr, res, rej))
+          : null);
+        buffer = decoded; ready = !!buffer;
+      }catch(_){
+        // Fallback: HTMLAudio (still user-gesture gated, but simple)
+        htmlAudio = new Audio(soundURL);
+        htmlAudio.crossOrigin = 'anonymous';
+        htmlAudio.preload = 'auto';
+        htmlAudio.volume = 0.6;
+        ready = true;
+      }finally{ loading = false; }
+    }
+
+    // Returned function to play the click
+    return async function playClick(ev){
+      // Try WebAudio first (lowest latency)
+      const haveCtx = await ensureCtx(ev);
+      if (haveCtx && !ready) await loadBuffer();
+
+      if (haveCtx && buffer){
+        try{
+          const src = ctx.createBufferSource();
+          src.buffer = buffer;
+          const gain = ctx.createGain();
+          gain.gain.value = 0.7;
+          src.connect(gain).connect(ctx.destination);
+          src.start(0);
+          return;
+        }catch(_){}
+      }
+      // Fallback path
+      try{
+        if (!htmlAudio){
+          htmlAudio = new Audio(soundURL);
+          htmlAudio.crossOrigin = 'anonymous';
+          htmlAudio.preload = 'auto';
+          htmlAudio.volume = 0.6;
+        }
+        htmlAudio.currentTime = 0;
+        const p = htmlAudio.play();
+        if (p && typeof p.catch === 'function') p.catch(()=>{});
+      }catch(_){}
     };
   }
 
@@ -246,10 +296,10 @@
    *   container: HTMLElement (default document.body),
    *   urdfContent: string,
    *   meshDB: { key -> base64 },
-   *   selectMode: 'link'|'mesh' (default 'link')  // for gray hover overlay behavior
+   *   selectMode: 'link'|'mesh' (default 'link')
    *   background: number (hex) or null,
    *   descriptions: { [assetBaseName]: string },
-   *   clickSoundURL: string (optional)  // custom click SFX
+   *   clickSoundURL: string (optional)
    * }
    */
   URDFViewer.render = function(opts){
@@ -262,8 +312,8 @@
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
 
-    // Click-sound player
-    const playClick = makeClickPlayer(opts && opts.clickSoundURL);
+    // Click-sound player (WebAudio)
+    const playClick = makeWebAudioClick(opts && opts.clickSoundURL);
 
     // Scene
     const scene = new THREE.Scene();
@@ -718,8 +768,8 @@
         fontWeight: '700',
         cursor: 'pointer'
       });
-      showAllBtn.addEventListener('click', ()=>{
-        playClick();
+      showAllBtn.addEventListener('click', (ev)=>{
+        playClick(ev);
         showAllAndFrame();
       });
 
@@ -740,8 +790,8 @@
       container.appendChild(root);
 
       let builtOnce = false;
-      btn.addEventListener('click', async ()=>{
-        playClick();
+      btn.addEventListener('click', async (ev)=>{
+        playClick(ev);   // first user gesture will also resume AudioContext
         if (panel.style.display === 'none'){
           panel.style.display = 'block';
           if (!builtOnce){ await buildGallery(list); builtOnce = true; }
@@ -820,8 +870,8 @@
         row.appendChild(meta);
         listEl.appendChild(row);
 
-        row.addEventListener('click', ()=>{
-          playClick();
+        row.addEventListener('click', (ev)=>{
+          playClick(ev);
           isolateAssetOnScreen(ent.assetKey);
         });
 
