@@ -230,3 +230,31 @@ def DocumentoStr():
   global documento
 
   return documento
+
+import re
+from IPython.display import display, Markdown
+
+# -------- TEXTO --------
+import requests, urllib.parse
+
+def polli_text(prompt: str) -> str:
+    url = "https://text.pollinations.ai/" + urllib.parse.quote(prompt, safe="")
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
+    return r.text  # respuesta en texto plano
+
+def show_latex_paragraph(s: str):
+    # 1) Quitar bloques ```latex ... ```
+    s = re.sub(r"```(?:latex)?|```", "", s, flags=re.IGNORECASE).strip()
+    # 2) Si todo viene envuelto en \text{ ... }, desenvolver
+    if s.startswith(r"\text{") and s.endswith("}"):
+        s = s[6:-1]
+    # 3) Convertir saltos LaTeX "\\" a saltos de línea Markdown
+    s = s.replace(r"\\ ", "  \n").replace(r"\\", "  \n")
+    # 4) Mostrar como párrafo Markdown (MathJax renderiza \( ... \), \[ ... \], $$ ... $$)
+    return IPython.display.Markdown(s)
+
+def Resumen():
+  global documento
+  show_latex_paragraph(polli_text("Explicame de forma enumerada que hace esta secuencia de pasos de Sympy y inicialmente pon (Resumen, no digas algo como Claro, aquí...) en terminos generales, ""sin entrar al detalle. No me expliques paso por paso, solo dime que hace de forma Precisa y profesional (y pon un espacio entre cada enumeracion): " + documento))
+  
