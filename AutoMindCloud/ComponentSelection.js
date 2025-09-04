@@ -11,7 +11,7 @@
    - UI: bottom-left "Components" toggle, "Show all" button in the gallery header.
    - NEW:
      * Plays a click sound on any <button> click and component-row click
-     * Logs + on-screen toast: "sound played"
+     * Prints: "Sound Played and print base64 audio <...>" every time sound should play
      * Accepts opts.audioB64 (base64 MP3) or opts.audioUrl
 */
 (function (root) {
@@ -283,7 +283,6 @@
     window.addEventListener('resize', onResize);
 
     // ---------- === SOUND ENGINE === ----------
-    // Converts base64 MP3 -> Blob URL; or uses provided URL as-is.
     function b64ToBlobUrl(b64, mime='audio/mpeg'){
       if (!b64) return null;
       try{
@@ -296,27 +295,31 @@
       }catch(_){ return `data:${mime};base64,${b64}`; }
     }
 
+    // Clean base64 (remove whitespace/newlines) so the printed value is canonical
+    const audioB64Clean =
+      (opts && typeof opts.audioB64 === 'string') ? opts.audioB64.replace(/\s+/g,'') : '';
+
     const soundUrl =
-      (opts && typeof opts.audioB64 === 'string' && opts.audioB64.trim()
-        ? b64ToBlobUrl(opts.audioB64.trim(), 'audio/mpeg')
+      (audioB64Clean
+        ? b64ToBlobUrl(audioB64Clean, 'audio/mpeg')
         : (opts && typeof opts.audioUrl === 'string' ? opts.audioUrl : null));
 
-    // Simple play function that tolerates parallel clicks (clones the audio).
     function playClick(){
+      // Print EXACT required phrase with the base64 value (or note if none)
+      const toPrint = audioB64Clean || '(no base64 provided)';
+      console.log('Sound Played and print base64 audio', toPrint);
+      toast('Sound Played and print base64 audio');
+
       if (!soundUrl) return;
       try{
         const a = new Audio(soundUrl);
-        a.play().catch(()=>{ /* autoplay restrictions or user gesture needed */ });
+        a.play().catch(()=>{ /* autoplay policy may require user gesture */ });
       }catch(_){}
-      // "print"
-      console.log("sound played");
-      toast("sound played");
     }
 
     // Small floating toast
     let toastTimer=null;
     function toast(msg){
-      // build once
       if (!state?.ui?.toastEl) return;
       const el = state.ui.toastEl;
       el.textContent = msg;
@@ -585,18 +588,14 @@
       const meshes = off.cloneAssetToMeshes.get(assetKey) || [];
       if (!meshes.length) return null;
 
-      // Save visibility
       const vis = [];
       off.robotClone.traverse(o=>{
         if (o.isMesh && o.geometry) vis.push([o, o.visible]);
       });
 
-      // Hide ALL
       for (const [m] of vis) m.visible = false;
-      // Show ONLY this asset's meshes
       for (const m of meshes) m.visible = true;
 
-      // Frame
       const box = computeUnionBox(meshes);
       if (!box){ vis.forEach(([o,v])=>o.visible=v); return null; }
       const center = box.getCenter(new THREE.Vector3());
@@ -619,7 +618,6 @@
       off.renderer.render(off.scene, off.camera);
       const url = off.renderer.domElement.toDataURL('image/png');
 
-      // Restore vis
       for (const [o,v] of vis) o.visible = v;
 
       return url;
@@ -637,14 +635,11 @@
 
     function isolateAssetOnScreen(assetKey){
       const meshes = assetToMeshes.get(assetKey) || [];
-      // Hide ALL
       api.robotModel.traverse(o=>{
         if (o.isMesh && o.geometry) o.visible = false;
       });
-      // Show ONLY that asset's meshes
       for (const m of meshes) m.visible = true;
 
-      // Frame
       const box = computeUnionBox(meshes);
       if (box){
         const center = box.getCenter(new THREE.Vector3());
@@ -667,7 +662,6 @@
 
     // ---------- UI: bottom-left toggle + right panel ----------
     function createUI(){
-      // Root overlay
       const root = document.createElement('div');
       Object.assign(root.style, {
         position: 'absolute',
@@ -678,7 +672,6 @@
         fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // Toast (for "sound played")
       const toastEl = document.createElement('div');
       Object.assign(toastEl.style, {
         position: 'absolute',
@@ -698,7 +691,6 @@
       });
       root.appendChild(toastEl);
 
-      // Bottom-left toggle button
       const btn = document.createElement('button');
       btn.textContent = 'Components';
       Object.assign(btn.style, {
@@ -716,7 +708,6 @@
       });
       btn.addEventListener('click', ()=>{ playClick(); });
 
-      // Panel
       const panel = document.createElement('div');
       Object.assign(panel.style, {
         position: 'absolute',
@@ -733,7 +724,6 @@
         pointerEvents: 'auto'
       });
 
-      // Header with title + Show all
       const header = document.createElement('div');
       Object.assign(header.style, {
         display: 'flex',
@@ -783,137 +773,3 @@
           panel.style.display = 'block';
           if (!builtOnce){ await buildGallery(list); builtOnce = true; }
         } else {
-          panel.style.display = 'none';
-        }
-      });
-
-      // Global button sound hook (any buttons we add later inside root)
-      root.addEventListener('click', (ev)=>{
-        if (ev.target && ev.target.tagName === 'BUTTON') playClick();
-      });
-
-      return { root, btn, panel, list, showAllBtn, toastEl };
-    }
-
-    // Build PER-FILE gallery (one item per assetKey that produced meshes)
-    async function buildGallery(listEl){
-      listEl.innerHTML = '';
-
-      // Collect entries
-      const entries = [];
-      assetToMeshes.forEach((meshes, assetKey)=>{
-        if (!meshes || !meshes.length) return;
-        const base = basenameNoExt(assetKey);
-        const ext = extOf(assetKey);
-        if (!ALLOWED_EXTS.has(ext)) return;
-        entries.push({ assetKey, base, ext, meshes });
-      });
-
-      entries.sort((a,b)=> a.base.localeCompare(b.base, undefined, {numeric:true, sensitivity:'base'}));
-
-      if (!entries.length){
-        listEl.textContent = 'No components with visual geometry found.'; return;
-      }
-
-      for (const ent of entries){
-        const row = document.createElement('div');
-        Object.assign(row.style, {
-          display: 'grid',
-          gridTemplateColumns: '128px 1fr',
-          gap: '12px',
-          alignItems: 'center',
-          padding: '10px',
-          borderRadius: '12px',
-          border: '1px solid #f0f0f0',
-          marginBottom: '10px',
-          background: '#fff',
-          cursor: 'pointer'
-        });
-
-        const img = document.createElement('img');
-        Object.assign(img.style, {
-          width: '128px',
-          height: '96px',
-          objectFit: 'contain',
-          background: '#fafafa',
-          borderRadius: '10px',
-          border: '1px solid #eee'
-        });
-        img.alt = ent.base;
-
-        const meta = document.createElement('div');
-        const title = document.createElement('div');
-        title.textContent = ent.base;
-        Object.assign(title.style, { fontWeight: '700', fontSize: '14px' });
-
-        const small = document.createElement('div');
-        small.textContent = `.${ent.ext} • ${ent.meshes.length} instance${ent.meshes.length>1?'s':''}`;
-        Object.assign(small.style, { color: '#777', fontSize: '12px', marginTop: '2px' });
-
-        const desc = document.createElement('div');
-        desc.textContent = descriptions[ent.base] || ' ';
-        Object.assign(desc.style, { color: '#555', fontSize: '12px', marginTop: '4px' });
-
-        meta.appendChild(title);
-        meta.appendChild(small);
-        if (desc.textContent.trim()) meta.appendChild(desc);
-
-        row.appendChild(img);
-        row.appendChild(meta);
-        listEl.appendChild(row);
-
-        row.addEventListener('click', ()=>{
-          playClick(); // sound + print
-          isolateAssetOnScreen(ent.assetKey);
-        });
-
-        (async ()=>{
-          try{
-            const url = await snapshotAssetOffscreen(ent.assetKey);
-            if (url) img.src = url;
-          }catch(_e){}
-        })();
-      }
-    }
-    // ---------- end UI ----------
-
-    // Public state holder
-    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
-
-    // Load URDF
-    function loadURDF(urdfText){
-      if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
-      if (state.off){ try{ state.off.renderer.dispose(); }catch(_){} state.off=null; }
-
-      try{
-        const robot = urdfLoader.parse(urdfText||'');
-        if (robot?.isObject3D){
-          api.robotModel=robot; scene.add(api.robotModel);
-          rectifyUpForward(api.robotModel);
-          api.linkSet = markLinksAndJoints(api.robotModel);
-          setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
-
-          // Build OFF-SCREEN rig now that meshes exist
-          state.off = buildOffscreenFromRobot();
-        }
-      } catch(_e){}
-    }
-
-    function animate(){
-      state.raf = requestAnimationFrame(animate);
-      controls.update(); renderer.render(scene, camera);
-    }
-
-    loadURDF((opts && opts.urdfContent) || '');
-    state.ui = createUI();
-    animate();
-
-    return {
-      scene, camera, renderer, controls,
-      get robot(){ return api.robotModel; },
-      openGallery(){ state.ui?.btn?.click?.(); }
-    };
-  };
-
-  root.URDFViewer = URDFViewer;
-})(typeof window!=='undefined' ? window : this);
