@@ -37,20 +37,20 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 # -------------------------------
 
 def URDF_Render(folder_path="Model",
-                select_mode="link",
-                background=0xf0f0f0,
-                comp_sha="2316a55",   # <- commit that "didn't show problems"
-                suppress_collada_warnings=True):
+                select_mode="link", background=0xf0f0f0,
+                repo="ArtemioA/AutoMindCloudExperimental",
+                branch="main",
+                compFile="AutoMindCloud/ComponentSelection.js",
+                ensure_three=True):
     """
-    - Pins Three.js stack to r132.2 (same as your initial code).
-    - Loads ComponentSelection.js pinned to `comp_sha`.
-    - Optionally suppresses Collada camera/light warnings.
-    - Renders only if window.THREE and window.URDFViewer.render exist.
+    - Loads ComponentSelection.js from the repo's latest commit (fallback to @branch).
+    - If URDFViewer exists and URDF data is available, it renders.
+    - If THREE is missing and ensure_three=True, auto-loads THREE + controls + loaders, then renders.
     """
     import os, re, json, base64
     from IPython.display import HTML
 
-    # ---- discover urdf/meshes (same as your initial code) ----
+    # Locate optional urdf/meshes so we can render if a viewer exists elsewhere
     def find_dirs(root):
         d_u, d_m = os.path.join(root,"urdf"), os.path.join(root,"meshes")
         if os.path.isdir(d_u) and os.path.isdir(d_m): return d_u, d_m
@@ -62,80 +62,61 @@ def URDF_Render(folder_path="Model",
         return None, None
 
     urdf_dir, meshes_dir = find_dirs(folder_path)
-    if not urdf_dir or not meshes_dir:
-        raise FileNotFoundError(f"Could not find urdf/ and meshes/ inside '{folder_path}' (or one nested level).")
+    urdf_raw, mesh_db = "", {}
 
-    urdf_files = [f for f in os.listdir(urdf_dir) if f.lower().endswith(".urdf")]
-    if not urdf_files:
-        raise FileNotFoundError(f"No .urdf file in {urdf_dir}")
-    urdf_path = os.path.join(urdf_dir, urdf_files[0])
-    with open(urdf_path, "r", encoding="utf-8") as f:
-        urdf_raw = f.read()
+    if urdf_dir and meshes_dir:
+        urdf_files = [f for f in os.listdir(urdf_dir) if f.lower().endswith(".urdf")]
+        if urdf_files:
+            urdf_path = os.path.join(urdf_dir, urdf_files[0])
+            with open(urdf_path, "r", encoding="utf-8") as f:
+                urdf_raw = f.read()
 
-    mesh_refs = re.findall(r'filename="([^"]+\.(?:stl|dae))"', urdf_raw, re.IGNORECASE)
-    mesh_refs = list(dict.fromkeys(mesh_refs))
+            mesh_refs = re.findall(r'filename="([^"]+\.(?:stl|dae))"', urdf_raw, re.IGNORECASE)
+            mesh_refs = list(dict.fromkeys(mesh_refs))
 
-    disk_files, by_basename = [], {}
-    for root, _, files in os.walk(meshes_dir):
-        for name in files:
-            if name.lower().endswith((".stl",".dae",".png",".jpg",".jpeg")):
-                p = os.path.join(root, name)
-                disk_files.append(p)
-    by_basename = {os.path.basename(p).lower(): p for p in disk_files}
+            disk_files = []
+            for root, _, files in os.walk(meshes_dir):
+                for name in files:
+                    if name.lower().endswith((".stl",".dae",".png",".jpg",".jpeg")):
+                        disk_files.append(os.path.join(root, name))
+            by_basename = {os.path.basename(p).lower(): p for p in disk_files}
 
-    _cache={}
-    def b64(path):
-        if path not in _cache:
-            with open(path, "rb") as f:
-                _cache[path] = base64.b64encode(f.read()).decode("ascii")
-        return _cache[path]
+            _cache={}
+            def b64(path):
+                if path not in _cache:
+                    with open(path, "rb") as f:
+                        _cache[path] = base64.b64encode(f.read()).decode("ascii")
+                return _cache[path]
 
-    mesh_db = {}
-    def add_entry(key, path):
-        k = key.replace("\\","/").lower()
-        if k not in mesh_db: mesh_db[k] = b64(path)
+            def add_entry(key, path):
+                k = key.replace("\\","/").lower()
+                if k not in mesh_db: mesh_db[k] = b64(path)
 
-    for ref in mesh_refs:
-        base = os.path.basename(ref).lower()
-        if base in by_basename:
-            real = by_basename[base]
-            add_entry(ref, real)
-            add_entry(ref.replace("package://",""), real)
-            add_entry(base, real)
+            for ref in mesh_refs:
+                base = os.path.basename(ref).lower()
+                if base in by_basename:
+                    real = by_basename[base]
+                    add_entry(ref, real)
+                    add_entry(ref.replace("package://",""), real)
+                    add_entry(base, real)
 
-    for p in disk_files:
-        bn = os.path.basename(p).lower()
-        if bn.endswith((".png",".jpg",".jpeg")) and bn not in mesh_db:
-            add_entry(bn, p)
+            for p in disk_files:
+                bn = os.path.basename(p).lower()
+                if bn.endswith((".png",".jpg",".jpeg")) and bn not in mesh_db:
+                    add_entry(bn, p)
 
-    # ---- HTML (pinned stack + pinned ComponentSelection) ----
+    # Prepare HTML
     esc = lambda s: (s.replace('\\','\\\\').replace('`','\\`').replace('$','\\$').replace("</script>","<\\/script>"))
-    urdf_js  = esc(urdf_raw)
+    urdf_js  = esc(urdf_raw) if urdf_raw else ""
     mesh_js  = json.dumps(mesh_db)
     bg_js    = 'null' if (background is None) else str(int(background))
     sel_js   = json.dumps(select_mode)
-
-    silence_js = ""
-    if suppress_collada_warnings:
-        silence_js = """
-  <script>
-  (function(){
-    const o = console.warn.bind(console);
-    console.warn = function(...a){
-      const s = String(a[0]||"");
-      if (s.startsWith("THREE.ColladaLoader: File version")) return;
-      if (s.startsWith("THREE.ColladaLoader: Couldn't find camera") ||
-          s.startsWith("THREE.ColladaLoader: Couldn't find light")) return;
-      o(...a);
-    };
-  })();
-  </script>"""
 
     html = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<title>URDF Viewer</title>
+<title>ComponentSelection + Auto-THREE</title>
 <style>
   html,body {{ margin:0; height:100%; overflow:hidden; background:#f0f0f0; }}
   #app {{ position:fixed; inset:0; }}
@@ -149,47 +130,89 @@ def URDF_Render(folder_path="Model",
     <img src="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png" alt="badge"/>
   </div>
 
-  {silence_js}
-
-  <!-- pinned libs: same as your initial code -->
-  <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
-
-  <!-- pinned ComponentSelection commit -->
-  <script src="https://cdn.jsdelivr.net/gh/ArtemioA/AutoMindCloudExperimental@{comp_sha}/AutoMindCloud/ComponentSelection.js"></script>
-
-  <!-- If URDFViewer is present, render; otherwise do nothing -->
   <script>
-    (function(){
-      const container = document.getElementById('app');
-      const ensureSize = () => {{
-        container.style.width = window.innerWidth + 'px';
-        container.style.height = window.innerHeight + 'px';
-      }};
-      ensureSize(); window.addEventListener('resize', ensureSize);
+    (async function() {{
+      const repo = {json.dumps(repo)};
+      const branch = {json.dumps(branch)};
+      const compFile = {json.dumps(compFile)};
+      const needThree = {str(bool(ensure_three)).lower()};
+      const haveURDF = {json.dumps(bool(urdf_raw))};
 
-      const canRender = (typeof window.THREE !== 'undefined') &&
-                        (window.URDFViewer && typeof window.URDFViewer.render === 'function');
-
-      if (!canRender) {{
-        console.log("Viewer not present yet (ok).");
-        return;
+      function loadScript(url){{
+        return new Promise((res, rej) => {{
+          const s = document.createElement('script');
+          s.src = url; s.defer = true;
+          document.head.appendChild(s);
+        }});
       }}
-      const opts = {{
-        container,
-        urdfContent: `{urdf_js}`,
-        meshDB: {mesh_js},
-        selectMode: {sel_js},
-        background: {bg_js}
-      }};
+
+      async function getVersion(){{
+        try {{
+          const api = `https://api.github.com/repos/${{repo}}/commits/${{branch}}?_=${{Date.now()}}`;
+          const r = await fetch(api, {{ headers: {{ "Accept":"application/vnd.github+json" }}, cache: "no-store" }});
+          if (!r.ok) throw new Error("GitHub API " + r.status);
+          const j = await r.json();
+          const sha = (j.sha || "").slice(0,7);
+          return sha || branch;
+        }} catch(e) {{
+          console.warn("Using fallback @branch due to API error:", e);
+          return branch;
+        }}
+      }}
+
+      // 1) Load ComponentSelection at latest commit
+      const ver = await getVersion();
+      const base = `https://cdn.jsdelivr.net/gh/${{repo}}@${{ver}}/`;
       try {{
-        window.__URDF_APP__ = window.URDFViewer.render(opts);
-        console.log("URDFViewer.render executed.");
-      }} catch (err) {{
-        console.warn("URDFViewer.render failed (skipping):", err);
+        await loadScript(base + compFile);
+      }} catch(e) {{
+        await loadScript(`https://cdn.jsdelivr.net/gh/${{repo}}@${{branch}}/` + compFile);
+      }}
+
+      // 2) If THREE is missing and we might render, load THREE stack
+      const haveViewer = (window.URDFViewer && typeof window.URDFViewer.render === 'function');
+      let haveTHREE = (typeof window.THREE !== 'undefined');
+
+      if (!haveTHREE && needThree && haveViewer && haveURDF) {{
+        try {{
+          await loadScript("https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js");
+          await loadScript("https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js");
+          await loadScript("https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js");
+          await loadScript("https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js");
+          await loadScript("https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js");
+          haveTHREE = (typeof window.THREE !== 'undefined');
+        }} catch (e) {{
+          console.warn("Failed to auto-load THREE stack:", e);
+        }}
+      }}
+
+      // 3) Render only if everything needed exists
+      if (haveTHREE && haveViewer && haveURDF) {{
+        const container = document.getElementById('app');
+        const ensureSize = () => {{
+          container.style.width = window.innerWidth + 'px';
+          container.style.height = window.innerHeight + 'px';
+        }};
+        ensureSize(); window.addEventListener('resize', ensureSize);
+
+        const opts = {{
+          container,
+          urdfContent: `{urdf_js}`,
+          meshDB: {mesh_js},
+          selectMode: {sel_js},
+          background: {bg_js}
+        }};
+
+        try {{
+          window.__URDF_APP__ = window.URDFViewer.render(opts);
+          console.log("URDFViewer.render executed.");
+        }} catch (err) {{
+          console.warn("URDFViewer.render failed (skipping):", err);
+        }}
+      }} else {{
+        console.log("Skipping render: haveTHREE=", typeof window.THREE !== 'undefined',
+                    " haveViewer=", (window.URDFViewer && typeof window.URDFViewer.render === 'function'),
+                    " haveURDF=", haveURDF);
       }}
     }})();
   </script>
@@ -197,5 +220,3 @@ def URDF_Render(folder_path="Model",
 </html>
 """
     return HTML(html)
-
-
