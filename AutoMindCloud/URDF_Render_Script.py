@@ -39,7 +39,7 @@ def URDF_Render(folder_path="Model",
                 select_mode="link", background=0xf0f0f0,
                 repo="ArtemioA/AutoMindCloudExperimental",
                 branch="main",
-                viewerFile="AutoMindCloud/urdf_viewer.js",
+                viewerFile="AutoMindCloud/ComponentSelection.js",
                 compFile="AutoMindCloud/ComponentSelection.js"):
     """
     Carga automáticamente urdf_viewer.js + ComponentSelection.js desde tu repo en jsDelivr
