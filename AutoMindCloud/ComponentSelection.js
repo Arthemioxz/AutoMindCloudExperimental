@@ -38,75 +38,37 @@
   }
   function approxByteLenFromB64(b64){ return Math.floor(String(b64||'').length * 3 / 4); }
 
-  // --- Click sound (WebAudio with HTMLAudio fallback) ---
-  const DEFAULT_CLICK_URL =
-    'https://raw.githubusercontent.com/ArtemioA/AutoMindCloudExperimental/main/AutoMindCloud/click_sound.mp3';
+  // --- Click sound: pure WebAudio beep (no network / CORS) ---
+  function makeBeepPlayer(){
+    const AC = window.AudioContext || window.webkitAudioContext;
+    let ctx = AC ? new AC() : null;
 
-  function makeWebAudioClick(url){
-    const soundURL = url || DEFAULT_CLICK_URL;
-    let ctx = null, buffer = null, ready = false, loading = false;
-    let htmlAudio = null; // fallback
-
-    async function ensureCtx(ev){
-      if (!ctx){
-        const AC = window.AudioContext || window.webkitAudioContext;
-        ctx = AC ? new AC() : null;
+    async function ensureCtx(){
+      if (!ctx) return false;
+      if (ctx.state === 'suspended'){
+        try { await ctx.resume(); } catch {}
       }
-      if (ctx && ctx.state === 'suspended'){
-        try { await ctx.resume(); } catch(_) {}
-      }
-      return !!ctx;
+      return true;
     }
 
-    async function loadBuffer(){
-      if (ready || loading) return;
-      loading = true;
-      try{
-        const resp = await fetch(soundURL, { mode:'cors', cache:'force-cache' });
-        const arr = await resp.arrayBuffer();
-        const decoded = await (ctx.decodeAudioData
-          ? new Promise((res,rej)=>ctx.decodeAudioData(arr, res, rej))
-          : null);
-        buffer = decoded; ready = !!buffer;
-      }catch(_){
-        // Fallback: HTMLAudio (still user-gesture gated, but simple)
-        htmlAudio = new Audio(soundURL);
-        htmlAudio.crossOrigin = 'anonymous';
-        htmlAudio.preload = 'auto';
-        htmlAudio.volume = 0.6;
-        ready = true;
-      }finally{ loading = false; }
-    }
+    // Plays a short, clicky beep (~70ms) on each call
+    return async function playClick(){
+      if (!await ensureCtx()) return;
 
-    // Returned function to play the click
-    return async function playClick(ev){
-      // Try WebAudio first (lowest latency)
-      const haveCtx = await ensureCtx(ev);
-      if (haveCtx && !ready) await loadBuffer();
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
 
-      if (haveCtx && buffer){
-        try{
-          const src = ctx.createBufferSource();
-          src.buffer = buffer;
-          const gain = ctx.createGain();
-          gain.gain.value = 0.7;
-          src.connect(gain).connect(ctx.destination);
-          src.start(0);
-          return;
-        }catch(_){}
-      }
-      // Fallback path
-      try{
-        if (!htmlAudio){
-          htmlAudio = new Audio(soundURL);
-          htmlAudio.crossOrigin = 'anonymous';
-          htmlAudio.preload = 'auto';
-          htmlAudio.volume = 0.6;
-        }
-        htmlAudio.currentTime = 0;
-        const p = htmlAudio.play();
-        if (p && typeof p.catch === 'function') p.catch(()=>{});
-      }catch(_){}
+      // “clicky” envelope
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(880, now);  // A5
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.22, now + 0.006);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
+
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.075);
     };
   }
 
@@ -298,8 +260,7 @@
    *   meshDB: { key -> base64 },
    *   selectMode: 'link'|'mesh' (default 'link')
    *   background: number (hex) or null,
-   *   descriptions: { [assetBaseName]: string },
-   *   clickSoundURL: string (optional)
+   *   descriptions: { [assetBaseName]: string }
    * }
    */
   URDFViewer.render = function(opts){
@@ -312,8 +273,12 @@
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
 
-    // Click-sound player (WebAudio)
-    const playClick = makeWebAudioClick(opts && opts.clickSoundURL);
+    // Click-sound player (synth beep)
+    const playClick = makeBeepPlayer();
+    // Prime AudioContext on first user gesture (unmutes in iframes)
+    ['pointerdown','touchstart','keydown'].forEach(ev =>
+      container.addEventListener(ev, ()=>{ playClick(); }, { once:true, passive:true })
+    );
 
     // Scene
     const scene = new THREE.Scene();
@@ -791,7 +756,7 @@
 
       let builtOnce = false;
       btn.addEventListener('click', async (ev)=>{
-        playClick(ev);   // first user gesture will also resume AudioContext
+        playClick(ev);
         if (panel.style.display === 'none'){
           panel.style.display = 'block';
           if (!builtOnce){ await buildGallery(list); builtOnce = true; }
