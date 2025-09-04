@@ -33,18 +33,19 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
     return final_dir
 
 # -------------------------------
-# Genera el visor: carga JS (por URL o inline) y manda urdfContent + meshDB
+# Genera el visor: carga libs + JS del repo (SHA más reciente) y renderiza
 # -------------------------------
-def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
-                select_mode="link", background=0xf0f0f0):
+def URDF_Render(folder_path="Model",
+                select_mode="link", background=0xf0f0f0,
+                repo="ArtemioA/AutoMindCloudExperimental",
+                branch="main",
+                viewerFile="AutoMindCloud/urdf_viewer.js",
+                compFile="AutoMindCloud/ComponentSelection.js"):
     """
-    Args:
-      folder_path: carpeta con /urdf y /meshes
-      js_url: URL al raw de tu urdf_viewer.js en GitHub (recomendado)
-      inline_js_text: contenido del archivo JS (fallback si no usas URL)
-      select_mode: 'link' o 'mesh'
-      background: color de fondo (int hex) o None
+    Carga automáticamente urdf_viewer.js + ComponentSelection.js desde tu repo en jsDelivr
+    usando el último commit de 'branch' (fallback a @branch si falla el API).
     """
+
     # 1) localizar /urdf y /meshes
     def find_dirs(root):
         d_u, d_m = os.path.join(root,"urdf"), os.path.join(root,"meshes")
@@ -70,7 +71,7 @@ def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
 
     # 3) refs a mallas desde el URDF
     mesh_refs = re.findall(r'filename="([^"]+\.(?:stl|dae))"', urdf_raw, re.IGNORECASE)
-    mesh_refs = list(dict.fromkeys(mesh_refs))  # unique y stable
+    mesh_refs = list(dict.fromkeys(mesh_refs))  # unique y estable
 
     # 4) indexar ficheros en /meshes (stl, dae, png, jpg, jpeg)
     disk_files = []
@@ -107,15 +108,14 @@ def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
         if bn.endswith((".png",".jpg",".jpeg")) and bn not in mesh_db:
             add_entry(bn, p)
 
-    # 5) HTML minimal que monta el visor y llama a URDFViewer.render
+    # 5) HTML que monta el visor y llama a URDFViewer.render
     esc = lambda s: (s.replace('\\','\\\\').replace('`','\\`').replace('$','\\$').replace("</script>","<\\/script>"))
     urdf_js  = esc(urdf_raw)
     mesh_js  = json.dumps(mesh_db)
     bg_js    = 'null' if (background is None) else str(int(background))
     sel_js   = json.dumps(select_mode)
 
-    base_html = f"""
-<!doctype html>
+    base_html = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
@@ -140,52 +140,86 @@ def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
 
-  <!-- Dynamic loader: always pull latest commit's ComponentSelection.js from main -->
+  <!-- Cargador dinámico: obtiene SHA y carga viewer + ComponentSelection -->
   <script>
     (async function() {{
-      const repo = "ArtemioA/AutoMindCloudExperimental";
-      const branch = "main";
-      const filePath = "AutoMindCloud/ComponentSelection.js";
-      try {{
-        const r = await fetch(`https://api.github.com/repos/${{repo}}/commits/${{branch}}`);
-        if (!r.ok) throw new Error("GitHub API HTTP " + r.status);
-        const j = await r.json();
-        const shortSha = (j.sha || "").slice(0, 7);
-        if (!shortSha) throw new Error("No SHA from GitHub API");
+      const repo = {json.dumps(repo)};
+      const branch = {json.dumps(branch)};
+      const viewerFile = {json.dumps(viewerFile)};
+      const compFile = {json.dumps(compFile)};
 
-        const cdnUrl = `https://cdn.jsdelivr.net/gh/${{repo}}@${{shortSha}}/${{filePath}}`;
-        const s = document.createElement("script");
-        s.src = cdnUrl;
-        s.defer = true;
-        s.onload = () => console.log("ComponentSelection loaded:", cdnUrl);
-        s.onerror = () => console.error("Failed to load ComponentSelection:", cdnUrl);
-        document.head.appendChild(s);
-      }} catch (err) {{
-        console.error("Dynamic ComponentSelection load failed:", err);
+      function loadScript(url) {{
+        return new Promise((resolve, reject) => {{
+          const s = document.createElement("script");
+          s.src = url;
+          s.defer = true;
+          s.onload = () => {{ console.log("Loaded:", url); resolve(url); }};
+          s.onerror = () => {{ console.warn("Failed:", url); reject(new Error("load fail")); }};
+          document.head.appendChild(s);
+        }});
       }}
+
+      async function getVersion() {{
+        try {{
+          const api = `https://api.github.com/repos/${{repo}}/commits/${{branch}}?_=${{Date.now()}}`;
+          const r = await fetch(api, {{ headers: {{ "Accept":"application/vnd.github+json" }}, cache: "no-store" }});
+          if (!r.ok) throw new Error("GitHub API " + r.status);
+          const j = await r.json();
+          const sha = (j.sha||"").slice(0,7);
+          return sha || branch; // si no hay sha, fallback a rama
+        }} catch(e) {{
+          console.warn("Using fallback @branch due to API error:", e);
+          return branch;
+        }}
+      }}
+
+      const ver = await getVersion();
+      const base = `https://cdn.jsdelivr.net/gh/${{repo}}@${{ver}}/`;
+
+      // Cargar viewer y luego ComponentSelection (orden importa)
+      try {{
+        await loadScript(base + viewerFile);
+      }} catch(e) {{
+        // último fallback a @branch explícito
+        await loadScript(`https://cdn.jsdelivr.net/gh/${{repo}}@${{branch}}/` + viewerFile);
+      }}
+
+      try {{
+        await loadScript(base + compFile);
+      }} catch(e) {{
+        await loadScript(`https://cdn.jsdelivr.net/gh/${{repo}}@${{branch}}/` + compFile);
+      }}
+
+      // Señal para el bootstrap
+      window.__AMC_READY__ = true;
     }})();
   </script>
-"""
 
-    # Cargar el JS principal del visor: por URL (preferido) o inline (fallback)
-    if js_url:
-        base_html += f'  <script src="{js_url}"></script>\n'
-    elif inline_js_text:
-        safe_js = inline_js_text.replace("</script>","<\\/script>")
-        base_html += f'  <script>\n{safe_js}\n  </script>\n'
-    else:
-        base_html += '  <script>console.error("No JS found: provide js_url or inline_js_text");</script>\n'
-
-    # Bootstrap que invoca el render
-    base_html += f"""
+  <!-- Bootstrap: espera a URDFViewer.render -->
   <script>
-    (function(){{
+    (async function(){{
       const container = document.getElementById('app');
       const ensureSize = () => {{
         container.style.width = window.innerWidth + 'px';
         container.style.height = window.innerHeight + 'px';
       }};
       ensureSize(); window.addEventListener('resize', ensureSize);
+
+      // Esperar a que carguen los JS
+      const waitFor = async (cond, ms=10000) => {{
+        const t0 = Date.now();
+        while (Date.now()-t0 < ms) {{
+          if (cond()) return true;
+          await new Promise(r=>setTimeout(r, 50));
+        }}
+        return false;
+      }};
+
+      const ok = await waitFor(() => window.__AMC_READY__ && window.URDFViewer && typeof window.URDFViewer.render === 'function', 12000);
+      if (!ok) {{
+        console.error("URDFViewer not loaded (revisa ruta/nombre de 'viewerFile').");
+        return;
+      }}
 
       const opts = {{
         container,
@@ -194,10 +228,7 @@ def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
         selectMode: {sel_js},
         background: {bg_js}
       }};
-      if (!window.URDFViewer || !window.URDFViewer.render) {{
-        console.error("URDFViewer not loaded");
-        return;
-      }}
+
       window.__URDF_APP__ = window.URDFViewer.render(opts);
     }})();
   </script>
@@ -205,4 +236,3 @@ def URDF_Render(folder_path="Model", js_url=None, inline_js_text=None,
 </html>
 """
     return HTML(base_html)
-
