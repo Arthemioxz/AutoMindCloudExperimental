@@ -108,6 +108,8 @@ def S(c_componente):#Guardar
 def D(elemento):#Por default se imprime en rojo, para indicar que es un derivado.
   #global DatosList,Orden,Color#Documento
 
+  global documento
+  
   print("")
   Tipo = None
   if isinstance(elemento,sympy.core.relational.Equality):#Si el elemento ingresado es una ecuación, entonces la identificamos
@@ -126,8 +128,6 @@ def D(elemento):#Por default se imprime en rojo, para indicar que es un derivado
 
     texto = a + b + c
     #texto = texto.replace("text", Estilo)
-
-    global docymento
 
     documento += "$\\textcolor{"+Color+"}{"+texto+"}$"
     IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+texto+"}$"))
@@ -149,9 +149,7 @@ def D(elemento):#Por default se imprime en rojo, para indicar que es un derivado
     texto = a + b + c
       #texto = texto.replace("text", Estilo)
 
-    global documento
-
-    documento = "$\\textcolor{"+Color+"}{"+texto+"}$"
+    documento += "$\\textcolor{"+Color+"}{"+texto+"}$"
     
     IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+texto+"}$"))
     #Documento.append(texto)
