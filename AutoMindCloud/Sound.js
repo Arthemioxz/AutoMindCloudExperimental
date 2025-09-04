@@ -85,13 +85,14 @@
       const g = ctx.createGain();
       g.gain.value = volume;
       src.connect(g).connect(ctx.destination);
+
+      console.log("Sound Button Played!"); 
+       
       src.start();
       return true;
     }
     if (htmlAudio) {
       try {
-
-        console.log("Button Clicked");
          
         htmlAudio.currentTime = 0;
         htmlAudio.volume = volume;
