@@ -39,6 +39,7 @@
     const bin = atob(stripDataURI(b64));
     const len = bin.length;
     const bytes = new Uint8Array(len);
+
     for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
     return bytes.buffer;
   }
@@ -89,9 +90,13 @@
     }
     if (htmlAudio) {
       try {
+
+        console.log("Button Clicked");
+         
         htmlAudio.currentTime = 0;
         htmlAudio.volume = volume;
         await htmlAudio.play();
+        
         return true;
       } catch (e) {
         console.error('[Sound] HTMLAudio play failed:', e);
