@@ -8,11 +8,7 @@
    - Thumbnails are captured OFF-SCREEN with the same isolation (no flicker).
    - Skips images; dedup path variants per basename (DAE > STL > STEP; then largest).
    - Auto-scales DAE via <unit meter="...">.
-   - UI: bottom-left "Components" toggle, "Show all" button in the gallery header.
-   - NEW:
-     * Plays a click sound on any <button> click and component-row click
-     * Prints: "Sound Played and print base64 audio <...>" every time sound should play
-     * Accepts opts.audioB64 (base64 MP3) or opts.audioUrl
+   - UI: bottom-left “Components” toggle, “Show all” button in the gallery header.
 */
 (function (root) {
   'use strict';
@@ -32,11 +28,13 @@
   }
   function basenameNoExt(p){
     const q = String(p||'').split('/').pop().split('?')[0].split('#')[0];
-    const dot = q.lastIndexOf('.'); return dot>=0 ? q.slice(0,dot) : q;
+    const dot = q.lastIndexOf('.');
+    return dot>=0 ? q.slice(0,dot) : q;
   }
   function extOf(p){
     const q = String(p||'').split('?')[0].split('#')[0];
-    const dot = q.lastIndexOf('.'); return dot>=0 ? q.slice(dot+1).toLowerCase() : '';
+    const dot = q.lastIndexOf('.');
+    return dot>=0 ? q.slice(dot+1).toLowerCase() : '';
   }
   function approxByteLenFromB64(b64){ return Math.floor(String(b64||'').length * 3 / 4); }
 
@@ -52,7 +50,7 @@
       const b64 = meshDB[kk];
       if (!b64) continue;
       const ext = extOf(kk);
-      if (!ALLOWED_EXTS.has(ext)) continue;
+      if (!ALLOWED_EXTS.has(ext)) continue; // skip images/others
       const base = basenameNoExt(kk);
       const arr = groups.get(base) || [];
       arr.push({ key: kk, ext, bytes: approxByteLenFromB64(b64), prio: extPriority[ext] ?? 0 });
@@ -226,11 +224,9 @@
    *   container: HTMLElement (default document.body),
    *   urdfContent: string,
    *   meshDB: { key -> base64 },
-   *   selectMode: 'link'|'mesh' (default 'link')
+   *   selectMode: 'link'|'mesh' (default 'link')  // for gray hover overlay behavior
    *   background: number (hex) or null,
-   *   descriptions: { [assetBaseName]: string },
-   *   audioB64: string (base64 MP3)   // <<< NEW
-   *   audioUrl: string (URL to MP3)   // <<< NEW
+   *   descriptions: { [assetBaseName]: string }
    * }
    */
   URDFViewer.render = function(opts){
@@ -282,53 +278,6 @@
     }
     window.addEventListener('resize', onResize);
 
-    // ---------- === SOUND ENGINE === ----------
-    function b64ToBlobUrl(b64, mime='audio/mpeg'){
-      if (!b64) return null;
-      try{
-        const bin = atob(b64);
-        const len = bin.length;
-        const bytes = new Uint8Array(len);
-        for (let i=0;i<len;i++) bytes[i] = bin.charCodeAt(i);
-        const blob = new Blob([bytes], {type: mime});
-        return URL.createObjectURL(blob);
-      }catch(_){ return `data:${mime};base64,${b64}`; }
-    }
-
-    // Clean base64 (remove whitespace/newlines) so the printed value is canonical
-    const audioB64Clean =
-      (opts && typeof opts.audioB64 === 'string') ? opts.audioB64.replace(/\s+/g,'') : '';
-
-    const soundUrl =
-      (audioB64Clean
-        ? b64ToBlobUrl(audioB64Clean, 'audio/mpeg')
-        : (opts && typeof opts.audioUrl === 'string' ? opts.audioUrl : null));
-
-    function playClick(){
-      // Print EXACT required phrase with the base64 value (or note if none)
-      const toPrint = audioB64Clean || '(no base64 provided)';
-      console.log('Sound Played and print base64 audio', toPrint);
-      toast('Sound Played and print base64 audio');
-
-      if (!soundUrl) return;
-      try{
-        const a = new Audio(soundUrl);
-        a.play().catch(()=>{ /* autoplay policy may require user gesture */ });
-      }catch(_){}
-    }
-
-    // Small floating toast
-    let toastTimer=null;
-    function toast(msg){
-      if (!state?.ui?.toastEl) return;
-      const el = state.ui.toastEl;
-      el.textContent = msg;
-      el.style.opacity = '1';
-      clearTimeout(toastTimer);
-      toastTimer = setTimeout(()=>{ el.style.opacity = '0'; }, 700);
-    }
-    // ---------- === END SOUND ENGINE === ----------
-
     // Loader + mesh callbacks
     const urdfLoader = new URDFLoader();
     const textDecoder = new TextDecoder();
@@ -359,7 +308,7 @@
       const bestKey = pickBestAsset(variantsFor(path), meshDB);
       if (!bestKey){ onComplete(new THREE.Mesh()); return; }
       const ext = extOf(bestKey);
-      if (!ALLOWED_EXTS.has(ext)){ onComplete(new THREE.Mesh()); return; }
+      if (!ALLOWED_EXTS.has(ext)){ onComplete(new THREE.Mesh()); return; } // safety
 
       const tagAndComplete = (obj)=>{
         obj.userData.__assetKey = bestKey;
@@ -401,6 +350,7 @@
 
           const mgr=new THREE.LoadingManager();
           mgr.setURLModifier((url)=>{
+            // for referenced resources in DAE (textures, etc.)
             const tries=variantsFor(url);
             const key = tries.map(normKey).find(k=>meshDB[k]);
             if (key){
@@ -418,6 +368,7 @@
           return;
         }
         if (ext==='step' || ext==='stp'){
+          // No STEP parser in this bundle—return empty mesh so scene remains valid.
           onComplete(new THREE.Mesh());
           pendingMeshes--; scheduleFit();
           return;
@@ -588,14 +539,18 @@
       const meshes = off.cloneAssetToMeshes.get(assetKey) || [];
       if (!meshes.length) return null;
 
+      // Save visibility
       const vis = [];
       off.robotClone.traverse(o=>{
         if (o.isMesh && o.geometry) vis.push([o, o.visible]);
       });
 
+      // Hide ALL
       for (const [m] of vis) m.visible = false;
+      // Show ONLY this asset's meshes
       for (const m of meshes) m.visible = true;
 
+      // Frame
       const box = computeUnionBox(meshes);
       if (!box){ vis.forEach(([o,v])=>o.visible=v); return null; }
       const center = box.getCenter(new THREE.Vector3());
@@ -618,6 +573,7 @@
       off.renderer.render(off.scene, off.camera);
       const url = off.renderer.domElement.toDataURL('image/png');
 
+      // Restore vis
       for (const [o,v] of vis) o.visible = v;
 
       return url;
@@ -635,11 +591,14 @@
 
     function isolateAssetOnScreen(assetKey){
       const meshes = assetToMeshes.get(assetKey) || [];
+      // Hide ALL
       api.robotModel.traverse(o=>{
         if (o.isMesh && o.geometry) o.visible = false;
       });
+      // Show ONLY that asset's meshes
       for (const m of meshes) m.visible = true;
 
+      // Frame
       const box = computeUnionBox(meshes);
       if (box){
         const center = box.getCenter(new THREE.Vector3());
@@ -662,6 +621,7 @@
 
     // ---------- UI: bottom-left toggle + right panel ----------
     function createUI(){
+      // Root overlay
       const root = document.createElement('div');
       Object.assign(root.style, {
         position: 'absolute',
@@ -672,25 +632,7 @@
         fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      const toastEl = document.createElement('div');
-      Object.assign(toastEl.style, {
-        position: 'absolute',
-        left: '50%',
-        bottom: '18px',
-        transform: 'translateX(-50%)',
-        padding: '6px 10px',
-        borderRadius: '999px',
-        border: '1px solid #e5e7eb',
-        background: 'rgba(255,255,255,0.95)',
-        boxShadow: '0 8px 28px rgba(0,0,0,0.12)',
-        fontSize: '12px',
-        fontWeight: '600',
-        opacity: '0',
-        transition: 'opacity .18s ease',
-        pointerEvents: 'none'
-      });
-      root.appendChild(toastEl);
-
+      // Bottom-left toggle button
       const btn = document.createElement('button');
       btn.textContent = 'Components';
       Object.assign(btn.style, {
@@ -706,8 +648,8 @@
         cursor: 'pointer',
         pointerEvents: 'auto'
       });
-      btn.addEventListener('click', ()=>{ playClick(); });
 
+      // Panel
       const panel = document.createElement('div');
       Object.assign(panel.style, {
         position: 'absolute',
@@ -724,6 +666,7 @@
         pointerEvents: 'auto'
       });
 
+      // Header with title + Show all
       const header = document.createElement('div');
       Object.assign(header.style, {
         display: 'flex',
@@ -749,7 +692,7 @@
         fontWeight: '700',
         cursor: 'pointer'
       });
-      showAllBtn.addEventListener('click', ()=>{ playClick(); showAllAndFrame(); });
+      showAllBtn.addEventListener('click', showAllAndFrame);
 
       header.appendChild(headerTitle);
       header.appendChild(showAllBtn);
@@ -773,3 +716,132 @@
           panel.style.display = 'block';
           if (!builtOnce){ await buildGallery(list); builtOnce = true; }
         } else {
+          panel.style.display = 'none';
+        }
+      });
+
+      return { root, btn, panel, list, showAllBtn };
+    }
+
+    // Build PER-FILE gallery (one item per assetKey that produced meshes)
+    async function buildGallery(listEl){
+      listEl.innerHTML = '';
+
+      // Collect entries
+      const entries = [];
+      assetToMeshes.forEach((meshes, assetKey)=>{
+        if (!meshes || !meshes.length) return;
+        const base = basenameNoExt(assetKey);
+        const ext = extOf(assetKey);
+        if (!ALLOWED_EXTS.has(ext)) return;
+        entries.push({ assetKey, base, ext, meshes });
+      });
+
+      entries.sort((a,b)=> a.base.localeCompare(b.base, undefined, {numeric:true, sensitivity:'base'}));
+
+      if (!entries.length){
+        listEl.textContent = 'No components with visual geometry found.'; return;
+      }
+
+      for (const ent of entries){
+        const row = document.createElement('div');
+        Object.assign(row.style, {
+          display: 'grid',
+          gridTemplateColumns: '128px 1fr',
+          gap: '12px',
+          alignItems: 'center',
+          padding: '10px',
+          borderRadius: '12px',
+          border: '1px solid #f0f0f0',
+          marginBottom: '10px',
+          background: '#fff',
+          cursor: 'pointer'
+        });
+
+        const img = document.createElement('img');
+        Object.assign(img.style, {
+          width: '128px',
+          height: '96px',
+          objectFit: 'contain',
+          background: '#fafafa',
+          borderRadius: '10px',
+          border: '1px solid #eee'
+        });
+        img.alt = ent.base;
+
+        const meta = document.createElement('div');
+        const title = document.createElement('div');
+        title.textContent = ent.base;
+        Object.assign(title.style, { fontWeight: '700', fontSize: '14px' });
+
+        const small = document.createElement('div');
+        small.textContent = `.${ent.ext} • ${ent.meshes.length} instance${ent.meshes.length>1?'s':''}`;
+        Object.assign(small.style, { color: '#777', fontSize: '12px', marginTop: '2px' });
+
+        const desc = document.createElement('div');
+        desc.textContent = descriptions[ent.base] || ' ';
+        Object.assign(desc.style, { color: '#555', fontSize: '12px', marginTop: '4px' });
+
+        meta.appendChild(title);
+        meta.appendChild(small);
+        if (desc.textContent.trim()) meta.appendChild(desc);
+
+        row.appendChild(img);
+        row.appendChild(meta);
+        listEl.appendChild(row);
+
+        row.addEventListener('click', ()=>{
+          isolateAssetOnScreen(ent.assetKey);
+        });
+
+        (async ()=>{
+          try{
+            const url = await snapshotAssetOffscreen(ent.assetKey);
+            if (url) img.src = url;
+          }catch(_e){}
+        })();
+      }
+    }
+    // ---------- end UI ----------
+
+    // Public state holder
+    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
+
+    // Load URDF
+    function loadURDF(urdfText){
+      // reset scene + maps
+      if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
+      if (state.off){ try{ state.off.renderer.dispose(); }catch(_){} state.off=null; }
+
+      try{
+        const robot = urdfLoader.parse(urdfText||'');
+        if (robot?.isObject3D){
+          api.robotModel=robot; scene.add(api.robotModel);
+          rectifyUpForward(api.robotModel);
+          api.linkSet = markLinksAndJoints(api.robotModel);
+          setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
+
+          // Build OFF-SCREEN rig now that meshes exist
+          state.off = buildOffscreenFromRobot();
+        }
+      } catch(_e){}
+    }
+
+    function animate(){
+      state.raf = requestAnimationFrame(animate);
+      controls.update(); renderer.render(scene, camera);
+    }
+
+    loadURDF((opts && opts.urdfContent) || '');
+    state.ui = createUI();
+    animate();
+
+    return {
+      scene, camera, renderer, controls,
+      get robot(){ return api.robotModel; },
+      openGallery(){ state.ui?.btn?.click?.(); }
+    };
+  };
+
+  root.URDFViewer = URDFViewer;
+})(typeof window!=='undefined' ? window : this);
