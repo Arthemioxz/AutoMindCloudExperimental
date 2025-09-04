@@ -34,7 +34,6 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 # -------------------------------
 # Genera HTML y SOLO carga ComponentSelection.js (último commit)
-# No requiere urdf_viewer.js. Si existe window.URDFViewer, lo usa; si no, no falla.
 # -------------------------------
 def URDF_Render(folder_path="Model",
                 select_mode="link", background=0xf0f0f0,
@@ -50,7 +49,7 @@ def URDF_Render(folder_path="Model",
     - inject_three_libs: si True, inyecta three/controls/URDFLoader/Collada por si tu entorno los necesita.
     """
 
-    # 1) localizar /urdf y /meshes (por si quieres render si existe URDFViewer)
+    # 1) localizar /urdf y /meshes (opcional, por si se quiere renderizar con URDFViewer externo)
     def find_dirs(root):
         d_u, d_m = os.path.join(root,"urdf"), os.path.join(root,"meshes")
         if os.path.isdir(d_u) and os.path.isdir(d_m): return d_u, d_m
@@ -65,7 +64,7 @@ def URDF_Render(folder_path="Model",
     urdf_raw = ""
     mesh_db = {}
 
-    # 2) si existen urdf/meshes, preparar datos (por si hay URDFViewer externo)
+    # 2) si existen urdf/meshes, preparar datos (solo útiles si hay URDFViewer disponible)
     if urdf_dir and meshes_dir:
         urdf_files = [f for f in os.listdir(urdf_dir) if f.lower().endswith(".urdf")]
         if urdf_files:
@@ -107,7 +106,7 @@ def URDF_Render(folder_path="Model",
                 if bn.endswith((".png",".jpg",".jpeg")) and bn not in mesh_db:
                     add_entry(bn, p)
 
-    # 3) HTML
+    # 3) HTML de salida
     esc = lambda s: (s.replace('\\','\\\\').replace('`','\\`').replace('$','\\$').replace("</script>","<\\/script>"))
     urdf_js  = esc(urdf_raw) if urdf_raw else ""
     mesh_js  = json.dumps(mesh_db)
@@ -184,7 +183,6 @@ def URDF_Render(folder_path="Model",
         await loadScript(`https://cdn.jsdelivr.net/gh/${{repo}}@${{branch}}/` + compFile);
       }}
 
-      // Si existe URDFViewer externo, render opcional (no obligatorio)
       if (window.URDFViewer && typeof window.URDFViewer.render === 'function' && {json.dumps(bool(urdf_raw))}) {{
         const container = document.getElementById('app');
         const ensureSize = () => {{
