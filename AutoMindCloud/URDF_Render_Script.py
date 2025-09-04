@@ -35,6 +35,7 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 # -------------------------------
 # Genera HTML y SOLO carga ComponentSelection.js (último commit)
 # -------------------------------
+
 def URDF_Render(folder_path="Model",
                 select_mode="link", background=0xf0f0f0,
                 repo="ArtemioA/AutoMindCloudExperimental",
@@ -42,14 +43,14 @@ def URDF_Render(folder_path="Model",
                 compFile="AutoMindCloud/ComponentSelection.js",
                 inject_three_libs=False):
     """
-    - Carga dinámicamente ComponentSelection.js desde el último commit de 'branch'
-      con fallback a @branch.
-    - NO carga ni exige urdf_viewer.js.
-    - Si window.URDFViewer.render existe, lo invoca; si no, omite render sin error.
-    - inject_three_libs: si True, inyecta three/controls/URDFLoader/Collada por si tu entorno los necesita.
+    - Loads ComponentSelection.js from the repo's latest commit (fallback to @branch).
+    - Does NOT require urdf_viewer.js.
+    - Only calls URDFViewer.render if BOTH window.THREE and window.URDFViewer.render exist.
+    - If inject_three_libs=True, injects three/controls/URDFLoader/Collada (optional).
     """
+    import os, re, json, base64
 
-    # 1) localizar /urdf y /meshes (opcional, por si se quiere renderizar con URDFViewer externo)
+    # Find optional urdf/meshes so we can render if a viewer exists elsewhere
     def find_dirs(root):
         d_u, d_m = os.path.join(root,"urdf"), os.path.join(root,"meshes")
         if os.path.isdir(d_u) and os.path.isdir(d_m): return d_u, d_m
@@ -64,7 +65,6 @@ def URDF_Render(folder_path="Model",
     urdf_raw = ""
     mesh_db = {}
 
-    # 2) si existen urdf/meshes, preparar datos (solo útiles si hay URDFViewer disponible)
     if urdf_dir and meshes_dir:
         urdf_files = [f for f in os.listdir(urdf_dir) if f.lower().endswith(".urdf")]
         if urdf_files:
@@ -106,7 +106,6 @@ def URDF_Render(folder_path="Model",
                 if bn.endswith((".png",".jpg",".jpeg")) and bn not in mesh_db:
                     add_entry(bn, p)
 
-    # 3) HTML de salida
     esc = lambda s: (s.replace('\\','\\\\').replace('`','\\`').replace('$','\\$').replace("</script>","<\\/script>"))
     urdf_js  = esc(urdf_raw) if urdf_raw else ""
     mesh_js  = json.dumps(mesh_db)
@@ -116,7 +115,7 @@ def URDF_Render(folder_path="Model",
     libs_html = ""
     if inject_three_libs:
         libs_html = """
-  <!-- (Opcional) libs si tu entorno las requiere -->
+  <!-- Optional libs, only if your environment needs them -->
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
@@ -124,92 +123,6 @@ def URDF_Render(folder_path="Model",
   <script src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
 """
 
-    base_html = f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<title>ComponentSelection Loader Only</title>
-<style>
-  html,body {{ margin:0; height:100%; overflow:hidden; background:#f0f0f0; }}
-  #app {{ position:fixed; inset:0; }}
-  .badge{{ position:fixed; right:14px; bottom:12px; z-index:10; user-select:none; pointer-events:none; }}
-  .badge img{{ max-height:40px; display:block; }}
-</style>
-</head>
-<body>
-  <div id="app"></div>
-  <div class="badge">
-    <img src="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png" alt="badge"/>
-  </div>
-{libs_html}
-  <!-- Cargador dinámico SOLO para ComponentSelection.js -->
-  <script>
-    (async function() {{
-      const repo = {json.dumps(repo)};
-      const branch = {json.dumps(branch)};
-      const compFile = {json.dumps(compFile)};
+    html = f"""<!doctype html>
+<html
 
-      function loadScript(url) {{
-        return new Promise((resolve, reject) => {{
-          const s = document.createElement("script");
-          s.src = url;
-          s.defer = true;
-          s.onload = () => {{ console.log("Loaded:", url); resolve(url); }};
-          s.onerror = () => {{ console.warn("Failed:", url); reject(new Error("load fail")); }};
-          document.head.appendChild(s);
-        }});
-      }}
-
-      async function getVersion() {{
-        try {{
-          const api = `https://api.github.com/repos/${{repo}}/commits/${{branch}}?_=${{Date.now()}}`;
-          const r = await fetch(api, {{ headers: {{ "Accept":"application/vnd.github+json" }}, cache: "no-store" }});
-          if (!r.ok) throw new Error("GitHub API " + r.status);
-          const j = await r.json();
-          const sha = (j.sha||"").slice(0,7);
-          return sha || branch;
-        }} catch(e) {{
-          console.warn("Using fallback @branch due to API error:", e);
-          return branch;
-        }}
-      }}
-
-      const ver = await getVersion();
-      const base = `https://cdn.jsdelivr.net/gh/${{repo}}@${{ver}}/`;
-
-      try {{
-        await loadScript(base + compFile);
-      }} catch(e) {{
-        await loadScript(`https://cdn.jsdelivr.net/gh/${{repo}}@${{branch}}/` + compFile);
-      }}
-
-      if (window.URDFViewer && typeof window.URDFViewer.render === 'function' && {json.dumps(bool(urdf_raw))}) {{
-        const container = document.getElementById('app');
-        const ensureSize = () => {{
-          container.style.width = window.innerWidth + 'px';
-          container.style.height = window.innerHeight + 'px';
-        }};
-        ensureSize(); window.addEventListener('resize', ensureSize);
-
-        const opts = {{
-          container,
-          urdfContent: `{urdf_js}`,
-          meshDB: {mesh_js},
-          selectMode: {sel_js},
-          background: {bg_js}
-        }};
-        try {{
-          window.__URDF_APP__ = window.URDFViewer.render(opts);
-          console.log("URDFViewer.render ejecutado (opcional).");
-        }} catch(err) {{
-          console.warn("URDFViewer.render falló pero no es obligatorio:", err);
-        }}
-      }} else {{
-        console.log("ComponentSelection listo. URDFViewer no está presente y no es necesario.");
-      }}
-    }})();
-  </script>
-</body>
-</html>
-"""
-    return HTML(base_html)
