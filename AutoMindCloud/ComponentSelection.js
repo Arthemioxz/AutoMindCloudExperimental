@@ -38,37 +38,30 @@
   }
   function approxByteLenFromB64(b64){ return Math.floor(String(b64||'').length * 3 / 4); }
 
-  // --- Click sound: pure WebAudio beep (no network / CORS) ---
+  // --- Click sound: WebAudio beep with LAZY context (created on first click) ---
   function makeBeepPlayer(){
-    const AC = window.AudioContext || window.webkitAudioContext;
-    let ctx = AC ? new AC() : null;
-
-    async function ensureCtx(){
-      if (!ctx) return false;
-      if (ctx.state === 'suspended'){
-        try { await ctx.resume(); } catch {}
-      }
-      return true;
-    }
-
-    // Plays a short, clicky beep (~70ms) on each call
+    let ctx = null; // created *on first play* to satisfy strict autoplay policies
     return async function playClick(){
-      if (!await ensureCtx()) return;
-
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return; // no audio support
+      if (!ctx){
+        try { ctx = new AC(); } catch { return; }
+      }
+      if (ctx.state === 'suspended'){
+        try { await ctx.resume(); } catch { /* ignore */ }
+      }
       const now = ctx.currentTime;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-
-      // “clicky” envelope
+      // short “clicky” envelope (~70–80 ms)
       osc.type = 'square';
-      osc.frequency.setValueAtTime(880, now);  // A5
+      osc.frequency.setValueAtTime(880, now);
       gain.gain.setValueAtTime(0.0001, now);
       gain.gain.exponentialRampToValueAtTime(0.22, now + 0.006);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
-
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.075);
       osc.connect(gain).connect(ctx.destination);
       osc.start(now);
-      osc.stop(now + 0.075);
+      osc.stop(now + 0.08);
     };
   }
 
@@ -273,12 +266,8 @@
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
 
-    // Click-sound player (synth beep)
+    // Click-sound player (lazy AudioContext)
     const playClick = makeBeepPlayer();
-    // Prime AudioContext on first user gesture (unmutes in iframes)
-    ['pointerdown','touchstart','keydown'].forEach(ev =>
-      container.addEventListener(ev, ()=>{ playClick(); }, { once:true, passive:true })
-    );
 
     // Scene
     const scene = new THREE.Scene();
@@ -409,7 +398,6 @@
           return;
         }
         if (ext==='step' || ext==='stp'){
-          // No STEP parser in this bundle—return empty mesh so scene remains valid.
           onComplete(new THREE.Mesh());
           pendingMeshes--; scheduleFit();
           return;
@@ -690,6 +678,26 @@
         pointerEvents: 'auto'
       });
 
+      // A tiny test button to verify audio quickly
+      const testBtn = document.createElement('button');
+      testBtn.textContent = '🔊';
+      Object.assign(testBtn.style, {
+        position: 'absolute',
+        left: '110px',
+        bottom: '14px',
+        width: '40px',
+        height: '40px',
+        borderRadius: '12px',
+        border: '1px solid #d0d0d0',
+        background: '#ffffff',
+        boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
+        fontWeight: '700',
+        cursor: 'pointer',
+        pointerEvents: 'auto'
+      });
+      testBtn.title = 'Test sound';
+      testBtn.addEventListener('click', ()=>{ playClick(); });
+
       // Panel
       const panel = document.createElement('div');
       Object.assign(panel.style, {
@@ -733,8 +741,8 @@
         fontWeight: '700',
         cursor: 'pointer'
       });
-      showAllBtn.addEventListener('click', (ev)=>{
-        playClick(ev);
+      showAllBtn.addEventListener('click', ()=>{
+        playClick();
         showAllAndFrame();
       });
 
@@ -752,11 +760,12 @@
       panel.appendChild(list);
       root.appendChild(panel);
       root.appendChild(btn);
+      root.appendChild(testBtn);
       container.appendChild(root);
 
       let builtOnce = false;
-      btn.addEventListener('click', async (ev)=>{
-        playClick(ev);
+      btn.addEventListener('click', async ()=>{
+        playClick();
         if (panel.style.display === 'none'){
           panel.style.display = 'block';
           if (!builtOnce){ await buildGallery(list); builtOnce = true; }
@@ -765,7 +774,7 @@
         }
       });
 
-      return { root, btn, panel, list, showAllBtn };
+      return { root, btn, panel, list, showAllBtn, testBtn };
     }
 
     // Build PER-FILE gallery (one item per assetKey that produced meshes)
@@ -797,7 +806,7 @@
           alignItems: 'center',
           padding: '10px',
           borderRadius: '12px',
-          border: '1px solid #f0f0f0',
+          border: '1px solid '#f0f0f0',
           marginBottom: '10px',
           background: '#fff',
           cursor: 'pointer'
@@ -835,8 +844,8 @@
         row.appendChild(meta);
         listEl.appendChild(row);
 
-        row.addEventListener('click', (ev)=>{
-          playClick(ev);
+        row.addEventListener('click', ()=>{
+          playClick();
           isolateAssetOnScreen(ent.assetKey);
         });
 
