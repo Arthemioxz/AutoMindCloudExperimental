@@ -1,14 +1,16 @@
 /* urdf_viewer.js - UMD-lite: exposes window.URDFViewer
-   - Keeps original interactions:
-     * OrbitControls camera rotate/zoom/pan
-     * Gray hover overlay (mesh or link, via selectMode)
-     * Joint drag (revolute/prismatic) with limits and Shift for fine control
-   - Gallery is PER FILE (DAE/STL/STEP) — not per link/mesh fragment.
-     Clicking an item HARD-ISOLATES all instances of that asset in the main view.
-   - Thumbnails are captured OFF-SCREEN with the same isolation (no flicker).
-   - Skips images; dedup path variants per basename (DAE > STL > STEP; then largest).
-   - Auto-scales DAE via <unit meter="...">.
-   - UI: bottom-left “Components” toggle, “Show all” button in the gallery header.
+   Mobile-stable version: caps DPR, avoids preserveDrawingBuffer, uses ONE WebGLRenderer,
+   makes thumbnails via a RenderTarget (no second WebGL context), disposes aggressively,
+   and handles WebGL context loss.
+
+   Features:
+   - OrbitControls camera rotate/zoom/pan
+   - Gray hover overlay (mesh or link, via selectMode)
+   - Joint drag (revolute/prismatic) with limits and Shift for fine control
+   - Per-FILE gallery on the right; clicking an item HARD-ISOLATES its meshes on screen
+   - Off-screen thumbnails rendered through a RenderTarget
+   - Auto-scales DAE via <unit meter="...">
+   - UI: bottom-left “Components” toggle + “Show all” in the gallery header
 */
 (function (root) {
   'use strict';
@@ -69,7 +71,8 @@
         if (Array.isArray(n.material)) n.material.forEach(m=>m.side=THREE.DoubleSide);
         else if (n.material) n.material.side = THREE.DoubleSide;
         n.castShadow = n.receiveShadow = true;
-        n.geometry.computeVertexNormals?.();
+        // Keep normals if present; computing on mobile can be expensive
+        if (!n.geometry.attributes?.normal) { try{ n.geometry.computeVertexNormals?.(); }catch(_){} }
       }
     });
   }
@@ -207,14 +210,31 @@
     return linkSet;
   }
 
+  // ---------- Dispose helpers ----------
+  function disposeObject3D(root){
+    root?.traverse?.(o=>{
+      if (o.isMesh){
+        o.geometry?.dispose?.();
+        if (Array.isArray(o.material)) o.material.forEach(m=>m?.dispose?.());
+        else o.material?.dispose?.();
+      }
+    });
+  }
+
   // ---------- Public API: destroy ----------
   URDFViewer.destroy = function(){
     try{ cancelAnimationFrame(state?.raf); }catch(_){}
     try{ window.removeEventListener('resize', state?.onResize); }catch(_){}
-    try{ const el = state?.renderer?.domElement; el && el.parentNode && el.parentNode.removeChild(el); }catch(_){}
+    try{ state?.renderer?.domElement?.remove?.(); }catch(_){}
     try{ state?.renderer?.dispose?.(); }catch(_){}
-    try{ state?.ui?.root && state.ui.root.remove(); }catch(_){}
-    try{ state?.off?.renderer?.dispose?.(); }catch(_){}
+    try{
+      if (state?.api?.robotModel){
+        disposeObject3D(state.api.robotModel);
+        state.scene?.remove?.(state.api.robotModel);
+      }
+    }catch(_){}
+    try{ state?.ui?.root?.remove?.(); }catch(_){}
+    try{ state?.rt?.dispose?.(); }catch(_){}
     state=null;
   };
 
@@ -224,7 +244,7 @@
    *   container: HTMLElement (default document.body),
    *   urdfContent: string,
    *   meshDB: { key -> base64 },
-   *   selectMode: 'link'|'mesh' (default 'link')  // for gray hover overlay behavior
+   *   selectMode: 'link'|'mesh' (default 'link')  // hover overlay behavior
    *   background: number (hex) or null,
    *   descriptions: { [assetBaseName]: string }
    * }
@@ -239,6 +259,10 @@
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
 
+    // Mobile guards
+    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const DPR = Math.min(isMobile ? 1.5 : 2, window.devicePixelRatio || 1);
+
     // Scene
     const scene = new THREE.Scene();
     if (bg!=null) scene.background = new THREE.Color(bg);
@@ -251,15 +275,26 @@
     );
     camera.position.set(0,0,3);
 
-    const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
-    renderer.setPixelRatio(window.devicePixelRatio||1);
-    renderer.setSize(container.clientWidth||1, container.clientHeight||1);
-    renderer.domElement.style.width = "100%";
-    renderer.domElement.style.height = "100%";
-    renderer.domElement.style.touchAction = 'none';
-    renderer.domElement.style.display = 'block';
-    renderer.domElement.style.position = 'relative';
+    // ONE renderer: no preserveDrawingBuffer
+    const renderer = new THREE.WebGLRenderer({
+      antialias: !isMobile,
+      powerPreference: 'high-performance'
+    });
+    renderer.setPixelRatio(DPR);
+    renderer.setSize(container.clientWidth||1, container.clientHeight||1, false);
+    Object.assign(renderer.domElement.style, {
+      width:"100%", height:"100%", touchAction:'none', display:'block', position:'relative'
+    });
     container.appendChild(renderer.domElement);
+
+    // Handle context loss (prevent default so browser doesn't kill it immediately)
+    renderer.domElement.addEventListener('webglcontextlost', (e)=>{
+      e.preventDefault();
+      // You can show a small overlay here if you want
+    }, false);
+    renderer.domElement.addEventListener('webglcontextrestored', ()=>{
+      // In this minimalist flow Three.js reinitializes; app state is still in memory
+    }, false);
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -272,9 +307,12 @@
 
     function onResize(){
       const w = container.clientWidth||1, h = container.clientHeight||1;
-      camera.aspect = Math.max(1e-6, w/h);
+      const maxW = isMobile ? 900 : 4096;
+      const maxH = isMobile ? 700 : 4096;
+      const W = Math.min(w, maxW), H = Math.min(h, maxH);
+      camera.aspect = Math.max(1e-6, W/H);
       camera.updateProjectionMatrix();
-      renderer.setSize(w,h);
+      renderer.setSize(W, H, false);
     }
     window.addEventListener('resize', onResize);
 
@@ -331,7 +369,8 @@
           const bytes=b64ToUint8(meshDB[bestKey]);
           const loader=new THREE.STLLoader();
           const geom=loader.parse(bytes.buffer);
-          geom.computeVertexNormals();
+          // On mobile, skip computeVertexNormals() unless missing
+          if (!geom.attributes.normal && !isMobile) geom.computeVertexNormals();
           const mesh = new THREE.Mesh(
             geom,
             new THREE.MeshStandardMaterial({ color:0x8aa1ff, roughness:0.85, metalness:0.15, side:THREE.DoubleSide })
@@ -497,88 +536,80 @@
     renderer.domElement.addEventListener('pointerleave', endJointDrag);
     renderer.domElement.addEventListener('pointercancel', endJointDrag);
 
-    // ---------------- OFF-SCREEN snapshot rig ----------------
-    function buildOffscreenFromRobot(){
-      if (!api.robotModel) return null;
+    // ---------------- RenderTarget-based thumbnail rig (ONE renderer) ----------------
+    // Will be (re)built after robot is loaded:
+    let rt = null; // THREE.WebGLRenderTarget
+    const RT_W = isMobile ? 320 : 640;
+    const RT_H = isMobile ? 240 : 480;
 
-      const offCanvas = document.createElement('canvas');
-      const OFF_W = 640, OFF_H = 480;
-      offCanvas.width = OFF_W; offCanvas.height = OFF_H;
-
-      const offRenderer = new THREE.WebGLRenderer({ canvas: offCanvas, antialias:true, preserveDrawingBuffer:true });
-      offRenderer.setSize(OFF_W, OFF_H, false);
-
-      const offScene = new THREE.Scene();
-      offScene.background = new THREE.Color(0xffffff);
-
-      const amb = new THREE.AmbientLight(0xffffff, 0.95);
-      const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(2.5,2.5,2.5);
-      offScene.add(amb); offScene.add(d);
-
-      const offCamera = new THREE.PerspectiveCamera(60, OFF_W/OFF_H, 0.01, 10000);
-
-      const robotClone = api.robotModel.clone(true);
-      offScene.add(robotClone);
-
-      // Index clone meshes by assetKey
-      const cloneAssetToMeshes = new Map();
-      robotClone.traverse(o=>{
-        const k = o?.userData?.__assetKey;
-        if (k && o.isMesh && o.geometry){
-          const arr = cloneAssetToMeshes.get(k) || [];
-          arr.push(o); cloneAssetToMeshes.set(k, arr);
-        }
-      });
-
-      return { renderer: offRenderer, scene: offScene, camera: offCamera, canvas: offCanvas, robotClone, cloneAssetToMeshes };
+    // Copy pixels from the current RenderTarget into a 2D canvas URL
+    function readRTToDataURL(){
+      const gl = renderer.getContext();
+      const pixels = new Uint8Array(RT_W * RT_H * 4);
+      gl.readPixels(0, 0, RT_W, RT_H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      const c2d = document.createElement('canvas');
+      c2d.width = RT_W; c2d.height = RT_H;
+      const ctx = c2d.getContext('2d');
+      const imgData = new ImageData(new Uint8ClampedArray(pixels), RT_W, RT_H);
+      // Flip Y (WebGL is bottom-up)
+      const row = RT_W * 4, h = RT_H, data = imgData.data;
+      const flipped = new Uint8ClampedArray(data.length);
+      for (let y=0; y<h; y++){
+        flipped.set(data.subarray(y*row, y*row+row), (h-1-y)*row);
+      }
+      ctx.putImageData(new ImageData(flipped, RT_W, RT_H), 0, 0);
+      return c2d.toDataURL('image/png');
     }
 
     async function snapshotAssetOffscreen(assetKey){
-      const off = state.off;
-      if (!off) return null;
-      const meshes = off.cloneAssetToMeshes.get(assetKey) || [];
-      if (!meshes.length) return null;
+      if (!api.robotModel || !rt) return null;
 
-      // Save visibility
+      // Save vis + camera
       const vis = [];
-      off.robotClone.traverse(o=>{
-        if (o.isMesh && o.geometry) vis.push([o, o.visible]);
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay) { vis.push([o, o.visible]); o.visible = false; }
       });
 
-      // Hide ALL
-      for (const [m] of vis) m.visible = false;
-      // Show ONLY this asset's meshes
+      const meshes = assetToMeshes.get(assetKey) || [];
       for (const m of meshes) m.visible = true;
 
-      // Frame
+      // Frame the group
       const box = computeUnionBox(meshes);
       if (!box){ vis.forEach(([o,v])=>o.visible=v); return null; }
       const center = box.getCenter(new THREE.Vector3());
       const size   = box.getSize(new THREE.Vector3());
-      const maxDim = Math.max(size.x,size.y,size.z) || 1;
-      const dist = maxDim * 2.0;
-      off.camera.near = Math.max(maxDim/1000,0.001);
-      off.camera.far  = Math.max(maxDim*1000,1000);
-      off.camera.updateProjectionMatrix();
-
-      const az = Math.PI * 0.25, el = Math.PI * 0.18;
+      const maxDim = Math.max(size.x,size.y,size.z)||1;
+      const dist   = maxDim * 2.0;
+      camera.near = Math.max(maxDim/1000,0.001);
+      camera.far  = Math.max(maxDim*500,500);
+      camera.updateProjectionMatrix();
+      const az = Math.PI*0.25, el = Math.PI*0.18;
       const dir = new THREE.Vector3(
         Math.cos(el)*Math.cos(az),
         Math.sin(el),
         Math.cos(el)*Math.sin(az)
       ).multiplyScalar(dist);
-      off.camera.position.copy(center.clone().add(dir));
-      off.camera.lookAt(center);
+      const oldPos = camera.position.clone(), oldTarget = controls.target.clone(), oldBg = scene.background;
+      camera.position.copy(center.clone().add(dir));
+      camera.lookAt(center);
 
-      off.renderer.render(off.scene, off.camera);
-      const url = off.renderer.domElement.toDataURL('image/png');
+      // Render to target with white bg
+      scene.background = new THREE.Color(0xffffff);
+      const prevTarget = renderer.getRenderTarget();
+      renderer.setRenderTarget(rt);
+      renderer.render(scene, camera);
+      const url = readRTToDataURL();
 
-      // Restore vis
-      for (const [o,v] of vis) o.visible = v;
+      // Restore
+      renderer.setRenderTarget(prevTarget);
+      scene.background = oldBg;
+      camera.position.copy(oldPos);
+      controls.target.copy(oldTarget); controls.update();
+      vis.forEach(([o,v])=>o.visible=v);
 
       return url;
     }
-    // ---------------- end OFF-SCREEN ----------------
+    // ---------------- end RT rig ----------------
 
     // ---------- UI helpers ----------
     function showAllAndFrame(){
@@ -743,6 +774,9 @@
         listEl.textContent = 'No components with visual geometry found.'; return;
       }
 
+      // Throttle thumb generation to avoid spikes on mobile
+      let delay = 0;
+
       for (const ent of entries){
         const row = document.createElement('div');
         Object.assign(row.style, {
@@ -794,24 +828,30 @@
           isolateAssetOnScreen(ent.assetKey);
         });
 
-        (async ()=>{
+        // Lazy thumbnail generation
+        setTimeout(async ()=>{
           try{
             const url = await snapshotAssetOffscreen(ent.assetKey);
             if (url) img.src = url;
           }catch(_e){}
-        })();
+        }, delay);
+        delay += isMobile ? 120 : 50;
       }
     }
     // ---------- end UI ----------
 
     // Public state holder
-    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
+    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, rt:null };
 
     // Load URDF
     function loadURDF(urdfText){
       // reset scene + maps
-      if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
-      if (state.off){ try{ state.off.renderer.dispose(); }catch(_){} state.off=null; }
+      if (api.robotModel){
+        disposeObject3D(api.robotModel);
+        scene.remove(api.robotModel);
+        api.robotModel=null;
+      }
+      assetToMeshes.clear();
 
       try{
         const robot = urdfLoader.parse(urdfText||'');
@@ -821,8 +861,10 @@
           api.linkSet = markLinksAndJoints(api.robotModel);
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
 
-          // Build OFF-SCREEN rig now that meshes exist
-          state.off = buildOffscreenFromRobot();
+          // (Re)build RenderTarget for thumbnails
+          if (state.rt){ try{ state.rt.dispose(); }catch(_){} }
+          state.rt = new THREE.WebGLRenderTarget(RT_W, RT_H, { samples: 0 });
+          rt = state.rt;
         }
       } catch(_e){}
     }
