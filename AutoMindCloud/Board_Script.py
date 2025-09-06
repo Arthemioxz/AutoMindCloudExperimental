@@ -1,16 +1,30 @@
 from IPython.display import HTML, display, Markdown, Image
 from google.colab import output
-import IPython
-import requests, urllib.parse, re
+import requests, urllib.parse, re, json
 
-# -------- Pollinations (texto) --------
-def polli_text(prompt: str) -> str:
-    url = "https://text.pollinations.ai/" + urllib.parse.quote(prompt, safe="")
-    r = requests.get(url, timeout=60)
+# ---------- Pollinations (OpenAI-compatible POST) ----------
+def polli_openai(messages, model="llama-vision", max_tokens=400):
+    """
+    Llama a https://text.pollinations.ai/openai con payload OpenAI-compatible.
+    'messages' debe ser una lista de dicts con 'role' y 'content'.
+    """
+    url = "https://text.pollinations.ai/openai"
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+    }
+    r = requests.post(url, json=payload, timeout=90)
     r.raise_for_status()
-    return r.text  # respuesta en texto plano
+    data = r.json()
+    # Soporta tanto /chat.completions como /responses-style
+    if "choices" in data and data["choices"]:
+        return data["choices"][0]["message"]["content"]
+    if "output" in data:  # por si expone 'output' directamente
+        return data["output"]
+    return json.dumps(data)
 
-# -------- Uploader anónimo (sin API key) --------
+# ---------- (Opcional) uploader fallback si algún modelo no acepta data:URL ----------
 def _upload_anon_png(path: str) -> str | None:
     try:
         with open(path, "rb") as f:
@@ -21,55 +35,70 @@ def _upload_anon_png(path: str) -> str | None:
     except Exception:
         return None
 
-# --- Callback Python: guarda PNG, muestra imagen, sube a 0x0.st, consulta Pollinations y muestra Markdown
-def save_canvas_to_cell(data_url_png: str, data_url_jpeg_preview: str = None):
+# ---------- Callback principal ----------
+def save_canvas_to_cell(data_url_png: str, _data_url_jpeg_preview: str = None):
     import base64
     from IPython.display import clear_output
 
-    # 1) Guardar PNG a disco
+    # 1) Guardar PNG y mostrarlo
     m = re.match(r'^data:image/(?:png|jpeg);base64,(.*)$', data_url_png)
     b64_png = m.group(1) if m else data_url_png
     png_path = "/content/pizarra_cell.png"
     with open(png_path, "wb") as f:
         f.write(base64.b64decode(b64_png))
 
-    # 2) Mostrar imagen en la salida de la celda
     clear_output(wait=True)
     display(Image(filename=png_path))
 
-    # 3) Intentar guardar el notebook (best effort)
+    # (Best effort) guardar notebook
     try:
         from google.colab import _message
         _message.blocking_request('notebook.save', {})
     except Exception:
-        pass  # no interrumpir el flujo si falla
+        pass
 
-    # 4) Subir imagen para obtener URL pública
-    img_url = _upload_anon_png(png_path)
+    # 2) Construir mensaje con base64 inline (data URL)
+    data_url = f"data:image/png;base64,{b64_png}"
+    question = "¿Qué hay dibujado en esta imagen? Sé conciso y técnico; si hay ecuaciones o diagramas, descríbelos brevemente. Responde en español."
 
-    # 5) Preparar prompt (pregunta directa, respuesta en español y concisa)
-    if img_url:
-        prompt = (
-            f"Imagen: {img_url}\n"
-            "Responde SOLO a esta pregunta: ¿Qué hay dibujado en esta imagen? "
-            "Sé conciso y técnico; si hay ecuaciones o diagramas, descríbelos brevemente. "
-            "Responde en español en texto plano."
-        )
-    else:
-        prompt = (
-            "No puedes ver imágenes. Responde en español que no se pudo acceder a un enlace público de la imagen."
-        )
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": question},
+            {"type": "image_url", "image_url": {"url": data_url}}
+        ]
+    }]
 
-    # 6) Consultar Pollinations y mostrar resultado en Markdown
+    # 3) Intentar con base64 directo
     try:
-        txt = polli_text(prompt).strip()
-    except Exception as e:
-        txt = f"No pude contactar el servicio generativo: {e}"
-
-    display(Markdown(txt))
+        txt = polli_openai(messages, model="llama-vision", max_tokens=400).strip()
+        if not txt:
+            raise RuntimeError("Respuesta vacía.")
+        display(Markdown(txt))
+        return
+    except Exception as e1:
+        # 4) Fallback opcional: subir y reintentar con URL pública
+        img_url = _upload_anon_png(png_path)
+        if img_url:
+            messages_url = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {"type": "image_url", "image_url": {"url": img_url}}
+                ]
+            }]
+            try:
+                txt = polli_openai(messages_url, model="llama-vision", max_tokens=400).strip()
+                if not txt:
+                    raise RuntimeError("Respuesta vacía tras fallback.")
+                display(Markdown(txt))
+                return
+            except Exception as e2:
+                display(Markdown(f"**No se pudo analizar la imagen.**\n\n- Base64 error: `{e1}`\n- URL fallback error: `{e2}`"))
+        else:
+            display(Markdown(f"**No se pudo analizar la imagen (base64 rechazado y sin URL pública disponible).**\n\nError base64: `{e1}`"))
 
 def board():
-    # Registrar callback JS -> Python (nombre debe coincidir con invokeFunction)
     output.register_callback("notebook.saveCanvasToCell", save_canvas_to_cell)
 
     html = r"""
@@ -86,13 +115,8 @@ def board():
   .toolbar button{ padding:8px 12px; border:1px solid var(--muted); border-radius:8px; cursor:pointer; background:#fff; }
   .toolbar input[type="color"], .toolbar input[type="range"]{ height:36px; }
   canvas{ border:1px solid var(--muted); border-radius:12px; width:100%; height:500px; touch-action:none; cursor:crosshair; background:#fff; }
-
-  .toast{
-    position: fixed; left:50%; transform:translateX(-50%);
-    bottom: 20px; background:#111827; color:#fff; padding:8px 12px;
-    border-radius:8px; font-size:14px; opacity:0; transition:opacity .2s ease;
-    z-index: 10000;
-  }
+  .toast{ position: fixed; left:50%; transform:translateX(-50%); bottom: 20px; background:#111827; color:#fff; padding:8px 12px;
+          border-radius:8px; font-size:14px; opacity:0; transition:opacity .2s ease; z-index: 10000; }
   .toast.show{ opacity:0.95; }
 </style>
 </head>
@@ -110,7 +134,7 @@ def board():
   </div>
 
   <canvas id="board"></canvas>
-  <div id="toast" class="toast">Guardado en la celda, subiendo y analizando…</div>
+  <div id="toast" class="toast">Procesando…</div>
 
 <script>
 (function(){
@@ -121,7 +145,6 @@ def board():
   const toastEl = document.getElementById('toast');
   let drawing=false, last={x:0,y:0}, tool='pen', dpr=window.devicePixelRatio||1;
 
-  // Historial para undo/redo
   let undoStack=[], redoStack=[];
   function saveState(){
     try { undoStack.push(canvas.toDataURL('image/png')); } catch(e){ undoStack.push(canvas.toDataURL()); }
@@ -139,13 +162,11 @@ def board():
       };
     }
   }
-
   function showToast(msg){
-    toastEl.textContent = msg || "Guardado.";
+    toastEl.textContent = msg || "Procesando…";
     toastEl.classList.add('show');
-    setTimeout(()=>toastEl.classList.remove('show'), 1200);
+    setTimeout(()=>toastEl.classList.remove('show'), 1000);
   }
-
   function initCanvas(w, h){
     ctx.save();
     canvas.width  = w;
@@ -156,7 +177,6 @@ def board():
     ctx.restore();
     saveState();
   }
-
   function resize(preserve=true){
     let tmp=null;
     if(preserve && canvas.width && canvas.height){
@@ -169,21 +189,15 @@ def board():
     initCanvas(w,h);
     if(preserve && tmp) ctx.drawImage(tmp,0,0);
   }
-
   function clearCanvas(){
-    ctx.save();
-    ctx.globalCompositeOperation='source-over';
-    ctx.fillStyle='#fff';
-    ctx.fillRect(0,0,canvas.width,canvas.height);
-    ctx.restore();
-    saveState();
+    ctx.save(); ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.restore(); saveState();
   }
-
   function pos(e){
     const r=canvas.getBoundingClientRect();
     return {x:(e.clientX-r.left)*dpr, y:(e.clientY-r.top)*dpr};
   }
-
   function line(a,b){
     ctx.save();
     ctx.globalCompositeOperation = (tool==='eraser'?"destination-out":"source-over");
@@ -192,10 +206,8 @@ def board():
     ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
     ctx.restore();
   }
-
   window.addEventListener('resize', ()=>resize(true));
   setTimeout(()=>resize(true), 0);
-
   canvas.addEventListener('pointerdown',e=>{
     canvas.setPointerCapture?.(e.pointerId);
     drawing=true; last=pos(e); line(last,last);
@@ -209,28 +221,23 @@ def board():
       drawing=false;
     });
   });
-
   document.getElementById('penBtn').onclick=()=>tool='pen';
   document.getElementById('eraserBtn').onclick=()=>tool='eraser';
   document.getElementById('clearBtn').onclick=()=>clearCanvas();
   document.getElementById('undoBtn').onclick=()=>restoreState(undoStack,redoStack);
   document.getElementById('redoBtn').onclick=()=>restoreState(redoStack,undoStack);
-
   document.getElementById('savePngBtn').onclick=()=>{
-    const a=document.createElement('a');
-    a.href=canvas.toDataURL('image/png'); a.download="pizarra.png"; a.click();
+    const a=document.createElement('a'); a.href=canvas.toDataURL('image/png');
+    a.download="pizarra.png"; a.click();
   };
-
   document.getElementById('saveToCellBtn').onclick=()=>{
     const dataURL_PNG  = canvas.toDataURL('image/png');
-    let dataURL_JPEG;
-    try { dataURL_JPEG = canvas.toDataURL('image/jpeg', 0.6); } catch(e) { dataURL_JPEG = null; }
     try{
-      google.colab.kernel.invokeFunction('notebook.saveCanvasToCell',[dataURL_PNG, dataURL_JPEG],{});
-      showToast("Guardado en la celda, subiendo y analizando…");
+      google.colab.kernel.invokeFunction('notebook.saveCanvasToCell',[dataURL_PNG, null],{});
+      showToast("Procesando…");
     }catch(e){
       console.error(e);
-      showToast("No se pudo invocar el guardado. Revisa la consola.");
+      showToast("No se pudo invocar el guardado.");
     }
   };
 })();
@@ -240,5 +247,5 @@ def board():
 """
     display(HTML(html))
 
-# Ejecuta después:
+# Ejecuta luego:
 # board()
