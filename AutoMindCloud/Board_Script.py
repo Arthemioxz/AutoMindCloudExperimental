@@ -3,13 +3,14 @@ from google.colab import output
 import IPython
 import requests, urllib.parse, re
 
-# -------- TEXTO --------
+# -------- Pollinations text endpoint --------
 def polli_text(prompt: str) -> str:
     url = "https://text.pollinations.ai/" + urllib.parse.quote(prompt, safe="")
     r = requests.get(url, timeout=60)
     r.raise_for_status()
     return r.text  # respuesta en texto plano
 
+# -------- Render LaTeX-ish paragraph (Markdown + MathJax) --------
 def show_latex_paragraph(s: str):
     # 1) Quitar bloques ```latex ... ```
     s = re.sub(r"```(?:latex)?|```", "", s, flags=re.IGNORECASE).strip()
@@ -21,9 +22,18 @@ def show_latex_paragraph(s: str):
     # 4) Mostrar como párrafo Markdown (MathJax renderiza \( ... \), \[ ... \], $$ ... $$)
     return IPython.display.Markdown(s)
 
-# --- Python callback: recibe el PNG (y opcionalmente un JPEG comprimido),
-#     reemplaza la salida de la celda, guarda el .ipynb,
-#     y luego consulta Pollinations y muestra el párrafo LaTeX.
+# -------- Anonymous uploader (no API key) --------
+def _upload_anon_png(path: str) -> str | None:
+    try:
+        with open(path, "rb") as f:
+            r = requests.post("https://0x0.st", files={"file": f}, timeout=60)
+        r.raise_for_status()
+        url = r.text.strip()
+        return url if url.startswith("http") else None
+    except Exception:
+        return None
+
+# --- Python callback: guarda PNG, muestra imagen, sube a 0x0.st, y luego llama Pollinations con la URL
 def save_canvas_to_cell(data_url_png: str, data_url_jpeg_preview: str = None):
     import base64
     from IPython.display import display, Image, clear_output
@@ -46,20 +56,33 @@ def save_canvas_to_cell(data_url_png: str, data_url_jpeg_preview: str = None):
     except Exception:
         print("⚠️ No pude forzar el guardado automático del .ipynb. Usa Archivo → Guardar.")
 
-    # --- Preparar el "photo" para el prompt (intentando ser livianos) ---
-    photo_for_prompt = data_url_jpeg_preview or data_url_png
-    prompt = f"{photo_for_prompt} Was is drawed in this photo?: "
+    # --- Subir PNG para obtener URL pública ---
+    img_url = _upload_anon_png(png_path)
 
+    if img_url:
+        # Prompt claro para descripción técnica en español como párrafo LaTeX
+        prompt = (
+            f"Describe en español lo que está dibujado en esta imagen: {img_url}\n"
+            "Sé conciso y técnico; si hay ecuaciones o diagramas, descríbelos. "
+            "Devuélvelo como un solo párrafo en LaTeX (usa texto normal, y matemáticas inline si corresponde)."
+        )
+    else:
+        # Fallback si no hay URL
+        prompt = (
+            "No puedes ver imágenes. Ignora cualquier base64 y escribe un párrafo genérico en LaTeX "
+            "indicando que no se pudo analizar la imagen y cómo compartir un enlace público."
+        )
+
+    # --- Consultar Pollinations y mostrar párrafo renderizado ---
     try:
         txt = polli_text(prompt)
     except Exception as e:
         txt = f"\\text{{No pude contactar Pollinations: {e}}}"
 
-    # Mostrar párrafo (Markdown compatible con LaTeX inline)
     display(show_latex_paragraph(txt))
 
 def board():
-    # Registrar callback para JS -> Python
+    # Registrar callback JS -> Python (nombre debe coincidir con invokeFunction)
     output.register_callback("notebook.saveCanvasToCell", save_canvas_to_cell)
 
     html = r"""
@@ -100,7 +123,7 @@ def board():
   </div>
 
   <canvas id="board"></canvas>
-  <div id="toast" class="toast">Guardado en la celda, analizando con Pollinations…</div>
+  <div id="toast" class="toast">Guardado en la celda, subiendo y analizando…</div>
 
 <script>
 (function(){
@@ -214,7 +237,7 @@ def board():
 
   document.getElementById('saveToCellBtn').onclick=()=>{
     const dataURL_PNG  = canvas.toDataURL('image/png');
-    // Versión JPEG comprimida para el prompt (más liviana que PNG)
+    // Versión JPEG comprimida opcional (no usada para Pollinations; se sube el PNG real)
     let dataURL_JPEG;
     try {
       dataURL_JPEG = canvas.toDataURL('image/jpeg', 0.6);
@@ -222,9 +245,8 @@ def board():
       dataURL_JPEG = null;
     }
     try{
-      // Pasamos ambos data URLs (PNG para guardar/mostrar y JPEG para el prompt)
       google.colab.kernel.invokeFunction('notebook.saveCanvasToCell',[dataURL_PNG, dataURL_JPEG],{});
-      showToast("Guardado en la celda y en /content/pizarra_cell.png. Analizando…");
+      showToast("Guardado en la celda, subiendo y analizando…");
     }catch(e){
       console.error(e);
       showToast("No se pudo invocar el guardado. Revisa la consola.");
