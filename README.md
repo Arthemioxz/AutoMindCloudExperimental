@@ -35,7 +35,7 @@ Financial Accounting: https://colab.research.google.com/drive/1o4EPhvSMvY98NPEDp
 
 **IA Calculus Summary**
 
-![Screenshot_2025-09-06-18-26-21-686](https://github.com/user-attachments/assets/791379b6-202b-4648-b564-3b32b1b6dede)
+<img width="578" height="477" alt="image" src=" https://github.com/user-attachments/assets/791379b6-202b-4648-b564-3b32b1b6dede" />
 
 **Robotics on Colab**
 
