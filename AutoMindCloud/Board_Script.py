@@ -150,7 +150,7 @@ def board(serial: str = "board"):
   function drawFromDataURL(dataURL){{
     if(!dataURL) return;
     const im = new Image();
-    im.onload = ()=>{{
+    im.onload = () => {{
       ctx.save();
       ctx.globalCompositeOperation='source-over';
       ctx.drawImage(im,0,0,im.naturalWidth,im.naturalHeight,0,0,canvas.width,canvas.height);
@@ -194,6 +194,27 @@ def board(serial: str = "board"):
   document.getElementById('clearBtn_{serial}').onclick=()=>{{ pushHistory(); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); schedulePersist(); }};
   document.getElementById('undoBtn_{serial}').onclick=doUndo;
   document.getElementById('redoBtn_{serial}').onclick=doRedo;
+
+  // --- NUEVO: Descargar PNG ---
+  document.getElementById('downloadBtn_{serial}').onclick = () => {{
+    try {{
+      const dataURL = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = dataURL;
+      const now = new Date();
+      const pad = n => String(n).padStart(2,'0');
+      const fname = "pizarra_{serial}_" +
+                    now.getFullYear() + "-" + pad(now.getMonth()+1) + "-" + pad(now.getDate()) + "_" +
+                    pad(now.getHours()) + "-" + pad(now.getMinutes()) + "-" + pad(now.getSeconds()) + ".png";
+      a.download = fname;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }} catch(e) {{
+      console.error(e);
+      alert('No se pudo descargar la imagen.');
+    }}
+  }};
 
   window.addEventListener('keydown', (e)=>{{ const z=(e.key==='z'||e.key==='Z'); const cm=e.ctrlKey||e.metaKey; if(!cm||!z) return; e.preventDefault(); if(e.shiftKey) doRedo(); else doUndo(); }});
 
@@ -249,6 +270,7 @@ def board(serial: str = "board"):
     <button id="undoBtn_{serial}">↩️ Undo</button>
     <button id="redoBtn_{serial}">↪️ Redo</button>
     <button id="clearBtn_{serial}">🗑️ Limpiar</button>
+    <button id="downloadBtn_{serial}">⬇️ Descargar PNG</button>
   </div>
 
   <!-- (INTERNO oculto) para rehidratar el canvas y seguir editando -->
