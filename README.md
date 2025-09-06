@@ -2,7 +2,7 @@
 
 Library to Civil Engineers 
 
-- Automtic Evaluation Sympy
+- Automatic Evaluation Sympy
 - IA Calculus Summary
 - Whiteboard on Colab
 - Step Render on Colab
