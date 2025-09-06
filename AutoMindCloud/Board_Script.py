@@ -1,28 +1,16 @@
-from IPython.display import HTML, display
+from IPython.display import HTML, display, Markdown, Image
 from google.colab import output
 import IPython
 import requests, urllib.parse, re
 
-# -------- Pollinations text endpoint --------
+# -------- Pollinations (texto) --------
 def polli_text(prompt: str) -> str:
     url = "https://text.pollinations.ai/" + urllib.parse.quote(prompt, safe="")
     r = requests.get(url, timeout=60)
     r.raise_for_status()
     return r.text  # respuesta en texto plano
 
-# -------- Render LaTeX-ish paragraph (Markdown + MathJax) --------
-def show_latex_paragraph(s: str):
-    # 1) Quitar bloques ```latex ... ```
-    s = re.sub(r"```(?:latex)?|```", "", s, flags=re.IGNORECASE).strip()
-    # 2) Si todo viene envuelto en \text{ ... }, desenvolver
-    if s.startswith(r"\text{") and s.endswith("}"):
-        s = s[6:-1]
-    # 3) Convertir saltos LaTeX "\\" a saltos de línea Markdown
-    s = s.replace(r"\\ ", "  \n").replace(r"\\", "  \n")
-    # 4) Mostrar como párrafo Markdown (MathJax renderiza \( ... \), \[ ... \], $$ ... $$)
-    return IPython.display.Markdown(s)
-
-# -------- Anonymous uploader (no API key) --------
+# -------- Uploader anónimo (sin API key) --------
 def _upload_anon_png(path: str) -> str | None:
     try:
         with open(path, "rb") as f:
@@ -33,53 +21,52 @@ def _upload_anon_png(path: str) -> str | None:
     except Exception:
         return None
 
-# --- Python callback: guarda PNG, muestra imagen, sube a 0x0.st, y luego llama Pollinations con la URL
+# --- Callback Python: guarda PNG, muestra imagen, sube a 0x0.st, consulta Pollinations y muestra Markdown
 def save_canvas_to_cell(data_url_png: str, data_url_jpeg_preview: str = None):
     import base64
-    from IPython.display import display, Image, clear_output
+    from IPython.display import clear_output
 
-    # --- Guardar PNG a disco ---
+    # 1) Guardar PNG a disco
     m = re.match(r'^data:image/(?:png|jpeg);base64,(.*)$', data_url_png)
     b64_png = m.group(1) if m else data_url_png
     png_path = "/content/pizarra_cell.png"
     with open(png_path, "wb") as f:
         f.write(base64.b64decode(b64_png))
 
-    # Reemplaza la salida con la imagen PNG
+    # 2) Mostrar imagen en la salida de la celda
     clear_output(wait=True)
     display(Image(filename=png_path))
 
-    # --- Forzar guardado del notebook (best effort) ---
+    # 3) Intentar guardar el notebook (best effort)
     try:
         from google.colab import _message
         _message.blocking_request('notebook.save', {})
     except Exception:
-        print("⚠️ No pude forzar el guardado automático del .ipynb. Usa Archivo → Guardar.")
+        pass  # no interrumpir el flujo si falla
 
-    # --- Subir PNG para obtener URL pública ---
+    # 4) Subir imagen para obtener URL pública
     img_url = _upload_anon_png(png_path)
 
+    # 5) Preparar prompt (pregunta directa, respuesta en español y concisa)
     if img_url:
-        # Prompt claro para descripción técnica en español como párrafo LaTeX
         prompt = (
-            f"Describe en español lo que está dibujado en esta imagen: {img_url}\n"
-            "Sé conciso y técnico; si hay ecuaciones o diagramas, descríbelos. "
-            "Devuélvelo como un solo párrafo en LaTeX (usa texto normal, y matemáticas inline si corresponde)."
+            f"Imagen: {img_url}\n"
+            "Responde SOLO a esta pregunta: ¿Qué hay dibujado en esta imagen? "
+            "Sé conciso y técnico; si hay ecuaciones o diagramas, descríbelos brevemente. "
+            "Responde en español en texto plano."
         )
     else:
-        # Fallback si no hay URL
         prompt = (
-            "No puedes ver imágenes. Ignora cualquier base64 y escribe un párrafo genérico en LaTeX "
-            "indicando que no se pudo analizar la imagen y cómo compartir un enlace público."
+            "No puedes ver imágenes. Responde en español que no se pudo acceder a un enlace público de la imagen."
         )
 
-    # --- Consultar Pollinations y mostrar párrafo renderizado ---
+    # 6) Consultar Pollinations y mostrar resultado en Markdown
     try:
-        txt = polli_text(prompt)
+        txt = polli_text(prompt).strip()
     except Exception as e:
-        txt = f"\\text{{No pude contactar Pollinations: {e}}}"
+        txt = f"No pude contactar el servicio generativo: {e}"
 
-    display(show_latex_paragraph(txt))
+    display(Markdown(txt))
 
 def board():
     # Registrar callback JS -> Python (nombre debe coincidir con invokeFunction)
@@ -132,7 +119,6 @@ def board():
   const colorEl = document.getElementById('color');
   const sizeEl  = document.getElementById('size');
   const toastEl = document.getElementById('toast');
-
   let drawing=false, last={x:0,y:0}, tool='pen', dpr=window.devicePixelRatio||1;
 
   // Historial para undo/redo
@@ -157,7 +143,7 @@ def board():
   function showToast(msg){
     toastEl.textContent = msg || "Guardado.";
     toastEl.classList.add('show');
-    setTimeout(()=>toastEl.classList.remove('show'), 1400);
+    setTimeout(()=>toastEl.classList.remove('show'), 1200);
   }
 
   function initCanvas(w, h){
@@ -168,7 +154,7 @@ def board():
     ctx.fillRect(0,0,canvas.width,canvas.height);
     ctx.lineJoin="round"; ctx.lineCap="round";
     ctx.restore();
-    saveState(); // guardar estado inicial
+    saveState();
   }
 
   function resize(preserve=true){
@@ -237,13 +223,8 @@ def board():
 
   document.getElementById('saveToCellBtn').onclick=()=>{
     const dataURL_PNG  = canvas.toDataURL('image/png');
-    // Versión JPEG comprimida opcional (no usada para Pollinations; se sube el PNG real)
     let dataURL_JPEG;
-    try {
-      dataURL_JPEG = canvas.toDataURL('image/jpeg', 0.6);
-    } catch(e) {
-      dataURL_JPEG = null;
-    }
+    try { dataURL_JPEG = canvas.toDataURL('image/jpeg', 0.6); } catch(e) { dataURL_JPEG = null; }
     try{
       google.colab.kernel.invokeFunction('notebook.saveCanvasToCell',[dataURL_PNG, dataURL_JPEG],{});
       showToast("Guardado en la celda, subiendo y analizando…");
@@ -258,3 +239,6 @@ def board():
 </html>
 """
     display(HTML(html))
+
+# Ejecuta después:
+# board()
