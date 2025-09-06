@@ -254,7 +254,7 @@ def show_latex_paragraph(s: str):
     # 4) Mostrar como párrafo Markdown (MathJax renderiza \( ... \), \[ ... \], $$ ... $$)
     return IPython.display.Markdown(s)
 
-def Resume(numero):
+def CalculusSummary(numero):
   global documento
 
   if numero == 1:
