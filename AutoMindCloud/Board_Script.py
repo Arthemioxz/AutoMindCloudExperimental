@@ -1,102 +1,26 @@
-from IPython.display import HTML, display, Markdown, Image
+from IPython.display import HTML, display
 from google.colab import output
-import requests, urllib.parse, re, json
 
-# ---------- Pollinations (OpenAI-compatible POST) ----------
-def polli_openai(messages, model="llama-vision", max_tokens=400):
-    """
-    Llama a https://text.pollinations.ai/openai con payload OpenAI-compatible.
-    'messages' debe ser una lista de dicts con 'role' y 'content'.
-    """
-    url = "https://text.pollinations.ai/openai"
-    payload = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-    }
-    r = requests.post(url, json=payload, timeout=90)
-    r.raise_for_status()
-    data = r.json()
-    # Soporta tanto /chat.completions como /responses-style
-    if "choices" in data and data["choices"]:
-        return data["choices"][0]["message"]["content"]
-    if "output" in data:  # por si expone 'output' directamente
-        return data["output"]
-    return json.dumps(data)
+# --- Python callback: recibe el PNG del canvas, reemplaza la salida de la celda y guarda el .ipynb
+def save_canvas_to_cell(data_url_png: str):
+    import base64, re
+    from IPython.display import display, Image, clear_output
 
-# ---------- (Opcional) uploader fallback si algún modelo no acepta data:URL ----------
-def _upload_anon_png(path: str) -> str | None:
-    try:
-        with open(path, "rb") as f:
-            r = requests.post("https://0x0.st", files={"file": f}, timeout=60)
-        r.raise_for_status()
-        url = r.text.strip()
-        return url if url.startswith("http") else None
-    except Exception:
-        return None
+    m = re.match(r'^data:image/png;base64,(.*)$', data_url_png)
+    b64 = m.group(1) if m else data_url_png
 
-# ---------- Callback principal ----------
-def save_canvas_to_cell(data_url_png: str, _data_url_jpeg_preview: str = None):
-    import base64
-    from IPython.display import clear_output
-
-    # 1) Guardar PNG y mostrarlo
-    m = re.match(r'^data:image/(?:png|jpeg);base64,(.*)$', data_url_png)
-    b64_png = m.group(1) if m else data_url_png
-    png_path = "/content/pizarra_cell.png"
-    with open(png_path, "wb") as f:
-        f.write(base64.b64decode(b64_png))
+    path = "/content/pizarra_cell.png"
+    with open(path, "wb") as f:
+        f.write(base64.b64decode(b64))
 
     clear_output(wait=True)
-    display(Image(filename=png_path))
+    display(Image(filename=path))
 
-    # (Best effort) guardar notebook
     try:
         from google.colab import _message
         _message.blocking_request('notebook.save', {})
     except Exception:
-        pass
-
-    # 2) Construir mensaje con base64 inline (data URL)
-    data_url = f"data:image/png;base64,{b64_png}"
-    question = "¿Qué hay dibujado en esta imagen? Sé conciso y técnico; si hay ecuaciones o diagramas, descríbelos brevemente. Responde en español."
-
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": question},
-            {"type": "image_url", "image_url": {"url": data_url}}
-        ]
-    }]
-
-    # 3) Intentar con base64 directo
-    try:
-        txt = polli_openai(messages, model="llama-vision", max_tokens=400).strip()
-        if not txt:
-            raise RuntimeError("Respuesta vacía.")
-        display(Markdown(txt))
-        return
-    except Exception as e1:
-        # 4) Fallback opcional: subir y reintentar con URL pública
-        img_url = _upload_anon_png(png_path)
-        if img_url:
-            messages_url = [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": question},
-                    {"type": "image_url", "image_url": {"url": img_url}}
-                ]
-            }]
-            try:
-                txt = polli_openai(messages_url, model="llama-vision", max_tokens=400).strip()
-                if not txt:
-                    raise RuntimeError("Respuesta vacía tras fallback.")
-                display(Markdown(txt))
-                return
-            except Exception as e2:
-                display(Markdown(f"**No se pudo analizar la imagen.**\n\n- Base64 error: `{e1}`\n- URL fallback error: `{e2}`"))
-        else:
-            display(Markdown(f"**No se pudo analizar la imagen (base64 rechazado y sin URL pública disponible).**\n\nError base64: `{e1}`"))
+        print("⚠️ No pude forzar el guardado automático del .ipynb. Usa Archivo → Guardar.")
 
 def board():
     output.register_callback("notebook.saveCanvasToCell", save_canvas_to_cell)
@@ -115,8 +39,13 @@ def board():
   .toolbar button{ padding:8px 12px; border:1px solid var(--muted); border-radius:8px; cursor:pointer; background:#fff; }
   .toolbar input[type="color"], .toolbar input[type="range"]{ height:36px; }
   canvas{ border:1px solid var(--muted); border-radius:12px; width:100%; height:500px; touch-action:none; cursor:crosshair; background:#fff; }
-  .toast{ position: fixed; left:50%; transform:translateX(-50%); bottom: 20px; background:#111827; color:#fff; padding:8px 12px;
-          border-radius:8px; font-size:14px; opacity:0; transition:opacity .2s ease; z-index: 10000; }
+
+  .toast{
+    position: fixed; left:50%; transform:translateX(-50%);
+    bottom: 20px; background:#111827; color:#fff; padding:8px 12px;
+    border-radius:8px; font-size:14px; opacity:0; transition:opacity .2s ease;
+    z-index: 10000;
+  }
   .toast.show{ opacity:0.95; }
 </style>
 </head>
@@ -134,7 +63,7 @@ def board():
   </div>
 
   <canvas id="board"></canvas>
-  <div id="toast" class="toast">Procesando…</div>
+  <div id="toast" class="toast">Guardado en la celda y en /content/pizarra_cell.png</div>
 
 <script>
 (function(){
@@ -143,16 +72,18 @@ def board():
   const colorEl = document.getElementById('color');
   const sizeEl  = document.getElementById('size');
   const toastEl = document.getElementById('toast');
+
   let drawing=false, last={x:0,y:0}, tool='pen', dpr=window.devicePixelRatio||1;
 
+  // Historial para undo/redo
   let undoStack=[], redoStack=[];
   function saveState(){
-    try { undoStack.push(canvas.toDataURL('image/png')); } catch(e){ undoStack.push(canvas.toDataURL()); }
+    undoStack.push(canvas.toDataURL());
     redoStack = [];
   }
   function restoreState(stackFrom, stackTo){
     if(stackFrom.length){
-      try { stackTo.push(canvas.toDataURL('image/png')); } catch(e){ stackTo.push(canvas.toDataURL()); }
+      stackTo.push(canvas.toDataURL());
       let state=stackFrom.pop();
       let img=new Image();
       img.src=state;
@@ -162,11 +93,13 @@ def board():
       };
     }
   }
+
   function showToast(msg){
-    toastEl.textContent = msg || "Procesando…";
+    toastEl.textContent = msg || "Guardado.";
     toastEl.classList.add('show');
-    setTimeout(()=>toastEl.classList.remove('show'), 1000);
+    setTimeout(()=>toastEl.classList.remove('show'), 1400);
   }
+
   function initCanvas(w, h){
     ctx.save();
     canvas.width  = w;
@@ -175,8 +108,9 @@ def board():
     ctx.fillRect(0,0,canvas.width,canvas.height);
     ctx.lineJoin="round"; ctx.lineCap="round";
     ctx.restore();
-    saveState();
+    saveState(); // guardar estado inicial
   }
+
   function resize(preserve=true){
     let tmp=null;
     if(preserve && canvas.width && canvas.height){
@@ -189,15 +123,21 @@ def board():
     initCanvas(w,h);
     if(preserve && tmp) ctx.drawImage(tmp,0,0);
   }
+
   function clearCanvas(){
-    ctx.save(); ctx.globalCompositeOperation='source-over';
-    ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
-    ctx.restore(); saveState();
+    ctx.save();
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='#fff';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.restore();
+    saveState();
   }
+
   function pos(e){
     const r=canvas.getBoundingClientRect();
     return {x:(e.clientX-r.left)*dpr, y:(e.clientY-r.top)*dpr};
   }
+
   function line(a,b){
     ctx.save();
     ctx.globalCompositeOperation = (tool==='eraser'?"destination-out":"source-over");
@@ -206,8 +146,10 @@ def board():
     ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
     ctx.restore();
   }
+
   window.addEventListener('resize', ()=>resize(true));
   setTimeout(()=>resize(true), 0);
+
   canvas.addEventListener('pointerdown',e=>{
     canvas.setPointerCapture?.(e.pointerId);
     drawing=true; last=pos(e); line(last,last);
@@ -221,23 +163,26 @@ def board():
       drawing=false;
     });
   });
+
   document.getElementById('penBtn').onclick=()=>tool='pen';
   document.getElementById('eraserBtn').onclick=()=>tool='eraser';
   document.getElementById('clearBtn').onclick=()=>clearCanvas();
   document.getElementById('undoBtn').onclick=()=>restoreState(undoStack,redoStack);
   document.getElementById('redoBtn').onclick=()=>restoreState(redoStack,undoStack);
+
   document.getElementById('savePngBtn').onclick=()=>{
-    const a=document.createElement('a'); a.href=canvas.toDataURL('image/png');
-    a.download="pizarra.png"; a.click();
+    const a=document.createElement('a');
+    a.href=canvas.toDataURL('image/png'); a.download="pizarra.png"; a.click();
   };
+
   document.getElementById('saveToCellBtn').onclick=()=>{
-    const dataURL_PNG  = canvas.toDataURL('image/png');
+    const dataURL=canvas.toDataURL('image/png');
     try{
-      google.colab.kernel.invokeFunction('notebook.saveCanvasToCell',[dataURL_PNG, null],{});
-      showToast("Procesando…");
+      google.colab.kernel.invokeFunction('notebook.saveCanvasToCell',[dataURL],{});
+      showToast("Guardado en la celda y en /content/pizarra_cell.png");
     }catch(e){
       console.error(e);
-      showToast("No se pudo invocar el guardado.");
+      showToast("No se pudo invocar el guardado. Revisa la consola.");
     }
   };
 })();
@@ -246,6 +191,3 @@ def board():
 </html>
 """
     display(HTML(html))
-
-# Ejecuta luego:
-# board()
