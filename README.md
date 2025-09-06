@@ -1,6 +1,6 @@
 <img width="180" height="100" alt="image" src="https://github.com/user-attachments/assets/18c36cdb-51f9-48f0-9458-52fa5ef2e844" />
 
-Library to Civil Engineers 
+Library for Civil Engineers 
 
 - Automatic Evaluation Sympy
 - IA Calculus Summary
