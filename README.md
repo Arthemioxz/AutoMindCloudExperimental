@@ -9,7 +9,7 @@ Library for Civil Engineers
 - Orthogonal Render on Colab
 - URDF Render on Colab
 
-Library Functions on Colab: https://drive.google.com/file/d/1A7GFt3m9yW8yU1i3W-3W4qQmtkhHNvIG/view?usp=drivesdk
+Library Functions on Colab: https://colab.research.google.com/drive/1A7GFt3m9yW8yU1i3W-3W4qQmtkhHNvIG,
 
 **Examples**
 
