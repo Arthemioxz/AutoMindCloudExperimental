@@ -2,6 +2,41 @@ from IPython.display import HTML, display
 from google.colab import output
 import re, base64, os
 
+#Install Audio
+
+from IPython.core.display import HTML
+from binascii import b2a_base64
+
+# Read your audio file as binary
+with open("click_sound.mp3", "rb") as f:
+    audio_data = f.read()
+
+# Encode it as base64
+b64_audio = b2a_base64(audio_data, newline=False).decode("ascii")
+
+# Audio Installed
+
+_SNAPSHOT_HANDLES = {}          # serial -> DisplayHandle (bloque oculto/externo con display_id)
+_REGISTERED_CALLBACKS = set()   # callbacks registrados
+
+# Utilities to display a persistent drawing board in Google Colab and
+# play an MP3 (base64) when any toolbar button is pressed.
+#
+# Usage:
+#   board("Dibujo 1", b64_audio)         # b64_audio may be either raw base64 or a data:...;base64,... URL
+#
+# The board registers a front-end listener for toolbar buttons; when any of
+# them is clicked it invokes a kernel callback that prints "button pressed"
+# and, if an MP3 base64 was provided to board(), decodes it to /content and
+# displays an audio player (autoplay requested).
+#
+# Note: browser autoplay policies may block automatic playback; the audio
+# player will be shown and the user can press play if autoplay is blocked.
+
+from IPython.display import HTML, display, Audio
+from google.colab import output
+import re, base64, os, uuid
+
 _SNAPSHOT_HANDLES = {}          # serial -> DisplayHandle (bloque oculto/externo con display_id)
 _REGISTERED_CALLBACKS = set()   # callbacks registrados
 
@@ -101,33 +136,66 @@ def _extract_snapshot_from_ipynb(serial: str) -> str:
         return ""
 
 # --------------------
-# NEW: Button-pressed callback registration
+# NEW: Button-pressed callback registration (with optional MP3 playback)
 # --------------------
-def _make_button_pressed_callback(serial: str):
+def _make_button_pressed_callback(serial: str, b64_audio: str = None):
     """
-    This callback will be registered in the kernel and, when invoked from the front-end,
-    will print "button pressed" in the notebook output area.
+    Returns a callback that will run in the Python kernel when a toolbar
+    button is pressed in the front-end. It prints "button pressed" and,
+    if b64_audio is provided, decodes it to an MP3 file under /content and
+    displays an audio player (autoplay requested).
     """
     def _cb(*args, **kwargs):
         print("button pressed")
+        if not b64_audio:
+            return {"ok": True}
+
+        try:
+            # Accept either a full data URL or raw base64
+            m = re.match(r'^data:audio/[^;]+;base64,(.*)$', b64_audio or '')
+            b64 = m.group(1) if m else b64_audio
+
+            mp3_path = f"/content/pizarra_audio_{serial}.mp3"
+            with open(mp3_path, "wb") as f:
+                f.write(base64.b64decode(b64))
+
+            # Try to display an audio player that requests autoplay.
+            # Note: browsers may block autoplay; the controls will still be shown.
+            try:
+                display(Audio(mp3_path, autoplay=True))
+            except Exception:
+                # Fallback to an HTML <audio> element
+                try:
+                    display(HTML(f'<audio controls autoplay><source src="file://{mp3_path}" type="audio/mpeg">Your browser does not support the audio element.</audio>'))
+                except Exception as e:
+                    print("Saved audio to", mp3_path, "but could not render player:", e)
+
+        except Exception as e:
+            print("Error decoding/playing audio:", str(e))
+
         return {"ok": True}
     return _cb
 
-def _ensure_button_pressed_registered(serial: str):
-    name = f"persist.buttonPressed.{serial}"
-    if name not in _REGISTERED_CALLBACKS:
-        output.register_callback(name, _make_button_pressed_callback(serial))
-        _REGISTERED_CALLBACKS.add(name)
+def _ensure_button_pressed_registered(serial: str, b64_audio: str = None):
+    """
+    Register a unique callback name for this board instance that includes a
+    UUID suffix so re-calling board(...) with a (possibly different) audio
+    value registers a fresh callback and the JS side gets the correct name.
+    """
+    unique_suffix = uuid.uuid4().hex
+    name = f"persist.buttonPressed.{serial}.{unique_suffix}"
+    output.register_callback(name, _make_button_pressed_callback(serial, b64_audio))
+    _REGISTERED_CALLBACKS.add(name)
     return name
 
 # --------------------
-# Main board function
+# Main board function (now accepts optional b64_audio)
 # --------------------
-def board(serial: str = "board"):
+def board(serial: str = "board", b64_audio: str = None):
     serial = _sanitize_serial(serial)
     cb_name = _ensure_callback_registered(serial)
-    # Register the global "button pressed" callback and get name to expose to JS
-    button_cb_name = _ensure_button_pressed_registered(serial)
+    # Register the "button pressed" callback and get name to expose to JS
+    button_cb_name = _ensure_button_pressed_registered(serial, b64_audio)
 
     STORAGE_KEY  = f"amc_pizarra_snapshot_dataurl_{serial}"
     IMG_ID       = f"amc_persisted_snapshot_{serial}"
