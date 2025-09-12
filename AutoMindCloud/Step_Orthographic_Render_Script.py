@@ -12,8 +12,10 @@ def show_view(result,rotate_axis, rotate_angle, title=""):
     # Export as SVG
     svg_str = exporters.getSVG(rotated.val(), opts={
             "showAxes": False})
-    display(SVG(svg_str))
+
     display(Latex(title))
+    display(SVG(svg_str))
+    
 
 def Step_Orthographic_Render(Sketch_Name):
 
