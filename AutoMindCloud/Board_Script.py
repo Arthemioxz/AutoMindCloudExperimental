@@ -1,134 +1,17 @@
+# Replace or merge this function into your existing AutoMindCloud/Board_Script.py
+import json
 from IPython.display import HTML, display
 from google.colab import output
 import re, base64, os
 from binascii import b2a_base64
 from typing import Optional
 
-_SNAPSHOT_HANDLES = {}          # serial -> DisplayHandle (bloque oculto/externo con display_id)
-_REGISTERED_CALLBACKS = set()   # callbacks registrados
+# ... keep your existing helper functions and globals (_SNAPSHOT_HANDLES, _REGISTERED_CALLBACKS, etc.)
 
-def _sanitize_serial(s: str) -> str:
-    s = (s or "board").strip()
-    s = re.sub(r'[^A-Za-z0-9_]+', '_', s)
-    return s or "board"
-
-def _make_snapshot_callback(serial: str):
-    container_id = f"amc_persisted_snapshot_container_{serial}"
-    img_id = f"amc_persisted_snapshot_{serial}"
-    png_path = f"/content/pizarra_cell_{serial}.png"
-
-    def _cb(data_url_png: str):
-        m = re.match(r'^data:image/png;base64,(.*)$', data_url_png or '')
-        if m:
-            try:
-                with open(png_path, "wb") as f:
-                    f.write(base64.b64decode(m.group(1)))
-            except Exception:
-                pass
-
-        html = f"""
-        <div id="{container_id}" aria-hidden="true"
-             style="position:fixed; left:-9999px; top:-9999px; width:1px; height:1px; opacity:0; overflow:hidden; padding:0; margin:0; border:0; user-select:none; pointer-events:none;">
-          <div style="font:0/0; height:0; overflow:hidden">Último dibujo (persistente)</div>
-          <img id="{img_id}" src="{data_url_png}" alt="persisted snapshot" style="width:1px; height:1px; border:0; display:block" />
-        </div>
-        """
-        handle = _SNAPSHOT_HANDLES.get(serial)
-        if handle is None:
-            _SNAPSHOT_HANDLES[serial] = display(HTML(html), display_id=True)
-        else:
-            handle.update(HTML(html))
-
-        try:
-            from google.colab import _message
-            _message.blocking_request('notebook.save', {})
-        except Exception:
-            pass
-
-        return {"ok": True}
-
-    return _cb
-
-def _ensure_callback_registered(serial: str):
-    name = f"persist.pushSnapshot.{serial}"
-    if name not in _REGISTERED_CALLBACKS:
-        output.register_callback(name, _make_snapshot_callback(serial))
-        _REGISTERED_CALLBACKS.add(name)
-    return name
-
-def _file_to_dataurl(path: str) -> str:
-    if not os.path.exists(path):
-        return ""
-    try:
-        with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
-        return "data:image/png;base64," + b64
-    except Exception:
-        return ""
-
-def _extract_snapshot_from_ipynb(serial: str) -> str:
-    try:
-        from google.colab import _message
-        nbwrap = _message.blocking_request('get_ipynb', {}) or {}
-        nb = nbwrap.get('ipynb', nbwrap) or {}
-        ids = [
-            f"amc_persisted_snapshot_{serial}",
-            f"amc_persisted_snapshot_ext_{serial}",
-            f"amc_persisted_snapshot_int_{serial}",
-        ]
-        pat = re.compile(
-            r'id=["\'](' + '|'.join(map(re.escape, ids)) + r')["\']\s+[^>]*src=["\'](data:image/[^"\']+)["\']',
-            re.IGNORECASE
-        )
-        for cell in reversed(nb.get('cells', [])):
-            for out in reversed(cell.get('outputs', [])):
-                data = out.get('data', {})
-                html = None
-                if 'text/html' in data:
-                    v = data['text/html']
-                    html = ''.join(v) if isinstance(v, list) else (v or '')
-                elif 'text' in data:
-                    v = data['text']
-                    html = ''.join(v) if isinstance(v, list) else (v or '')
-                if html:
-                    m = None
-                    for m in pat.finditer(html):
-                        pass
-                    if m:
-                        src = m.group(2)
-                        if src.startswith('data:image/'):
-                            return src
-        return ""
-    except Exception:
-        return ""
-
-# --------------------
-# NEW: Button-pressed callback registration
-# --------------------
-def _make_button_pressed_callback(serial: str):
-    def _cb(*args, **kwargs):
-        print("button pressed")
-        return {"ok": True}
-    return _cb
-
-def _ensure_button_pressed_registered(serial: str):
-    name = f"persist.buttonPressed.{serial}"
-    if name not in _REGISTERED_CALLBACKS:
-        output.register_callback(name, _make_button_pressed_callback(serial))
-        _REGISTERED_CALLBACKS.add(name)
-    return name
-
-# --------------------
-# Main board function (now supports click_sound_path)
-# --------------------
 def board(serial: str = "board", click_sound_path: Optional[str] = None):
     """
-    Show the drawing board. If click_sound_path is provided (path to an audio file,
-    e.g. "click_sound.mp3" accessible from the notebook), the audio is embedded and
-    will play in the browser each time any toolbar button is pressed.
-
-    Example:
-      board("board", click_sound_path="click_sound.mp3")
+    Safe implementation that avoids f-string brace interpolation issues.
+    If click_sound_path is provided it will embed the audio and play it on button clicks.
     """
     serial = _sanitize_serial(serial)
     cb_name = _ensure_callback_registered(serial)
@@ -148,21 +31,30 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
         try:
             with open(click_sound_path, "rb") as f:
                 raw = f.read()
-            # Use b2a_base64 without newline
             b64 = b2a_base64(raw, newline=False).decode("ascii")
             audio_data_url = f"data:{audio_mime};base64,{b64}"
         except Exception:
             audio_data_url = ""
 
-    js_code = f"""
+    # Use json.dumps to produce properly quoted JS string literals
+    js_initial_data = json.dumps(initial_data_url or "")
+    js_audio_src = json.dumps(audio_data_url or "")
+    js_storage_key = json.dumps(STORAGE_KEY)
+    js_callback_name = json.dumps(cb_name)
+    js_button_cb_name = json.dumps(button_cb_name)
+    js_img_id = json.dumps(IMG_ID)
+    # Note: element ids include serial which is safe (sanitized earlier)
+
+    # JS template: every literal JS brace must be doubled for Python str.format() to keep it.
+    js_template = r"""
 <script>
 (function(){{
-  const STORAGE_KEY   = "{STORAGE_KEY}";
-  const CALLBACK_NAME = "{cb_name}";
-  const BUTTON_CB_NAME = "{button_cb_name}";
-  const IMG_ID        = "{IMG_ID}";
-  const INITIAL_DATA_URL = {('"%s"' % initial_data_url) if initial_data_url else '""'};
-  const AUDIO_SRC = {('"%s"' % audio_data_url) if audio_data_url else '""'};
+  const STORAGE_KEY   = {js_storage_key};
+  const CALLBACK_NAME = {js_callback_name};
+  const BUTTON_CB_NAME = {js_button_cb_name};
+  const IMG_ID        = {js_img_id};
+  const INITIAL_DATA_URL = {js_initial_data};
+  const AUDIO_SRC = {js_audio_src};
   const MAX_HISTORY = 40;
 
   const canvas = document.getElementById('board_{serial}');
@@ -174,16 +66,16 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
   const undoStack = [];
   const redoStack = [];
 
-  function pushHistory(dataURL=null){{
-    try {{
+  function pushHistory(dataURL=null){{ 
+    try {{ 
       const snap = dataURL || canvas.toDataURL('image/png');
       undoStack.push(snap);
       while (undoStack.length > MAX_HISTORY) undoStack.shift();
       redoStack.length = 0;
-    }} catch(_) {{}}
+    }} catch(_) {{}} 
   }}
 
-  function drawFromDataURL(dataURL){{
+  function drawFromDataURL(dataURL){{ 
     if(!dataURL) return;
     const im = new Image();
     im.onload = () => {{
@@ -195,7 +87,7 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
     im.src = dataURL;
   }}
 
-  function doUndo(){{
+  function doUndo(){{ 
     if (undoStack.length === 0) return;
     const current = canvas.toDataURL('image/png');
     const prev = undoStack.pop();
@@ -204,7 +96,7 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
     schedulePersist();
   }}
 
-  function doRedo(){{
+  function doRedo(){{ 
     if (redoStack.length === 0) return;
     const current = canvas.toDataURL('image/png');
     const next = redoStack.pop();
@@ -255,10 +147,10 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
 
   let persistTimer=null;
   function schedulePersist(){{ clearTimeout(persistTimer); persistTimer=setTimeout(pushSnapshot, 500); }}
-  async function pushSnapshot(){{
+  async function pushSnapshot(){{ 
     try {{
       const dataURL = canvas.toDataURL('image/png');
-      try {{ const snapEl = document.getElementById("{IMG_ID}"); if (snapEl && dataURL) snapEl.src = dataURL; }} catch(_){{}}
+      try {{ const snapEl = document.getElementById( {js_img_id} ); if (snapEl && dataURL) snapEl.src = dataURL; }} catch(_){{}}
       try {{ localStorage.setItem(STORAGE_KEY, dataURL); }} catch(_){{}}
       if (window.google?.colab?.kernel?.invokeFunction) {{
         await google.colab.kernel.invokeFunction(CALLBACK_NAME, [dataURL], {{}} );
@@ -266,17 +158,15 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
     }} catch(e) {{ console.error(e); }}
   }}
 
-  function loadPersisted(){{
+  function loadPersisted(){{ 
     if (INITIAL_DATA_URL) {{ drawFromDataURL(INITIAL_DATA_URL); pushHistory(INITIAL_DATA_URL); return; }}
-    let snap = document.getElementById("{IMG_ID}");
+    let snap = document.getElementById( {js_img_id} );
     if (snap && snap.src && snap.src.startsWith('data:image/')) {{ drawFromDataURL(snap.src); pushHistory(snap.src); return; }}
     try {{ const ls = localStorage.getItem(STORAGE_KEY); if (ls && ls.startsWith('data:image/')) {{ drawFromDataURL(ls); pushHistory(ls); }} }} catch(_){{}}
   }}
   setTimeout(loadPersisted, 30);
 
-  // -------------------------------
-  // AUDIO: create audio element (if provided) and play on toolbar button clicks
-  // -------------------------------
+  // AUDIO handling
   let clickAudio = null;
   if (AUDIO_SRC) {{
     try {{
@@ -284,7 +174,6 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
       clickAudio.id = 'amc_click_audio_{serial}';
       clickAudio.src = AUDIO_SRC;
       clickAudio.preload = 'auto';
-      // add to DOM but keep visually hidden
       clickAudio.style.display = 'none';
       document.body.appendChild(clickAudio);
     }} catch(e) {{
@@ -296,7 +185,6 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
   function playClickSound() {{
     if (!clickAudio) return;
     try {{
-      // reset to start (so repeated clicks play even if still playing)
       try {{ clickAudio.currentTime = 0; }} catch(_){}
       clickAudio.play().catch(_=>{{}});
     }} catch(e) {{
@@ -304,31 +192,21 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
     }}
   }}
 
-  // -------------------------------
-  // attach a handler to ALL buttons in the toolbar
-  // -------------------------------
+  // Attach handlers to toolbar buttons: play sound and call kernel callback
   function invokePythonButtonPressed() {{
-    // Play local click audio in the browser first (non-blocking)
-    try {{ playClickSound(); }} catch(_){{}}
-    // Try Colab's kernel.invokeFunction first (fast and safe)
+    try {{ playClickSound(); }} catch(_){}
     try {{
       if (window.google?.colab?.kernel?.invokeFunction) {{
         google.colab.kernel.invokeFunction(BUTTON_CB_NAME, [], {{}} );
         return;
       }}
-    }} catch(e) {{
-      console.warn('colab invoke failed', e);
-    }}
-    // Fallback: classic Jupyter kernel execute
+    }} catch(e) {{ console.warn('colab invoke failed', e); }}
     try {{
       if (window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel) {{
         window.Jupyter.notebook.kernel.execute("print('button pressed')");
         return;
       }}
-    }} catch(e) {{
-      console.warn('jupyter fallback failed', e);
-    }}
-    // final fallback: console only
+    }} catch(e) {{ console.warn('jupyter fallback failed', e); }}
     console.log("button pressed (no kernel available)");
   }}
 
@@ -338,7 +216,6 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
       const btns = toolbar.querySelectorAll('button');
       btns.forEach(b => {{
         b.addEventListener('click', () => {{
-          // play sound and call the kernel-backed callback that prints "button pressed"
           invokePythonButtonPressed();
         }});
       }});
@@ -349,15 +226,23 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
 </script>
 """
 
-    html = f"""
-<!doctype html>
+    # Format the template: note that the template uses doubled braces for JS literals;
+    # we only substitute the python-generated JSON-strings and the serial placeholder.
+    js_code = js_template.format(
+        js_storage_key=js_storage_key,
+        js_callback_name=js_callback_name,
+        js_button_cb_name=js_button_cb_name,
+        js_img_id=js_img_id,
+        js_initial_data=js_initial_data,
+        js_audio_src=js_audio_src,
+        serial=serial
+    )
+
+    html = f"""<!doctype html>
 <html lang="es">
-<head>
-<meta charset="utf-8" />
-<title>Pizarra {serial}</title>
+<head><meta charset="utf-8" /><title>Pizarra {serial}</title>
 <style>
-  :root{{ --muted:#e2e8f0; }}
-  *{{ box-sizing:border-box; }}
+  :root{{ --muted:#e2e8f0; }} *{{ box-sizing:border-box; }}
   body{{ margin:0; font-family:ui-sans-serif,system-ui; background:#f8fafc; }}
   .toolbar{{ display:flex; gap:10px; flex-wrap:wrap; margin:12px; align-items:center; }}
   .toolbar button{{ padding:8px 12px; border:1px solid var(--muted); border-radius:8px; cursor:pointer; background:#fff; }}
@@ -380,7 +265,6 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
     <button id="downloadBtn_{serial}">⬇️ Descargar PNG</button>
   </div>
 
-  <!-- (INTERNO oculto) para rehidratar el canvas y seguir editando -->
   <div id="{CONTAINER_ID}" style="display:none">
     <img id="{IMG_ID}" src="{initial_data_url or ''}" />
   </div>
@@ -390,7 +274,8 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
 </body>
 </html>
 """
-    # create/update the hidden snapshot block in the notebook
+
+    # update hidden snapshot block in the notebook
     snapshot_html = f"""
     <div id="{CONTAINER_ID}" aria-hidden="true"
          style="position:fixed; left:-9999px; top:-9999px; width:1px; height:1px; opacity:0; overflow:hidden; padding:0; margin:0; border:0; user-select:none; pointer-events:none;">
@@ -403,5 +288,4 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
     else:
         _SNAPSHOT_HANDLES[serial].update(HTML(snapshot_html))
 
-    # show the board
     display(HTML(html))
