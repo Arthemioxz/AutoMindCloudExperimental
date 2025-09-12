@@ -19,6 +19,6 @@ def Step_Orthographic_Render(Sketch_Name):
   Sketch_Name = Sketch_Name + str(".step")
   result = cq.importers.importStep(Sketch_Name)
   # Standard views using rotation
-  show_view(result,(1,0,0), 0, Latex("\\text{Front View}"))
-  show_view(result,(1,0,0), 90, Latex("\\text{Top View}"))
-  show_view(result,(0,1,0), 90, Latex("\\text{Right Side View}"))
+  show_view(result,(1,0,0), 0, "\\text{Front View}")
+  show_view(result,(1,0,0), 90, "\\text{Top View}")
+  show_view(result,(0,1,0), 90, "\\text{Right Side View}")
