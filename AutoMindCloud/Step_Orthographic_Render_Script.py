@@ -12,7 +12,7 @@ def show_view(result,rotate_axis, rotate_angle, title=""):
     # Export as SVG
     svg_str = exporters.getSVG(rotated.val())
     display(SVG(svg_str))
-    print(title)
+    Ipython.display.Latex("\\text{"+title+"}")
 
 def Step_Orthographic_Render(Sketch_Name):
 
