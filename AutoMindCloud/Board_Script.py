@@ -1,41 +1,28 @@
-from IPython.display import HTML, display
-from google.colab import output
-import re, base64, os
-
-#Install Audio
-
-from IPython.core.display import HTML
-from binascii import b2a_base64
-
-# Read your audio file as binary
-with open("click_sound.mp3", "rb") as f:
-    audio_data = f.read()
-
-# Encode it as base64
-b64_audio = b2a_base64(audio_data, newline=False).decode("ascii")
-
-# Audio Installed
-
-_SNAPSHOT_HANDLES = {}          # serial -> DisplayHandle (bloque oculto/externo con display_id)
-_REGISTERED_CALLBACKS = set()   # callbacks registrados
-
-# Utilities to display a persistent drawing board in Google Colab and
-# play an MP3 (base64) when any toolbar button is pressed.
+# Google Colab drawing board that plays a bundled click_sound.mp3 (base64) when
+# any toolbar button is pressed. The audio is read into a global `b64_audio`
+# variable (so you don't need to pass it to board()).
 #
 # Usage:
-#   board("Dibujo 1", b64_audio)         # b64_audio may be either raw base64 or a data:...;base64,... URL
+# 1) Put a file named "click_sound.mp3" next to this cell (or change the path).
+# 2) Run this cell to define the board and the global b64_audio.
+# 3) Call board("Dibujo 1") and click any toolbar button to hear the sound.
 #
-# The board registers a front-end listener for toolbar buttons; when any of
-# them is clicked it invokes a kernel callback that prints "button pressed"
-# and, if an MP3 base64 was provided to board(), decodes it to /content and
-# displays an audio player (autoplay requested).
-#
-# Note: browser autoplay policies may block automatic playback; the audio
-# player will be shown and the user can press play if autoplay is blocked.
+# Note: browser autoplay policies may block immediate playback; the player
+# will still be shown so the user can press play.
 
 from IPython.display import HTML, display, Audio
 from google.colab import output
 import re, base64, os, uuid
+
+# Read and encode the mp3 file into global b64_audio (if the file exists).
+b64_audio = None
+_audio_filename = "click_sound.mp3"
+if os.path.exists(_audio_filename):
+    try:
+        with open(_audio_filename, "rb") as _f:
+            b64_audio = base64.b64encode(_f.read()).decode("ascii")
+    except Exception:
+        b64_audio = None
 
 _SNAPSHOT_HANDLES = {}          # serial -> DisplayHandle (bloque oculto/externo con display_id)
 _REGISTERED_CALLBACKS = set()   # callbacks registrados
@@ -136,31 +123,34 @@ def _extract_snapshot_from_ipynb(serial: str) -> str:
         return ""
 
 # --------------------
-# NEW: Button-pressed callback registration (with optional MP3 playback)
+# Button-pressed callback registration (uses global b64_audio if available)
 # --------------------
-def _make_button_pressed_callback(serial: str, b64_audio: str = None):
+def _make_button_pressed_callback(serial: str, provided_b64_audio: str = None):
     """
-    Returns a callback that will run in the Python kernel when a toolbar
-    button is pressed in the front-end. It prints "button pressed" and,
-    if b64_audio is provided, decodes it to an MP3 file under /content and
-    displays an audio player (autoplay requested).
+    Returns a callback that runs in the Python kernel when a toolbar button
+    is pressed. It prints "button pressed" and, if an audio base64 is available
+    (either provided_b64_audio or the global b64_audio), decodes it to an MP3
+    file under /content and displays an audio player (autoplay requested).
     """
     def _cb(*args, **kwargs):
         print("button pressed")
-        if not b64_audio:
+        # prefer explicitly provided b64, else check the module/global b64_audio
+        audio_b64 = provided_b64_audio if provided_b64_audio is not None else globals().get('b64_audio')
+
+        if not audio_b64:
             return {"ok": True}
 
         try:
             # Accept either a full data URL or raw base64
-            m = re.match(r'^data:audio/[^;]+;base64,(.*)$', b64_audio or '')
-            b64 = m.group(1) if m else b64_audio
+            m = re.match(r'^data:audio/[^;]+;base64,(.*)$', audio_b64 or '')
+            b64 = m.group(1) if m else audio_b64
 
             mp3_path = f"/content/pizarra_audio_{serial}.mp3"
             with open(mp3_path, "wb") as f:
                 f.write(base64.b64decode(b64))
 
             # Try to display an audio player that requests autoplay.
-            # Note: browsers may block autoplay; the controls will still be shown.
+            # Note: browsers may block autoplay; controls will still be shown.
             try:
                 display(Audio(mp3_path, autoplay=True))
             except Exception:
@@ -176,26 +166,26 @@ def _make_button_pressed_callback(serial: str, b64_audio: str = None):
         return {"ok": True}
     return _cb
 
-def _ensure_button_pressed_registered(serial: str, b64_audio: str = None):
+def _ensure_button_pressed_registered(serial: str, provided_b64_audio: str = None):
     """
-    Register a unique callback name for this board instance that includes a
-    UUID suffix so re-calling board(...) with a (possibly different) audio
-    value registers a fresh callback and the JS side gets the correct name.
+    Register a unique callback name for this board instance so re-calling
+    board(...) registers a fresh callback and the JS side gets the correct name.
     """
     unique_suffix = uuid.uuid4().hex
     name = f"persist.buttonPressed.{serial}.{unique_suffix}"
-    output.register_callback(name, _make_button_pressed_callback(serial, b64_audio))
+    output.register_callback(name, _make_button_pressed_callback(serial, provided_b64_audio))
     _REGISTERED_CALLBACKS.add(name)
     return name
 
 # --------------------
-# Main board function (now accepts optional b64_audio)
+# Main board function (does not require passing audio)
 # --------------------
-def board(serial: str = "board", b64_audio: str = None):
+def board(serial: str = "board"):
     serial = _sanitize_serial(serial)
     cb_name = _ensure_callback_registered(serial)
-    # Register the "button pressed" callback and get name to expose to JS
-    button_cb_name = _ensure_button_pressed_registered(serial, b64_audio)
+    # Register the "button pressed" callback and get name to expose to JS.
+    # We do NOT pass audio here; the callback will pick up the global b64_audio.
+    button_cb_name = _ensure_button_pressed_registered(serial, None)
 
     STORAGE_KEY  = f"amc_pizarra_snapshot_dataurl_{serial}"
     IMG_ID       = f"amc_persisted_snapshot_{serial}"
@@ -204,8 +194,6 @@ def board(serial: str = "board", b64_audio: str = None):
 
     initial_data_url = _extract_snapshot_from_ipynb(serial) or _file_to_dataurl(PNG_PATH)
 
-    # JavaScript: existing board logic + attach a listener to ALL toolbar buttons
-    # that will call the registered kernel callback which prints "button pressed".
     js_code = f"""
 <script>
 (function(){{
@@ -326,10 +314,9 @@ def board(serial: str = "board", b64_audio: str = None):
   setTimeout(loadPersisted, 30);
 
   // -------------------------------
-  // NEW: attach a handler to ALL buttons in the toolbar
+  // Attach a handler to ALL buttons in the toolbar that invokes the kernel callback
   // -------------------------------
   function invokePythonButtonPressed() {{
-    // Try Colab's kernel.invokeFunction first (fast and safe)
     try {{
       if (window.google?.colab?.kernel?.invokeFunction) {{
         google.colab.kernel.invokeFunction(BUTTON_CB_NAME, [], {{}} );
@@ -338,7 +325,6 @@ def board(serial: str = "board", b64_audio: str = None):
     }} catch(e) {{
       console.warn('colab invoke failed', e);
     }}
-    // Fallback: classic Jupyter kernel execute
     try {{
       if (window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel) {{
         window.Jupyter.notebook.kernel.execute("print('button pressed')");
@@ -347,7 +333,6 @@ def board(serial: str = "board", b64_audio: str = None):
     }} catch(e) {{
       console.warn('jupyter fallback failed', e);
     }}
-    // final fallback: console only
     console.log("button pressed (no kernel available)");
   }}
 
@@ -357,7 +342,6 @@ def board(serial: str = "board", b64_audio: str = None):
       const btns = toolbar.querySelectorAll('button');
       btns.forEach(b => {{
         b.addEventListener('click', () => {{
-          // call the kernel-backed callback that prints "button pressed"
           invokePythonButtonPressed();
         }});
       }});
