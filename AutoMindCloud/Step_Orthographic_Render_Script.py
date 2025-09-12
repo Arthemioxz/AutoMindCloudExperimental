@@ -23,5 +23,6 @@ def Step_Orthographic_Render(Sketch_Name):
   show_view(result,(1,0,0), 0, "\\text{Front View}")
   show_view(result,(1,0,0), 90, "\\text{Top View}")
   show_view(result,(0,1,0), 90, "\\text{Right Side View}")
-  show_view(result,(0,1,0), 180, "\\text{Back View}")
+  show_view(result,(1,0,0), -90, "\\text{Bottom View}")
+
 
