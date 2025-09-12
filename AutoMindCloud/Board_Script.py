@@ -1,26 +1,33 @@
-# Google Colab drawing board that plays a bundled click_sound.mp3 (base64) when
-# any toolbar button is pressed. The audio is read into a global `b64_audio`
-# variable (so you don't need to pass it to board()).
+# Google Colab drawing board that plays a bundled click_sound.mp3 entirely
+# client-side (no visible audio player and no "button pressed" text in the
+# notebook). Just upload click_sound.mp3 (or change _audio_filename), run the
+# cell, then call board("Dibujo 1").
 #
-# Usage:
-# 1) Put a file named "click_sound.mp3" next to this cell (or change the path).
-# 2) Run this cell to define the board and the global b64_audio.
-# 3) Call board("Dibujo 1") and click any toolbar button to hear the sound.
+# Behavior:
+# - The MP3 is read on the kernel, encoded as a data: URI and embedded in the
+#   displayed HTML/JS.
+# - Toolbar button clicks call the browser to play the sound directly (no
+#   kernel round-trip, no Audio widget shown).
 #
-# Note: browser autoplay policies may block immediate playback; the player
-# will still be shown so the user can press play.
+# Notes:
+# - Browser autoplay policies may still block playback until the user interacts
+#   with the page; typical toolbar clicks are user interactions so playback
+#   should normally succeed.
+# - The snapshot save logic (canvas persistence) is unchanged and still calls
+#   the kernel callback when the canvas is saved; only the toolbar-button
+#   listener was changed to play audio client-side.
 
-from IPython.display import HTML, display, Audio
+from IPython.display import HTML, display
 from google.colab import output
-import re, base64, os, uuid
+import re, base64, os, uuid, json
 
-# Read and encode the mp3 file into global b64_audio (if the file exists).
+# Load the mp3 file into a base64 string if present
 b64_audio = None
 _audio_filename = "click_sound.mp3"
 if os.path.exists(_audio_filename):
     try:
-        with open(_audio_filename, "rb") as _f:
-            b64_audio = base64.b64encode(_f.read()).decode("ascii")
+        with open(_audio_filename, "rb") as f:
+            b64_audio = base64.b64encode(f.read()).decode("ascii")
     except Exception:
         b64_audio = None
 
@@ -122,70 +129,14 @@ def _extract_snapshot_from_ipynb(serial: str) -> str:
     except Exception:
         return ""
 
-# --------------------
-# Button-pressed callback registration (uses global b64_audio if available)
-# --------------------
-def _make_button_pressed_callback(serial: str, provided_b64_audio: str = None):
-    """
-    Returns a callback that runs in the Python kernel when a toolbar button
-    is pressed. It prints "button pressed" and, if an audio base64 is available
-    (either provided_b64_audio or the global b64_audio), decodes it to an MP3
-    file under /content and displays an audio player (autoplay requested).
-    """
-    def _cb(*args, **kwargs):
-        print("button pressed")
-        # prefer explicitly provided b64, else check the module/global b64_audio
-        audio_b64 = provided_b64_audio if provided_b64_audio is not None else globals().get('b64_audio')
-
-        if not audio_b64:
-            return {"ok": True}
-
-        try:
-            # Accept either a full data URL or raw base64
-            m = re.match(r'^data:audio/[^;]+;base64,(.*)$', audio_b64 or '')
-            b64 = m.group(1) if m else audio_b64
-
-            mp3_path = f"/content/pizarra_audio_{serial}.mp3"
-            with open(mp3_path, "wb") as f:
-                f.write(base64.b64decode(b64))
-
-            # Try to display an audio player that requests autoplay.
-            # Note: browsers may block autoplay; controls will still be shown.
-            try:
-                display(Audio(mp3_path, autoplay=True))
-            except Exception:
-                # Fallback to an HTML <audio> element
-                try:
-                    display(HTML(f'<audio controls autoplay><source src="file://{mp3_path}" type="audio/mpeg">Your browser does not support the audio element.</audio>'))
-                except Exception as e:
-                    print("Saved audio to", mp3_path, "but could not render player:", e)
-
-        except Exception as e:
-            print("Error decoding/playing audio:", str(e))
-
-        return {"ok": True}
-    return _cb
-
-def _ensure_button_pressed_registered(serial: str, provided_b64_audio: str = None):
-    """
-    Register a unique callback name for this board instance so re-calling
-    board(...) registers a fresh callback and the JS side gets the correct name.
-    """
-    unique_suffix = uuid.uuid4().hex
-    name = f"persist.buttonPressed.{serial}.{unique_suffix}"
-    output.register_callback(name, _make_button_pressed_callback(serial, provided_b64_audio))
-    _REGISTERED_CALLBACKS.add(name)
-    return name
-
-# --------------------
-# Main board function (does not require passing audio)
-# --------------------
 def board(serial: str = "board"):
+    """
+    Display the board. If click_sound.mp3 was present when this cell ran,
+    the sound will be embedded in the page and played client-side on toolbar
+    button clicks without showing an audio widget.
+    """
     serial = _sanitize_serial(serial)
     cb_name = _ensure_callback_registered(serial)
-    # Register the "button pressed" callback and get name to expose to JS.
-    # We do NOT pass audio here; the callback will pick up the global b64_audio.
-    button_cb_name = _ensure_button_pressed_registered(serial, None)
 
     STORAGE_KEY  = f"amc_pizarra_snapshot_dataurl_{serial}"
     IMG_ID       = f"amc_persisted_snapshot_{serial}"
@@ -194,15 +145,41 @@ def board(serial: str = "board"):
 
     initial_data_url = _extract_snapshot_from_ipynb(serial) or _file_to_dataurl(PNG_PATH)
 
+    # Prepare JS-safe audio data URL if we have base64 audio
+    if b64_audio:
+        audio_dataurl = "data:audio/mpeg;base64," + b64_audio
+        # json.dumps produces a properly-escaped JS string literal
+        audio_dataurl_js = json.dumps(audio_dataurl)
+    else:
+        audio_dataurl_js = "null"
+
     js_code = f"""
 <script>
 (function(){{
   const STORAGE_KEY   = "{STORAGE_KEY}";
   const CALLBACK_NAME = "{cb_name}";
-  const BUTTON_CB_NAME = "{button_cb_name}";
   const IMG_ID        = "{IMG_ID}";
   const INITIAL_DATA_URL = {('"%s"' % initial_data_url) if initial_data_url else '""'};
   const MAX_HISTORY = 40;
+
+  // Audio data URL embedded from the kernel (may be null)
+  const AUDIO_DATA_URL = {audio_dataurl_js};
+
+  // Create a client-side audio object if audio is provided. The audio object
+  // is not added with controls and therefore will not be visible.
+  let clickAudio = null;
+  if (AUDIO_DATA_URL) {{
+    try {{
+      clickAudio = new Audio(AUDIO_DATA_URL);
+      clickAudio.preload = 'auto';
+      clickAudio.loop = false;
+      clickAudio.volume = 1.0;
+      // Do not add controls or append to DOM; keep it hidden and play programmatically.
+    }} catch(e) {{
+      console.warn('Failed to create click audio:', e);
+      clickAudio = null;
+    }}
+  }}
 
   const canvas = document.getElementById('board_{serial}');
   const ctx = canvas.getContext('2d');
@@ -314,35 +291,27 @@ def board(serial: str = "board"):
   setTimeout(loadPersisted, 30);
 
   // -------------------------------
-  // Attach a handler to ALL buttons in the toolbar that invokes the kernel callback
+  // Attach a handler to ALL buttons in the toolbar that PLAYS the client-side audio.
+  // This avoids any kernel printouts and avoids showing an audio widget.
   // -------------------------------
-  function invokePythonButtonPressed() {{
-    try {{
-      if (window.google?.colab?.kernel?.invokeFunction) {{
-        google.colab.kernel.invokeFunction(BUTTON_CB_NAME, [], {{}} );
-        return;
-      }}
-    }} catch(e) {{
-      console.warn('colab invoke failed', e);
-    }}
-    try {{
-      if (window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel) {{
-        window.Jupyter.notebook.kernel.execute("print('button pressed')");
-        return;
-      }}
-    }} catch(e) {{
-      console.warn('jupyter fallback failed', e);
-    }}
-    console.log("button pressed (no kernel available)");
-  }}
-
   try {{
     const toolbar = document.querySelector('.toolbar');
     if (toolbar) {{
       const btns = toolbar.querySelectorAll('button');
       btns.forEach(b => {{
         b.addEventListener('click', () => {{
-          invokePythonButtonPressed();
+          // Play the embedded audio client-side (if available).
+          try {{
+            if (clickAudio) {{
+              // reset to start and play; ignore promise rejection (autoplay blocked)
+              clickAudio.pause();
+              try {{ clickAudio.currentTime = 0; }} catch(e){{ /* some browsers may throw */ }}
+              const p = clickAudio.play();
+              if (p && typeof p.catch === 'function') p.catch(() => {{ /* autoplay blocked or play failed; ignore */ }});
+            }}
+          }} catch(e) {{
+            console.warn('play sound failed', e);
+          }}
         }});
       }});
     }}
