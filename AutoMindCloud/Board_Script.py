@@ -1,17 +1,147 @@
-# Replace or merge this function into your existing AutoMindCloud/Board_Script.py
-import json
+# Complete, self-contained Board implementation.
+# Paste/execute this cell in your notebook to define `board(...)` and its helpers.
+# Then call: board("dibujo 1")  (optionally board("dibujo 1", click_sound_path="click_sound.mp3"))
+
 from IPython.display import HTML, display
-from google.colab import output
-import re, base64, os
+import json, re, base64, os
 from binascii import b2a_base64
 from typing import Optional
 
-# ... keep your existing helper functions and globals (_SNAPSHOT_HANDLES, _REGISTERED_CALLBACKS, etc.)
+# Try to import Colab output helper; if not available, leave as None (we fallback to Jupyter execute).
+try:
+    from google.colab import output as colab_output
+except Exception:
+    colab_output = None
 
+# State
+_SNAPSHOT_HANDLES = {}          # serial -> DisplayHandle (bloque oculto/externo con display_id)
+_REGISTERED_CALLBACKS = set()   # callbacks registrados
+
+# Helpers
+def _sanitize_serial(s: str) -> str:
+    s = (s or "board").strip()
+    s = re.sub(r'[^A-Za-z0-9_]+', '_', s)
+    return s or "board"
+
+def _file_to_dataurl(path: str) -> str:
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        return "data:image/png;base64," + b64
+    except Exception:
+        return ""
+
+def _extract_snapshot_from_ipynb(serial: str) -> str:
+    # Best-effort: only available in Colab via internal message API; ignore if not present.
+    try:
+        if not colab_output:
+            return ""
+        nbwrap = colab_output._message.blocking_request('get_ipynb', {}) or {}
+        nb = nbwrap.get('ipynb', nbwrap) or {}
+        ids = [
+            f"amc_persisted_snapshot_{serial}",
+            f"amc_persisted_snapshot_ext_{serial}",
+            f"amc_persisted_snapshot_int_{serial}",
+        ]
+        pat = re.compile(
+            r'id=["\'](' + '|'.join(map(re.escape, ids)) + r')["\']\s+[^>]*src=["\'](data:image/[^"\']+)["\']',
+            re.IGNORECASE
+        )
+        for cell in reversed(nb.get('cells', [])):
+            for out in reversed(cell.get('outputs', [])):
+                data = out.get('data', {})
+                html = None
+                if 'text/html' in data:
+                    v = data['text/html']
+                    html = ''.join(v) if isinstance(v, list) else (v or '')
+                elif 'text' in data:
+                    v = data['text']
+                    html = ''.join(v) if isinstance(v, list) else (v or '')
+                if html:
+                    for m in pat.finditer(html):
+                        src = m.group(2)
+                        if src.startswith('data:image/'):
+                            return src
+        return ""
+    except Exception:
+        return ""
+
+# Callbacks registration
+def _make_snapshot_callback(serial: str):
+    container_id = f"amc_persisted_snapshot_container_{serial}"
+    img_id = f"amc_persisted_snapshot_{serial}"
+    png_path = f"/content/pizarra_cell_{serial}.png"
+
+    def _cb(data_url_png: str):
+        # Save PNG to disk if provided
+        try:
+            m = re.match(r'^data:image/png;base64,(.*)$', data_url_png or '')
+            if m:
+                with open(png_path, "wb") as f:
+                    f.write(base64.b64decode(m.group(1)))
+        except Exception:
+            pass
+
+        # Update hidden external block that persists in the notebook
+        html = f"""
+        <div id="{container_id}" aria-hidden="true"
+             style="position:fixed; left:-9999px; top:-9999px; width:1px; height:1px; opacity:0; overflow:hidden; padding:0; margin:0; border:0; user-select:none; pointer-events:none;">
+          <div style="font:0/0; height:0; overflow:hidden">Último dibujo (persistente)</div>
+          <img id="{img_id}" src="{data_url_png}" alt="persisted snapshot" style="width:1px; height:1px; border:0; display:block" />
+        </div>
+        """
+        handle = _SNAPSHOT_HANDLES.get(serial)
+        if handle is None:
+            _SNAPSHOT_HANDLES[serial] = display(HTML(html), display_id=True)
+        else:
+            handle.update(HTML(html))
+
+        # Optionally try to save notebook (Colab)
+        try:
+            if colab_output:
+                from google.colab import _message
+                _message.blocking_request('notebook.save', {})
+        except Exception:
+            pass
+        return {"ok": True}
+    return _cb
+
+def _ensure_callback_registered(serial: str):
+    name = f"persist.pushSnapshot.{serial}"
+    if name not in _REGISTERED_CALLBACKS:
+        if colab_output:
+            colab_output.register_callback(name, _make_snapshot_callback(serial))
+        _REGISTERED_CALLBACKS.add(name)
+    return name
+
+def _make_button_pressed_callback(serial: str):
+    # This callback prints "button pressed" in the Python kernel output when invoked from JS (Colab).
+    def _cb(*args, **kwargs):
+        print("button pressed")
+        return {"ok": True}
+    return _cb
+
+def _ensure_button_pressed_registered(serial: str):
+    name = f"persist.buttonPressed.{serial}"
+    if name not in _REGISTERED_CALLBACKS:
+        if colab_output:
+            colab_output.register_callback(name, _make_button_pressed_callback(serial))
+        _REGISTERED_CALLBACKS.add(name)
+    return name
+
+# Main public function
 def board(serial: str = "board", click_sound_path: Optional[str] = None):
     """
-    Safe implementation that avoids f-string brace interpolation issues.
-    If click_sound_path is provided it will embed the audio and play it on button clicks.
+    Render a drawing board in the notebook.
+
+    Usage:
+      board("dibujo_1")
+      board("dibujo_1", click_sound_path="click_sound.mp3")  # if file exists in notebook FS
+
+    The toolbar buttons will call back to Python and print "button pressed".
+    If click_sound_path is provided, the audio will play in the browser on each button press.
     """
     serial = _sanitize_serial(serial)
     cb_name = _ensure_callback_registered(serial)
@@ -24,7 +154,7 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
 
     initial_data_url = _extract_snapshot_from_ipynb(serial) or _file_to_dataurl(PNG_PATH)
 
-    # Prepare audio data URL if a path is provided
+    # Prepare audio base64 data URL if provided
     audio_data_url = ""
     audio_mime = "audio/mpeg"
     if click_sound_path:
@@ -36,16 +166,15 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
         except Exception:
             audio_data_url = ""
 
-    # Use json.dumps to produce properly quoted JS string literals
+    # Safely serialize values to JS
     js_initial_data = json.dumps(initial_data_url or "")
     js_audio_src = json.dumps(audio_data_url or "")
     js_storage_key = json.dumps(STORAGE_KEY)
     js_callback_name = json.dumps(cb_name)
     js_button_cb_name = json.dumps(button_cb_name)
     js_img_id = json.dumps(IMG_ID)
-    # Note: element ids include serial which is safe (sanitized earlier)
 
-    # JS template: every literal JS brace must be doubled for Python str.format() to keep it.
+    # JS template: use doubled braces for literal JS braces to avoid Python format interpolation issues
     js_template = r"""
 <script>
 (function(){{
@@ -66,16 +195,16 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
   const undoStack = [];
   const redoStack = [];
 
-  function pushHistory(dataURL=null){{ 
-    try {{ 
+  function pushHistory(dataURL=null){{
+    try {{
       const snap = dataURL || canvas.toDataURL('image/png');
       undoStack.push(snap);
       while (undoStack.length > MAX_HISTORY) undoStack.shift();
       redoStack.length = 0;
-    }} catch(_) {{}} 
+    }} catch(_) {{}}
   }}
 
-  function drawFromDataURL(dataURL){{ 
+  function drawFromDataURL(dataURL){{
     if(!dataURL) return;
     const im = new Image();
     im.onload = () => {{
@@ -87,7 +216,7 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
     im.src = dataURL;
   }}
 
-  function doUndo(){{ 
+  function doUndo(){{
     if (undoStack.length === 0) return;
     const current = canvas.toDataURL('image/png');
     const prev = undoStack.pop();
@@ -96,7 +225,7 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
     schedulePersist();
   }}
 
-  function doRedo(){{ 
+  function doRedo(){{
     if (redoStack.length === 0) return;
     const current = canvas.toDataURL('image/png');
     const next = redoStack.pop();
@@ -147,7 +276,7 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
 
   let persistTimer=null;
   function schedulePersist(){{ clearTimeout(persistTimer); persistTimer=setTimeout(pushSnapshot, 500); }}
-  async function pushSnapshot(){{ 
+  async function pushSnapshot(){{
     try {{
       const dataURL = canvas.toDataURL('image/png');
       try {{ const snapEl = document.getElementById( {js_img_id} ); if (snapEl && dataURL) snapEl.src = dataURL; }} catch(_){{}}
@@ -158,7 +287,7 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
     }} catch(e) {{ console.error(e); }}
   }}
 
-  function loadPersisted(){{ 
+  function loadPersisted(){{
     if (INITIAL_DATA_URL) {{ drawFromDataURL(INITIAL_DATA_URL); pushHistory(INITIAL_DATA_URL); return; }}
     let snap = document.getElementById( {js_img_id} );
     if (snap && snap.src && snap.src.startsWith('data:image/')) {{ drawFromDataURL(snap.src); pushHistory(snap.src); return; }}
@@ -226,8 +355,6 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
 </script>
 """
 
-    # Format the template: note that the template uses doubled braces for JS literals;
-    # we only substitute the python-generated JSON-strings and the serial placeholder.
     js_code = js_template.format(
         js_storage_key=js_storage_key,
         js_callback_name=js_callback_name,
@@ -275,7 +402,7 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
 </html>
 """
 
-    # update hidden snapshot block in the notebook
+    # create/update the hidden snapshot block in the notebook
     snapshot_html = f"""
     <div id="{CONTAINER_ID}" aria-hidden="true"
          style="position:fixed; left:-9999px; top:-9999px; width:1px; height:1px; opacity:0; overflow:hidden; padding:0; margin:0; border:0; user-select:none; pointer-events:none;">
@@ -288,4 +415,5 @@ def board(serial: str = "board", click_sound_path: Optional[str] = None):
     else:
         _SNAPSHOT_HANDLES[serial].update(HTML(snapshot_html))
 
+    # show the board
     display(HTML(html))
