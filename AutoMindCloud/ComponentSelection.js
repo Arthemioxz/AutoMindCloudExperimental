@@ -1,7 +1,8 @@
-/* urdf_viewer_separated.js - updated to add a single buttonClicked() handler
-   The handler logs "button clicked" and, when possible, also calls back to a Jupyter
-   kernel to run Python print('button clicked'). The handler is wired to all GUI buttons
-   (Components toggle, Show all, and gallery row clicks).
+/* urdf_viewer_separated.js - same functionality as original urdf_viewer.js
+   Reorganized so that:
+   - All helper functions and pure utility routines are declared first.
+   - All event handlers (pointer events, UI click handlers, etc.) and code that executes functions are attached at the end.
+   This preserves the original behavior but groups "declaration" vs "execution" sections separately.
 */
 (function (root) {
   'use strict';
@@ -112,6 +113,7 @@
     return has ? box : null;
   }
 
+  // Hover overlay API builder
   function buildHoverAPI(){
     const overlays=[];
     function clear(){ for(const o of overlays){ if (o?.parent) o.parent.remove(o); } overlays.length=0; }
@@ -137,6 +139,7 @@
     return { clear, showMesh, showLink };
   }
 
+  // Joint helpers
   function isMovable(j){ const t = (j?.jointType||'').toString().toLowerCase(); return t && t !== 'fixed'; }
   function isPrismatic(j){ return (j?.jointType||'').toString().toLowerCase()==='prismatic'; }
   function getJointValue(j){ return isPrismatic(j) ? (typeof j.position==='number'?j.position:0) : (typeof j.angle==='number'?j.angle:0); }
@@ -198,6 +201,7 @@
     return linkSet;
   }
 
+  // Public destroy
   URDFViewer.destroy = function(){
     try{ cancelAnimationFrame(state?.raf); }catch(_){}
     try{ window.removeEventListener('resize', state?.onResize); }catch(_){}
@@ -221,6 +225,7 @@
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
 
+    // Scene setup
     const scene = new THREE.Scene();
     if (bg!=null) scene.background = new THREE.Color(bg);
 
@@ -257,6 +262,7 @@
       renderer.setSize(w,h);
     }
 
+    // Loader + mesh callbacks stateful vars
     const urdfLoader = new URDFLoader();
     const textDecoder = new TextDecoder();
     const b64ToUint8 = (b64)=>Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
@@ -281,6 +287,7 @@
       },80);
     }
 
+    // loadMesh callback: declared as a function (uses meshDB, assetToMeshes)
     urdfLoader.loadMeshCb = function(path, manager, onComplete){
       const bestKey = pickBestAsset(variantsFor(path), meshDB);
       if (!bestKey){ onComplete(new THREE.Mesh()); return; }
@@ -356,7 +363,9 @@
 
     const api = { scene, camera, renderer, controls, robotModel:null, linkSet:null };
 
-    // Pointer + hover + joint drag
+    // ================================
+    // === Pointer / Dragging Logic ===
+    // ================================
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     const hover = buildHoverAPI();
@@ -434,7 +443,9 @@
       dragState=null; controls.enabled=true; renderer.domElement.style.cursor='auto';
     }
 
-    // OFF-SCREEN snapshot rig
+    // =============================
+    // === Off-screen snapshot rig ==
+    // =============================
     function buildOffscreenFromRobot(){
       if (!api.robotModel) return null;
 
@@ -510,7 +521,9 @@
       return url;
     }
 
-    // UI helpers
+    // =====================
+    // === UI functions ===
+    // =====================
     function showAllAndFrame(){
       if (!api.robotModel) return;
       api.robotModel.traverse(o=>{
@@ -546,18 +559,7 @@
       }
     }
 
-    // NEW: single handler that should run for every GUI button press.
-    function buttonClicked(){
-      // JS console log
-      try { console.log("button clicked"); } catch(_) {}
-      // If running in classic Jupyter, attempt to execute a Python print on the kernel.
-      try {
-        if (window && window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel){
-          window.Jupyter.notebook.kernel.execute("print('button clicked')");
-        }
-      } catch(e){}
-    }
-
+    // createUI now just constructs the DOM structure and returns elements but does NOT attach the interactive click handlers.
     function createUI(){
       const root = document.createElement('div');
       Object.assign(root.style, {
@@ -646,6 +648,7 @@
       return { root, btn, panel, list, showAllBtn };
     }
 
+    // buildGallery will populate list element but will NOT attach per-row click listeners.
     async function buildGallery(listEl){
       listEl.innerHTML = '';
 
@@ -709,8 +712,7 @@
 
         row.appendChild(img);
         row.appendChild(meta);
-
-        // store metadata for delegated click handling
+        // store metadata so external delegation can handle clicks
         row.dataset.assetKey = ent.assetKey;
         row.dataset.base = ent.base;
         row.dataset.ext = ent.ext;
@@ -726,6 +728,7 @@
       }
     }
 
+    // Reset/load URDF
     function loadURDF(urdfText){
       if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
       if (state.off){ try{ state.off.renderer.dispose(); }catch(_){} state.off=null; }
@@ -747,9 +750,14 @@
       controls.update(); renderer.render(scene, camera);
     }
 
+    // ==============================
+    // === Final: attach listeners ==
+    // === and start the app      ===
+    // ==============================
     // attach resize listener
     window.addEventListener('resize', onResize);
 
+    // pointer handlers (deferred attachment)
     function onPointerMove(e){
       getPointer(e);
       if (dragState){ updateJointDrag(e); return; }
@@ -789,20 +797,16 @@
     renderer.domElement.addEventListener('pointerleave', endJointDrag);
     renderer.domElement.addEventListener('pointercancel', endJointDrag);
 
-    // Public state holder
+    // build UI and then attach interactive handlers (delegated)
     state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
-
-    // Build UI
     state.ui = createUI();
 
-    // UI interactive wiring (kept at the end)
+    // UI interactive wiring (kept at the end as requested)
     (function attachUIInteractions(){
       const { btn, panel, list, showAllBtn } = state.ui;
       let builtOnce = false;
 
-      // Call buttonClicked for every visible button press
       btn.addEventListener('click', async ()=>{
-        buttonClicked();
         if (panel.style.display === 'none'){
           panel.style.display = 'block';
           if (!builtOnce){ await buildGallery(list); builtOnce = true; }
@@ -811,24 +815,22 @@
         }
       });
 
-      showAllBtn.addEventListener('click', (ev)=>{
-        buttonClicked();
-        showAllAndFrame();
-      });
+      showAllBtn.addEventListener('click', showAllAndFrame);
 
-      // delegation for clicks on gallery rows -> treat row clicks as button presses
+      // delegation for clicks on gallery rows
       list.addEventListener('click', (ev)=>{
         // find nearest row
         let el = ev.target;
         while (el && el !== list && !el.dataset?.assetKey) el = el.parentElement;
         if (!el || el === list) return;
-        buttonClicked();
         const key = el.dataset.assetKey;
         if (key) isolateAssetOnScreen(key);
       });
     })();
 
+    // start rendering & load URDF content
     loadURDF((opts && opts.urdfContent) || '');
+    // build gallery lazily on first open
     animate();
 
     return {
