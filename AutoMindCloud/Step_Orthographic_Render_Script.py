@@ -1,6 +1,6 @@
 import cadquery as cq
 from cadquery import exporters
-from IPython.display import display, SVG,Latex
+from IPython.display import display, SVG, Latex
 
 # Load the STEP file
 #result = cq.importers.importStep('Sketch.step')
@@ -10,7 +10,8 @@ def show_view(result,rotate_axis, rotate_angle, title=""):
     # Rotate the object
     rotated = result.rotate((0,0,0), rotate_axis, rotate_angle)
     # Export as SVG
-    svg_str = exporters.getSVG(rotated.val())
+    svg_str = exporters.getSVG(rotated.val(), opts={
+            "showAxes": False})
     display(SVG(svg_str))
     display(Latex(title))
 
