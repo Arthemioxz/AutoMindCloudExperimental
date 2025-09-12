@@ -298,3 +298,73 @@ def board(serial: str = "board"):
 
     # 2) Mostrar la PIZARRA
     display(HTML(html))
+
+
+# --------------------
+# NEW: Button helper
+# --------------------
+def _make_button_callback(serial: str):
+    """
+    Callback executed from the front-end when the independent button is pressed.
+    Prints "button pressed" to the notebook output.
+    """
+    def _cb(*args, **kwargs):
+        # This will appear in the notebook's stdout/output area
+        print("button pressed")
+        # Return something to the invoker (optional)
+        return {"ok": True}
+    return _cb
+
+def _ensure_button_registered(serial: str):
+    """
+    Register a named callback for the button. Returns the callback name to invoke from JS.
+    """
+    name = f"persist.buttonPressed.{serial}"
+    if name not in _REGISTERED_CALLBACKS:
+        output.register_callback(name, _make_button_callback(serial))
+        _REGISTERED_CALLBACKS.add(name)
+    return name
+
+def add_button(serial: str = "board", label: str = "Press me"):
+    """
+    Display an independent button in the notebook. When clicked it will call back to Python
+    and print "button pressed" in the notebook output.
+
+    Usage:
+      add_button("board")      # shows a button bound to serial "board"
+      add_button("myid","OK")  # shows a button labeled "OK"
+    """
+    serial = _sanitize_serial(serial)
+    cb_name = _ensure_button_registered(serial)
+
+    # The button will try Colab's invokeFunction first; fall back to classic Jupyter if present.
+    html = f"""
+    <div style="margin:8px 0;">
+      <button id="amc_button_{serial}" style="padding:8px 12px;border-radius:6px;border:1px solid #d0d0d0;background:#fff;cursor:pointer;">
+        {label}
+      </button>
+      <script>
+      (function(){{
+        const btn = document.getElementById("amc_button_{serial}");
+        btn.addEventListener('click', async function(){{
+          try {{
+            if (window.google?.colab?.kernel?.invokeFunction) {{
+              await google.colab.kernel.invokeFunction("{cb_name}", [], {{}} );
+              return;
+            }}
+          }} catch(e){{ console.warn('colab invoke failed', e); }}
+          try {{
+            // Classic Jupyter fallback
+            if (window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel) {{
+              window.Jupyter.notebook.kernel.execute("print('button pressed')");
+              return;
+            }}
+          }} catch(e){{ console.warn('jupyter fallback failed', e); }}
+          // As a last resort, log in console
+          console.log("button pressed (no kernel available)");
+        }});
+      }})();
+      </script>
+    </div>
+    """
+    display(HTML(html))
