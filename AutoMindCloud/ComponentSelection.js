@@ -1,14 +1,7 @@
-/* urdf_viewer.js - UMD-lite: exposes window.URDFViewer
-   - Keeps original interactions:
-     * OrbitControls camera rotate/zoom/pan
-     * Gray hover overlay (mesh or link, via selectMode)
-     * Joint drag (revolute/prismatic) with limits and Shift for fine control
-   - Gallery is PER FILE (DAE/STL/STEP) — not per link/mesh fragment.
-     Clicking an item HARD-ISOLATES all instances of that asset in the main view.
-   - Thumbnails are captured OFF-SCREEN with the same isolation (no flicker).
-   - Skips images; dedup path variants per basename (DAE > STL > STEP; then largest).
-   - Auto-scales DAE via <unit meter="...">.
-   - UI: bottom-left “Components” toggle, “Show all” button in the gallery header.
+/* urdf_viewer_separated.js - updated to add a single buttonClicked() handler
+   The handler logs "button clicked" and, when possible, also calls back to a Jupyter
+   kernel to run Python print('button clicked'). The handler is wired to all GUI buttons
+   (Components toggle, Show all, and gallery row clicks).
 */
 (function (root) {
   'use strict';
@@ -16,7 +9,10 @@
   const URDFViewer = {};
   let state = null;
 
-  // ---------- Helpers ----------
+  // =========================
+  // === Utility / Helpers ===
+  // =========================
+
   function normKey(s){ return String(s||'').replace(/\\/g,'/').toLowerCase(); }
   function variantsFor(path){
     const out = new Set(), p = normKey(path);
@@ -38,19 +34,17 @@
   }
   function approxByteLenFromB64(b64){ return Math.floor(String(b64||'').length * 3 / 4); }
 
-  // Component files allowed for gallery isolation
   const ALLOWED_EXTS = new Set(['dae','stl','step','stp']);
 
-  // Dedup per basename with priority: DAE > STL > STEP/STP, then largest byte size
   function pickBestAsset(tries, meshDB){
     const extPriority = { dae: 3, stl: 2, step: 1, stp: 1 };
-    const groups = new Map(); // base -> [{key, ext, bytes, prio}]
+    const groups = new Map();
     for (const k of tries){
       const kk = normKey(k);
       const b64 = meshDB[kk];
       if (!b64) continue;
       const ext = extOf(kk);
-      if (!ALLOWED_EXTS.has(ext)) continue; // skip images/others
+      if (!ALLOWED_EXTS.has(ext)) continue;
       const base = basenameNoExt(kk);
       const arr = groups.get(base) || [];
       arr.push({ key: kk, ext, bytes: approxByteLenFromB64(b64), prio: extPriority[ext] ?? 0 });
@@ -76,7 +70,6 @@
 
   function rectifyUpForward(obj){
     if (!obj || obj.userData.__rectified) return;
-    // ROS Z-up -> Three Y-up
     obj.rotateX(-Math.PI/2);
     obj.userData.__rectified = true;
     obj.updateMatrixWorld(true);
@@ -119,7 +112,6 @@
     return has ? box : null;
   }
 
-  // ---------- Hover overlay (gray marker) ----------
   function buildHoverAPI(){
     const overlays=[];
     function clear(){ for(const o of overlays){ if (o?.parent) o.parent.remove(o); } overlays.length=0; }
@@ -145,7 +137,6 @@
     return { clear, showMesh, showLink };
   }
 
-  // ---------- Joint helpers ----------
   function isMovable(j){ const t = (j?.jointType||'').toString().toLowerCase(); return t && t !== 'fixed'; }
   function isPrismatic(j){ return (j?.jointType||'').toString().toLowerCase()==='prismatic'; }
   function getJointValue(j){ return isPrismatic(j) ? (typeof j.position==='number'?j.position:0) : (typeof j.angle==='number'?j.angle:0); }
@@ -207,7 +198,6 @@
     return linkSet;
   }
 
-  // ---------- Public API: destroy ----------
   URDFViewer.destroy = function(){
     try{ cancelAnimationFrame(state?.raf); }catch(_){}
     try{ window.removeEventListener('resize', state?.onResize); }catch(_){}
@@ -218,17 +208,9 @@
     state=null;
   };
 
-  /**
-   * Render a URDF with a per-file gallery.
-   * opts = {
-   *   container: HTMLElement (default document.body),
-   *   urdfContent: string,
-   *   meshDB: { key -> base64 },
-   *   selectMode: 'link'|'mesh' (default 'link')  // for gray hover overlay behavior
-   *   background: number (hex) or null,
-   *   descriptions: { [assetBaseName]: string }
-   * }
-   */
+  // ============================
+  // === URDFViewer.render API ===
+  // ============================
   URDFViewer.render = function(opts){
     if (state) URDFViewer.destroy();
 
@@ -239,7 +221,6 @@
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
 
-    // Scene
     const scene = new THREE.Scene();
     if (bg!=null) scene.background = new THREE.Color(bg);
 
@@ -265,7 +246,6 @@
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
 
-    // Lights
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
     dirLight.position.set(2,2,2); scene.add(dirLight);
@@ -276,9 +256,7 @@
       camera.updateProjectionMatrix();
       renderer.setSize(w,h);
     }
-    window.addEventListener('resize', onResize);
 
-    // Loader + mesh callbacks
     const urdfLoader = new URDFLoader();
     const textDecoder = new TextDecoder();
     const b64ToUint8 = (b64)=>Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
@@ -291,7 +269,6 @@
     const daeCache = new Map();
     let pendingMeshes = 0, fitTimer=null;
 
-    // assetKey -> [scene meshes]
     const assetToMeshes = new Map();
 
     function scheduleFit(){
@@ -304,11 +281,11 @@
       },80);
     }
 
-    urdfLoader.loadMeshCb = (path, manager, onComplete)=>{
+    urdfLoader.loadMeshCb = function(path, manager, onComplete){
       const bestKey = pickBestAsset(variantsFor(path), meshDB);
       if (!bestKey){ onComplete(new THREE.Mesh()); return; }
       const ext = extOf(bestKey);
-      if (!ALLOWED_EXTS.has(ext)){ onComplete(new THREE.Mesh()); return; } // safety
+      if (!ALLOWED_EXTS.has(ext)){ onComplete(new THREE.Mesh()); return; }
 
       const tagAndComplete = (obj)=>{
         obj.userData.__assetKey = bestKey;
@@ -342,15 +319,12 @@
         if (ext==='dae'){
           if (daeCache.has(bestKey)){ tagAndComplete(daeCache.get(bestKey).clone(true)); return; }
           const daeText=b64ToText(meshDB[bestKey]);
-
-          // scale using <unit meter="...">
           let scale = 1.0;
           const m = /<unit[^>]*meter\s*=\s*"([\d.eE+\-]+)"/i.exec(daeText);
           if (m){ const meter = parseFloat(m[1]); if (isFinite(meter) && meter>0) scale = meter; }
 
           const mgr=new THREE.LoadingManager();
           mgr.setURLModifier((url)=>{
-            // for referenced resources in DAE (textures, etc.)
             const tries=variantsFor(url);
             const key = tries.map(normKey).find(k=>meshDB[k]);
             if (key){
@@ -368,7 +342,6 @@
           return;
         }
         if (ext==='step' || ext==='stp'){
-          // No STEP parser in this bundle—return empty mesh so scene remains valid.
           onComplete(new THREE.Mesh());
           pendingMeshes--; scheduleFit();
           return;
@@ -383,7 +356,7 @@
 
     const api = { scene, camera, renderer, controls, robotModel:null, linkSet:null };
 
-    // ---------- Pointer + hover + joint drag ----------
+    // Pointer + hover + joint drag
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     const hover = buildHoverAPI();
@@ -437,7 +410,6 @@
         ds.value += delta * fine; setJointValue(api.robotModel, ds.joint, ds.value); return;
       }
 
-      // revolute/continuous
       let applied=false; const hit=new THREE.Vector3();
       if (raycaster.ray.intersectPlane(ds.dragPlane, hit)){
         let r1 = hit.clone().sub(ds.originW);
@@ -462,42 +434,7 @@
       dragState=null; controls.enabled=true; renderer.domElement.style.cursor='auto';
     }
 
-    renderer.domElement.addEventListener('pointermove', (e)=>{
-      getPointer(e);
-      if (dragState){ updateJointDrag(e); return; }
-      if (!api.robotModel) return;
-
-      raycaster.setFromCamera(pointer, camera);
-      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
-      const hits = raycaster.intersectObjects(pickables, true);
-
-      hover.clear();
-      if (hits.length){
-        const meshHit = hits[0].object;
-        const link = findAncestorLink(meshHit, api.linkSet);
-        const joint = findAncestorJoint(meshHit);
-        if (selectMode==='link' && link) hover.showLink(link); else hover.showMesh(meshHit);
-        renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
-      } else {
-        renderer.domElement.style.cursor='auto';
-      }
-    }, {passive:true});
-
-    renderer.domElement.addEventListener('pointerdown', (e)=>{
-      e.preventDefault();
-      if (!api.robotModel || e.button!==0) return;
-      raycaster.setFromCamera(pointer, camera);
-      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
-      const hits = raycaster.intersectObjects(pickables, true);
-      if (!hits.length) return;
-      const joint = findAncestorJoint(hits[0].object);
-      if (joint && isMovable(joint)) startJointDrag(joint, e);
-    }, {passive:false});
-    renderer.domElement.addEventListener('pointerup', endJointDrag);
-    renderer.domElement.addEventListener('pointerleave', endJointDrag);
-    renderer.domElement.addEventListener('pointercancel', endJointDrag);
-
-    // ---------------- OFF-SCREEN snapshot rig ----------------
+    // OFF-SCREEN snapshot rig
     function buildOffscreenFromRobot(){
       if (!api.robotModel) return null;
 
@@ -520,7 +457,6 @@
       const robotClone = api.robotModel.clone(true);
       offScene.add(robotClone);
 
-      // Index clone meshes by assetKey
       const cloneAssetToMeshes = new Map();
       robotClone.traverse(o=>{
         const k = o?.userData?.__assetKey;
@@ -539,18 +475,14 @@
       const meshes = off.cloneAssetToMeshes.get(assetKey) || [];
       if (!meshes.length) return null;
 
-      // Save visibility
       const vis = [];
       off.robotClone.traverse(o=>{
         if (o.isMesh && o.geometry) vis.push([o, o.visible]);
       });
 
-      // Hide ALL
       for (const [m] of vis) m.visible = false;
-      // Show ONLY this asset's meshes
       for (const m of meshes) m.visible = true;
 
-      // Frame
       const box = computeUnionBox(meshes);
       if (!box){ vis.forEach(([o,v])=>o.visible=v); return null; }
       const center = box.getCenter(new THREE.Vector3());
@@ -573,14 +505,12 @@
       off.renderer.render(off.scene, off.camera);
       const url = off.renderer.domElement.toDataURL('image/png');
 
-      // Restore vis
       for (const [o,v] of vis) o.visible = v;
 
       return url;
     }
-    // ---------------- end OFF-SCREEN ----------------
 
-    // ---------- UI helpers ----------
+    // UI helpers
     function showAllAndFrame(){
       if (!api.robotModel) return;
       api.robotModel.traverse(o=>{
@@ -591,14 +521,11 @@
 
     function isolateAssetOnScreen(assetKey){
       const meshes = assetToMeshes.get(assetKey) || [];
-      // Hide ALL
       api.robotModel.traverse(o=>{
         if (o.isMesh && o.geometry) o.visible = false;
       });
-      // Show ONLY that asset's meshes
       for (const m of meshes) m.visible = true;
 
-      // Frame
       const box = computeUnionBox(meshes);
       if (box){
         const center = box.getCenter(new THREE.Vector3());
@@ -619,9 +546,19 @@
       }
     }
 
-    // ---------- UI: bottom-left toggle + right panel ----------
+    // NEW: single handler that should run for every GUI button press.
+    function buttonClicked(){
+      // JS console log
+      try { console.log("button clicked"); } catch(_) {}
+      // If running in classic Jupyter, attempt to execute a Python print on the kernel.
+      try {
+        if (window && window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel){
+          window.Jupyter.notebook.kernel.execute("print('button clicked')");
+        }
+      } catch(e){}
+    }
+
     function createUI(){
-      // Root overlay
       const root = document.createElement('div');
       Object.assign(root.style, {
         position: 'absolute',
@@ -632,7 +569,6 @@
         fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // Bottom-left toggle button
       const btn = document.createElement('button');
       btn.textContent = 'Components';
       Object.assign(btn.style, {
@@ -649,7 +585,6 @@
         pointerEvents: 'auto'
       });
 
-      // Panel
       const panel = document.createElement('div');
       Object.assign(panel.style, {
         position: 'absolute',
@@ -666,7 +601,6 @@
         pointerEvents: 'auto'
       });
 
-      // Header with title + Show all
       const header = document.createElement('div');
       Object.assign(header.style, {
         display: 'flex',
@@ -692,7 +626,6 @@
         fontWeight: '700',
         cursor: 'pointer'
       });
-      showAllBtn.addEventListener('click', showAllAndFrame);
 
       header.appendChild(headerTitle);
       header.appendChild(showAllBtn);
@@ -710,24 +643,12 @@
       root.appendChild(btn);
       container.appendChild(root);
 
-      let builtOnce = false;
-      btn.addEventListener('click', async ()=>{
-        if (panel.style.display === 'none'){
-          panel.style.display = 'block';
-          if (!builtOnce){ await buildGallery(list); builtOnce = true; }
-        } else {
-          panel.style.display = 'none';
-        }
-      });
-
       return { root, btn, panel, list, showAllBtn };
     }
 
-    // Build PER-FILE gallery (one item per assetKey that produced meshes)
     async function buildGallery(listEl){
       listEl.innerHTML = '';
 
-      // Collect entries
       const entries = [];
       assetToMeshes.forEach((meshes, assetKey)=>{
         if (!meshes || !meshes.length) return;
@@ -788,11 +709,13 @@
 
         row.appendChild(img);
         row.appendChild(meta);
-        listEl.appendChild(row);
 
-        row.addEventListener('click', ()=>{
-          isolateAssetOnScreen(ent.assetKey);
-        });
+        // store metadata for delegated click handling
+        row.dataset.assetKey = ent.assetKey;
+        row.dataset.base = ent.base;
+        row.dataset.ext = ent.ext;
+
+        listEl.appendChild(row);
 
         (async ()=>{
           try{
@@ -802,14 +725,8 @@
         })();
       }
     }
-    // ---------- end UI ----------
 
-    // Public state holder
-    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
-
-    // Load URDF
     function loadURDF(urdfText){
-      // reset scene + maps
       if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
       if (state.off){ try{ state.off.renderer.dispose(); }catch(_){} state.off=null; }
 
@@ -820,8 +737,6 @@
           rectifyUpForward(api.robotModel);
           api.linkSet = markLinksAndJoints(api.robotModel);
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
-
-          // Build OFF-SCREEN rig now that meshes exist
           state.off = buildOffscreenFromRobot();
         }
       } catch(_e){}
@@ -832,8 +747,88 @@
       controls.update(); renderer.render(scene, camera);
     }
 
-    loadURDF((opts && opts.urdfContent) || '');
+    // attach resize listener
+    window.addEventListener('resize', onResize);
+
+    function onPointerMove(e){
+      getPointer(e);
+      if (dragState){ updateJointDrag(e); return; }
+      if (!api.robotModel) return;
+
+      raycaster.setFromCamera(pointer, camera);
+      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
+      const hits = raycaster.intersectObjects(pickables, true);
+
+      hover.clear();
+      if (hits.length){
+        const meshHit = hits[0].object;
+        const link = findAncestorLink(meshHit, api.linkSet);
+        const joint = findAncestorJoint(meshHit);
+        if (selectMode==='link' && link) hover.showLink(link); else hover.showMesh(meshHit);
+        renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
+      } else {
+        renderer.domElement.style.cursor='auto';
+      }
+    }
+
+    function onPointerDown(e){
+      e.preventDefault();
+      if (!api.robotModel || e.button!==0) return;
+      getPointer(e);
+      raycaster.setFromCamera(pointer, camera);
+      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
+      const hits = raycaster.intersectObjects(pickables, true);
+      if (!hits.length) return;
+      const joint = findAncestorJoint(hits[0].object);
+      if (joint && isMovable(joint)) startJointDrag(joint, e);
+    }
+
+    renderer.domElement.addEventListener('pointermove', onPointerMove, {passive:true});
+    renderer.domElement.addEventListener('pointerdown', onPointerDown, {passive:false});
+    renderer.domElement.addEventListener('pointerup', endJointDrag);
+    renderer.domElement.addEventListener('pointerleave', endJointDrag);
+    renderer.domElement.addEventListener('pointercancel', endJointDrag);
+
+    // Public state holder
+    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
+
+    // Build UI
     state.ui = createUI();
+
+    // UI interactive wiring (kept at the end)
+    (function attachUIInteractions(){
+      const { btn, panel, list, showAllBtn } = state.ui;
+      let builtOnce = false;
+
+      // Call buttonClicked for every visible button press
+      btn.addEventListener('click', async ()=>{
+        buttonClicked();
+        if (panel.style.display === 'none'){
+          panel.style.display = 'block';
+          if (!builtOnce){ await buildGallery(list); builtOnce = true; }
+        } else {
+          panel.style.display = 'none';
+        }
+      });
+
+      showAllBtn.addEventListener('click', (ev)=>{
+        buttonClicked();
+        showAllAndFrame();
+      });
+
+      // delegation for clicks on gallery rows -> treat row clicks as button presses
+      list.addEventListener('click', (ev)=>{
+        // find nearest row
+        let el = ev.target;
+        while (el && el !== list && !el.dataset?.assetKey) el = el.parentElement;
+        if (!el || el === list) return;
+        buttonClicked();
+        const key = el.dataset.assetKey;
+        if (key) isolateAssetOnScreen(key);
+      });
+    })();
+
+    loadURDF((opts && opts.urdfContent) || '');
     animate();
 
     return {
