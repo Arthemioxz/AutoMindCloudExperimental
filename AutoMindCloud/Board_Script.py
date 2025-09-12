@@ -1,6 +1,8 @@
 from IPython.display import HTML, display
 from google.colab import output
 import re, base64, os
+from binascii import b2a_base64
+from typing import Optional
 
 _SNAPSHOT_HANDLES = {}          # serial -> DisplayHandle (bloque oculto/externo con display_id)
 _REGISTERED_CALLBACKS = set()   # callbacks registrados
@@ -104,10 +106,6 @@ def _extract_snapshot_from_ipynb(serial: str) -> str:
 # NEW: Button-pressed callback registration
 # --------------------
 def _make_button_pressed_callback(serial: str):
-    """
-    This callback will be registered in the kernel and, when invoked from the front-end,
-    will print "button pressed" in the notebook output area.
-    """
     def _cb(*args, **kwargs):
         print("button pressed")
         return {"ok": True}
@@ -121,12 +119,19 @@ def _ensure_button_pressed_registered(serial: str):
     return name
 
 # --------------------
-# Main board function
+# Main board function (now supports click_sound_path)
 # --------------------
-def board(serial: str = "board"):
+def board(serial: str = "board", click_sound_path: Optional[str] = None):
+    """
+    Show the drawing board. If click_sound_path is provided (path to an audio file,
+    e.g. "click_sound.mp3" accessible from the notebook), the audio is embedded and
+    will play in the browser each time any toolbar button is pressed.
+
+    Example:
+      board("board", click_sound_path="click_sound.mp3")
+    """
     serial = _sanitize_serial(serial)
     cb_name = _ensure_callback_registered(serial)
-    # Register the global "button pressed" callback and get name to expose to JS
     button_cb_name = _ensure_button_pressed_registered(serial)
 
     STORAGE_KEY  = f"amc_pizarra_snapshot_dataurl_{serial}"
@@ -136,8 +141,19 @@ def board(serial: str = "board"):
 
     initial_data_url = _extract_snapshot_from_ipynb(serial) or _file_to_dataurl(PNG_PATH)
 
-    # JavaScript: existing board logic + attach a listener to ALL toolbar buttons
-    # that will call the registered kernel callback which prints "button pressed".
+    # Prepare audio data URL if a path is provided
+    audio_data_url = ""
+    audio_mime = "audio/mpeg"
+    if click_sound_path:
+        try:
+            with open(click_sound_path, "rb") as f:
+                raw = f.read()
+            # Use b2a_base64 without newline
+            b64 = b2a_base64(raw, newline=False).decode("ascii")
+            audio_data_url = f"data:{audio_mime};base64,{b64}"
+        except Exception:
+            audio_data_url = ""
+
     js_code = f"""
 <script>
 (function(){{
@@ -146,6 +162,7 @@ def board(serial: str = "board"):
   const BUTTON_CB_NAME = "{button_cb_name}";
   const IMG_ID        = "{IMG_ID}";
   const INITIAL_DATA_URL = {('"%s"' % initial_data_url) if initial_data_url else '""'};
+  const AUDIO_SRC = {('"%s"' % audio_data_url) if audio_data_url else '""'};
   const MAX_HISTORY = 40;
 
   const canvas = document.getElementById('board_{serial}');
@@ -258,9 +275,41 @@ def board(serial: str = "board"):
   setTimeout(loadPersisted, 30);
 
   // -------------------------------
-  // NEW: attach a handler to ALL buttons in the toolbar
+  // AUDIO: create audio element (if provided) and play on toolbar button clicks
+  // -------------------------------
+  let clickAudio = null;
+  if (AUDIO_SRC) {{
+    try {{
+      clickAudio = document.createElement('audio');
+      clickAudio.id = 'amc_click_audio_{serial}';
+      clickAudio.src = AUDIO_SRC;
+      clickAudio.preload = 'auto';
+      // add to DOM but keep visually hidden
+      clickAudio.style.display = 'none';
+      document.body.appendChild(clickAudio);
+    }} catch(e) {{
+      console.warn('failed to create click audio', e);
+      clickAudio = null;
+    }}
+  }}
+
+  function playClickSound() {{
+    if (!clickAudio) return;
+    try {{
+      // reset to start (so repeated clicks play even if still playing)
+      try {{ clickAudio.currentTime = 0; }} catch(_){}
+      clickAudio.play().catch(_=>{{}});
+    }} catch(e) {{
+      console.warn('playClickSound failed', e);
+    }}
+  }}
+
+  // -------------------------------
+  // attach a handler to ALL buttons in the toolbar
   // -------------------------------
   function invokePythonButtonPressed() {{
+    // Play local click audio in the browser first (non-blocking)
+    try {{ playClickSound(); }} catch(_){{}}
     // Try Colab's kernel.invokeFunction first (fast and safe)
     try {{
       if (window.google?.colab?.kernel?.invokeFunction) {{
@@ -289,7 +338,7 @@ def board(serial: str = "board"):
       const btns = toolbar.querySelectorAll('button');
       btns.forEach(b => {{
         b.addEventListener('click', () => {{
-          // call the kernel-backed callback that prints "button pressed"
+          // play sound and call the kernel-backed callback that prints "button pressed"
           invokePythonButtonPressed();
         }});
       }});
