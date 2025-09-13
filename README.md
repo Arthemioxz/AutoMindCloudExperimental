@@ -11,6 +11,8 @@ Library for Civil Engineers
 
 Library Functions on Colab: https://colab.research.google.com/drive/1A7GFt3m9yW8yU1i3W-3W4qQmtkhHNvIG,
 
+https://colab.research.google.com/drive/1fanS0dbLEETSHpdQwvBof_K6pej9W-2r
+
 **Examples**
 
 **Classic Physics and Financial Accounting**
