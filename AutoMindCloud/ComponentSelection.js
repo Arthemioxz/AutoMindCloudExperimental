@@ -1,7 +1,7 @@
-/* urdf_viewer_separated.js - updated to add a single buttonClicked() handler
-   The handler logs "button clicked" and, when possible, also calls back to a Jupyter
-   kernel to run Python print('button clicked'). The handler is wired to all GUI buttons
-   (Components toggle, Show all, and gallery row clicks).
+/* urdf_viewer_separated.js - updated:
+   - Hover aura is now configurable: opts.hover {enabled,color,opacity,throttleMs}
+   - Hover is stable and fast: caches last hover target, throttles pointermove
+   - Keeps your single buttonClicked() handler wiring
 */
 (function (root) {
   'use strict';
@@ -112,14 +112,24 @@
     return has ? box : null;
   }
 
-  function buildHoverAPI(){
+  // === Configurable + cached hover ===
+  function buildHoverAPI({color=0x9e9e9e, opacity=0.35}={}){
     const overlays=[];
     function clear(){ for(const o of overlays){ if (o?.parent) o.parent.remove(o); } overlays.length=0; }
     function overlayFor(mesh){
       if (!mesh || !mesh.isMesh || !mesh.geometry) return null;
       const m = new THREE.Mesh(
         mesh.geometry,
-        new THREE.MeshBasicMaterial({ color:0x9e9e9e, transparent:true, opacity:0.35, depthTest:false, depthWrite:false })
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent:true,
+          opacity,
+          depthTest:false,
+          depthWrite:false,
+          polygonOffset:true,
+          polygonOffsetFactor:-1, // helps avoid z-fighting on thin parts
+          polygonOffsetUnits:1
+        })
       );
       m.renderOrder = 999; m.userData.__isHoverOverlay = true; return m;
     }
@@ -220,6 +230,7 @@
     const selectMode = (opts && opts.selectMode) || 'link';
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
+    const hoverCfg = Object.assign({enabled:true, color:0x9e9e9e, opacity:0.35, throttleMs:16}, (opts && opts.hover)||{});
 
     const scene = new THREE.Scene();
     if (bg!=null) scene.background = new THREE.Color(bg);
@@ -359,7 +370,7 @@
     // Pointer + hover + joint drag
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    const hover = buildHoverAPI();
+    const hover = buildHoverAPI({color:hoverCfg.color, opacity:hoverCfg.opacity});
 
     let dragState=null;
     const ROT_PER_PIXEL=0.01, PRISM_PER_PIXEL=0.003;
@@ -548,9 +559,7 @@
 
     // NEW: single handler that should run for every GUI button press.
     function buttonClicked(){
-      // JS console log
       try { console.log("button clicked"); } catch(_) {}
-      // If running in classic Jupyter, attempt to execute a Python print on the kernel.
       try {
         if (window && window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel){
           window.Jupyter.notebook.kernel.execute("print('button clicked')");
@@ -710,7 +719,6 @@
         row.appendChild(img);
         row.appendChild(meta);
 
-        // store metadata for delegated click handling
         row.dataset.assetKey = ent.assetKey;
         row.dataset.base = ent.base;
         row.dataset.ext = ent.ext;
@@ -750,24 +758,75 @@
     // attach resize listener
     window.addEventListener('resize', onResize);
 
-    function onPointerMove(e){
+    // === Hover state (prevents flicker & overdraw) ===
+    let lastHoverKey = null; // string key of current hover target
+    const hoverKeyFor = (meshHit)=>{
+      if (!meshHit) return null;
+      if (selectMode==='link'){
+        const link = findAncestorLink(meshHit, api.linkSet);
+        return link ? ('link#'+link.id) : ('mesh#'+meshHit.id);
+      }
+      return 'mesh#'+meshHit.id;
+    };
+
+    // throttled pointermove
+    let hoverRafPending = false, lastMoveEvt=null, lastHoverTs=0;
+    function scheduleHover(){
+      if (hoverRafPending) return;
+      hoverRafPending = true;
+      requestAnimationFrame(()=>{
+        hoverRafPending = false;
+        if (!lastMoveEvt) return;
+        processHover(lastMoveEvt);
+      });
+    }
+
+    function processHover(e){
+      lastHoverTs = performance.now();
+      if (!api.robotModel || !hoverCfg.enabled){
+        hover.clear();
+        renderer.domElement.style.cursor='auto';
+        return;
+      }
       getPointer(e);
       if (dragState){ updateJointDrag(e); return; }
-      if (!api.robotModel) return;
 
       raycaster.setFromCamera(pointer, camera);
       const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
       const hits = raycaster.intersectObjects(pickables, true);
 
-      hover.clear();
+      let newKey = null;
+      let meshHit = null;
       if (hits.length){
-        const meshHit = hits[0].object;
-        const link = findAncestorLink(meshHit, api.linkSet);
-        const joint = findAncestorJoint(meshHit);
-        if (selectMode==='link' && link) hover.showLink(link); else hover.showMesh(meshHit);
-        renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
+        meshHit = hits[0].object;
+        newKey = hoverKeyFor(meshHit);
+      }
+
+      if (newKey !== lastHoverKey){
+        hover.clear();
+        if (newKey && meshHit){
+          if (selectMode==='link'){
+            const link = findAncestorLink(meshHit, api.linkSet);
+            if (link) hover.showLink(link); else hover.showMesh(meshHit);
+          }else{
+            hover.showMesh(meshHit);
+          }
+        }
+        lastHoverKey = newKey;
+      }
+
+      const joint = meshHit ? findAncestorJoint(meshHit) : null;
+      renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
+    }
+
+    function onPointerMove(e){
+      lastMoveEvt = e;
+      const now = performance.now();
+      if (now - lastHoverTs >= (hoverCfg.throttleMs|0)){
+        scheduleHover(); // next frame
       } else {
-        renderer.domElement.style.cursor='auto';
+        // still schedule, but let throttle gate actual processing
+        scheduleHover();
       }
     }
 
@@ -818,7 +877,6 @@
 
       // delegation for clicks on gallery rows -> treat row clicks as button presses
       list.addEventListener('click', (ev)=>{
-        // find nearest row
         let el = ev.target;
         while (el && el !== list && !el.dataset?.assetKey) el = el.parentElement;
         if (!el || el === list) return;
