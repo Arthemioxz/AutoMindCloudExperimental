@@ -1,4 +1,3 @@
-
 import sympy  # requested import
 import gdown
 import cascadio
@@ -587,6 +586,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     with open(html_name, "r") as f:
         html = f.read()
     display(HTML(html))
+
 
 
 
