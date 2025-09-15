@@ -1,15 +1,16 @@
-/* urdf_viewer_separated.js - teal/white UI + "Autodesk-like" tools (+axes, tab toggle, visible slice plane, click audio)
+
+/* urdf_viewer_separated.js - teal/white UI + "Autodesk-like" tools (+axes, tab toggle, visible slice plane, click audio overlap)
    Adds:
      - Render modes: Solid / Wireframe / X-Ray / Ghost
      - Explode slider (per-link radial offset)
-     - Section plane (X/Y/Z axis + distance) + Visible plane helper
+     - Section plane (X/Y/Z axis + distance) + visible teal plane (no grid/wire)
      - Camera presets: Iso / Top / Front / Right
      - Perspective <-> Orthographic toggle
-     - Grid + Ground + Soft shadows (grid OFF by default now)
+     - Grid + Ground + Soft shadows (grid OFF by default)
      - Fit to view & Snapshot
      - XYZ Axes toggle (auto-sized)
      - Tools tab starts CLOSED + floating "Open/Close Tools" button
-     - Optional click sound on every UI interaction (opts.clickAudioDataURL)
+     - Optional click sound on every UI interaction (opts.clickAudioDataURL) with overlapping playback
    Keeps:
      - Hover aura (configurable)
      - Stable, throttled hover
@@ -128,7 +129,7 @@
 
     // keep helpers in scale
     sizeAxesHelper(maxDim, center);
-    refreshSectionHelper(maxDim, center);
+    refreshSectionVisual(maxDim, center);
   }
 
   function collectMeshesInLink(linkObj){
@@ -271,18 +272,46 @@
 
     const selectMode = (opts && opts.selectMode) || 'link';
     const bg = (opts && opts.background!==undefined) ? opts.background : THEME.bgCanvas;
-    const descriptions = (opts && opts.descriptions) || {};
     const hoverCfg = Object.assign({enabled:true, color:0x0ea5a6, opacity:0.28, throttleMs:16}, (opts && opts.hover)||{});
 
-    // Optional click audio (data URL, e.g., "data:audio/mpeg;base64,....")
-    let clickAudio = null;
-    if (opts && typeof opts.clickAudioDataURL === 'string' && opts.clickAudioDataURL.startsWith('data:audio/')) {
-      try {
-        clickAudio = new Audio(opts.clickAudioDataURL);
-        clickAudio.preload = 'auto';
-        clickAudio.loop = false;
-        clickAudio.volume = 1.0;
-      } catch(e){ clickAudio = null; }
+    // Optional click audio via WebAudio (overlapping playback)
+    let audioCtx = null, clickBuf = null, clickURL =
+      (opts && typeof opts.clickAudioDataURL === 'string' && opts.clickAudioDataURL.startsWith('data:audio/'))
+        ? opts.clickAudioDataURL
+        : null;
+
+    async function ensureClickBuffer(){
+      if (!clickURL) return;
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (!clickBuf){
+        const resp = await fetch(clickURL);
+        const arr  = await resp.arrayBuffer();
+        clickBuf   = await new Promise((res, rej)=>{
+          try { audioCtx.decodeAudioData(arr, res, rej); } catch(e){ rej(e); }
+        });
+      }
+    }
+    function playClick(){
+      if (!clickURL) return;
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') { audioCtx.resume(); }
+      if (!clickBuf){
+        // lazy-load once, then play
+        ensureClickBuffer().then(()=>{
+          if (clickBuf){
+            const src = audioCtx.createBufferSource();
+            src.buffer = clickBuf;
+            src.connect(audioCtx.destination);
+            try { src.start(); } catch(_){}
+          }
+        }).catch(()=>{});
+        return;
+      }
+      // spawn a new source every click (allows overlap)
+      const src = audioCtx.createBufferSource();
+      src.buffer = clickBuf;
+      src.connect(audioCtx.destination);
+      try { src.start(); } catch(_){}
     }
 
     const scene = new THREE.Scene();
@@ -326,7 +355,7 @@
     // Ground + grid (toggled)
     const groundGroup = new THREE.Group(); scene.add(groundGroup);
     const grid = new THREE.GridHelper(10, 20, 0x84d4d4, 0xdef3f3);
-    grid.visible = false; // disabled by default per request
+    grid.visible = false; // disabled by default
     groundGroup.add(grid);
     const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200), groundMat);
@@ -734,12 +763,12 @@
       const rowCam = document.createElement('div'); Object.assign(rowCam.style,{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:'8px', margin:'8px 0'});
       const bIso = mkTealButton('Iso'), bTop = mkTealButton('Top'), bFront= mkTealButton('Front'), bRight = mkTealButton('Right'), bSnap = mkTealButton('Snapshot');
       [bIso,bTop,bFront,bRight,bSnap].forEach(b=>{ b.style.padding='8px'; b.style.borderRadius='10px'; });
-      dockBody.appendChild(mkRow('Views', rowCam));
       rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight); rowCam.appendChild(bSnap);
+      dockBody.appendChild(mkRow('Views', rowCam));
 
       // Projection + helpers
       const projSel = mkSelect(['Perspective','Orthographic'], 'Perspective');
-      const togGrid = mkTealToggle('Grid');       // OFF by default, set below
+      const togGrid = mkTealToggle('Grid');       // OFF by default
       const togGround = mkTealToggle('Ground & shadows'); togGround.cb.checked = true;
       const togAxes = mkTealToggle('XYZ axes');   // axes toggle
       togAxes.cb.checked = false;
@@ -838,7 +867,7 @@
         Object.assign(small.style, { color: THEME.textMuted, fontSize: '12px', marginTop: '2px' });
 
         const desc = document.createElement('div');
-        desc.textContent = (opts.descriptions||{})[ent.base] || ' ';
+        desc.textContent = (opts?.descriptions||{})[ent.base] || ' ';
         Object.assign(desc.style, { color: THEME.textMuted, fontSize: '12px', marginTop: '4px' });
 
         meta.appendChild(title);
@@ -917,37 +946,46 @@
     }
 
     // ===========
-    //  Section (with visible helper plane)
+    //  Section (clipping + visible teal plane)
     // ===========
     let sectionPlane = null;
-    let secAxis = 'X';   // 'X' | 'Y' | 'Z'
+    let secAxis = 'X';         // 'X' | 'Y' | 'Z'
     let secEnabled = false;
     let secPlaneVisible = false;
-    let secHelper = null;
 
-    function ensureSectionHelper(){
-      if (!secHelper){
-        // PlaneHelper shows the plane normal & slice; color teal
-        secHelper = new THREE.PlaneHelper(new THREE.Plane(new THREE.Vector3(1,0,0), 0), 1.0, 0x0ea5a6);
-        secHelper.visible = false;
-        scene.add(secHelper);
+    // visual: translucent teal sheet (no wire/grid)
+    let secVisual = null;      // THREE.Mesh for the plane
+
+    function ensureSectionVisual(){
+      if (!secVisual){
+        const geom = new THREE.PlaneGeometry(1,1,1,1);
+        const mat  = new THREE.MeshBasicMaterial({
+          color: 0x0ea5a6,
+          transparent: true,
+          opacity: 0.12,
+          depthWrite: false,
+          side: THREE.DoubleSide
+        });
+        secVisual = new THREE.Mesh(geom, mat);
+        secVisual.visible = false;
+        secVisual.renderOrder = 2;  // render on top
+        scene.add(secVisual);
       }
-      return secHelper;
+      return secVisual;
     }
 
-    function refreshSectionHelper(maxDim, center){
-      if (!secHelper) return;
+    function refreshSectionVisual(maxDim, center){
+      if (!secVisual) return;
       const size = Math.max(1e-6, maxDim || 1);
-      secHelper.size = size * 1.2;
-      // PlaneHelper updates automatically from its plane; position is implicit
-      if (center) { /* PlaneHelper doesn't take position; handled via plane constant */ }
+      secVisual.scale.set(size*1.2, size*1.2, 1);
+      if (center) secVisual.position.copy(center);
     }
 
     function updateSectionPlane(){
       renderer.clippingPlanes = [];
       if (!secEnabled || !api.robotModel) {
         renderer.localClippingEnabled=false;
-        if (secHelper) secHelper.visible = false;
+        if (secVisual) secVisual.visible = false;
         return;
       }
       const n = new THREE.Vector3(
@@ -956,8 +994,8 @@
         secAxis==='Z'?1:0
       );
       const box = new THREE.Box3().setFromObject(api.robotModel);
-      if (box.isEmpty()){ renderer.localClippingEnabled=false; if (secHelper) secHelper.visible=false; return; }
-      const size = box.getSize(new THREE.Vector3());
+      if (box.isEmpty()){ renderer.localClippingEnabled=false; if (secVisual) secVisual.visible=false; return; }
+      const size   = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x,size.y,size.z)||1;
       const center = box.getCenter(new THREE.Vector3());
       const dist = (Number(state.ui.secDist.value) || 0) * maxDim * 0.5;
@@ -966,11 +1004,26 @@
       renderer.clippingPlanes = [ plane ];
       sectionPlane = plane;
 
-      // helper
-      ensureSectionHelper();
-      secHelper.plane.copy(plane);
-      secHelper.visible = !!secPlaneVisible;
-      refreshSectionHelper(maxDim, center);
+      // orient & show the teal sheet
+      ensureSectionVisual();
+      refreshSectionVisual(maxDim, center);
+      secVisual.visible = !!secPlaneVisible;
+
+      // align the mesh to the plane: copy normal into quaternion
+      // (place at plane origin along its normal by distance)
+      const look = new THREE.Vector3().copy(n);
+      const up   = new THREE.Vector3(0,1,0);
+      if (Math.abs(look.dot(up)) > 0.999) up.set(1,0,0); // avoid gimbal lock
+      const m = new THREE.Matrix4().lookAt(
+        new THREE.Vector3(0,0,0),
+        look,                   // forward
+        up
+      );
+      const q = new THREE.Quaternion().setFromRotationMatrix(m);
+      secVisual.setRotationFromQuaternion(q);
+      // position: plane constant is (n·x + d = 0) => point = -d * n
+      const p0 = n.clone().multiplyScalar(-plane.constant);
+      secVisual.position.copy(p0);
     }
 
     // ===========
@@ -1081,15 +1134,9 @@
       }
     }
 
-    // NEW: single handler for every GUI button press (+ click sound)
+    // Single handler: GUI press + click sound
     function buttonClicked(){
-      try { console.log("button clicked"); } catch(_) {}
-      try {
-        if (clickAudio){
-          const p = clickAudio.play();
-          if (p && typeof p.catch === 'function') p.catch(()=>{});
-        }
-      } catch(e){}
+      try { playClick(); } catch(_){}
       try {
         if (window && window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel){
           window.Jupyter.notebook.kernel.execute("print('button clicked')");
@@ -1320,7 +1367,7 @@
       scene, get camera(){ return camera; }, renderer, controls,
       get robot(){ return api.robotModel; },
       openGallery(){ state.ui?.btn?.click?.(); },
-      openTools(open=true){ if (!state?.ui) return; const s=state.ui; s.toolsToggleBtn.click(); if (!open) s.toolsToggleBtn.click(); }
+      openTools(open=true){ if (!state?.ui) return; const s=state.ui; const wantOpen = !!open; const isOpen = s.dock.style.display!=='none'; if (wantOpen!==isOpen) s.toolsToggleBtn.click(); }
     };
   };
 
