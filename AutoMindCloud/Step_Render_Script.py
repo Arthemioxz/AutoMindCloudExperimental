@@ -1,22 +1,4 @@
-I wanna a teal frame when split in two the to robot with no lines, and a problem of the sound is that need to end the sound to sound again, should can sound superpossing the sound /* urdf_viewer_separated.js - teal/white UI + "Autodesk-like" tools (+axes, tab toggle, visible slice plane, click audio)
-   Adds:
-     - Render modes: Solid / Wireframe / X-Ray / Ghost
-     - Explode slider (per-link radial offset)
-     - Section plane (X/Y/Z axis + distance) + Visible plane helper
-     - Camera presets: Iso / Top / Front / Right
-     - Perspective <-> Orthographic toggle
-     - Grid + Ground + Soft shadows (grid OFF by default now)
-     - Fit to view & Snapshot
-     - XYZ Axes toggle (auto-sized)
-     - Tools tab starts CLOSED + floating "Open/Close Tools" button
-     - Optional click sound on every UI interaction (opts.clickAudioDataURL)
-   Keeps:
-     - Hover aura (configurable)
-     - Stable, throttled hover
-     - Joint drag (revolute/prismatic) with limits (+Shift fine)
-     - Components panel (isolate & show all), thumbnails off-screen
-     - Single buttonClicked() handler wiring
-*/
+
 (function (root) {
   'use strict';
 
