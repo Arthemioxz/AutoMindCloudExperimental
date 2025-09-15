@@ -25,13 +25,13 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
       - Render modes: Solid / Wireframe / X-Ray / Ghost
       - Explode slider (auto-hidden if single-part)
       - Section plane (X/Y/Z + distance):
-          * Optional teal frame overlay (no lines)
-          * Optional translucent teal FILL so you can SEE the plane
+          * Optional teal frame overlay (no lines) — smaller + thinner
+          * Optional translucent teal FILL (to see the plane)
       - Camera presets: Iso / Top / Front / Right
       - Perspective <-> Orthographic toggle
       - Grid, Ground (soft shadows), Axes toggles
       - Fit to view & Snapshot
-      - Overlapping click sound (pooled) + small debounce
+      - Click sound: provided base64 OR WebAudio beep fallback (overlapping OK)
     """
     output_step = Step_Name + ".step"
     output_glb = Step_Name + ".glb"
@@ -44,7 +44,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     mesh = trimesh.load(output_glb)
     current_size = max(mesh.extents) if hasattr(mesh, "extents") else 1.0
     if current_size <= 0:
-      current_size = 1.0
+        current_size = 1.0
     scale_factor = float(target_size) / float(current_size)
     mesh.apply_scale(scale_factor)
     mesh.export(output_glb_scaled)
@@ -53,18 +53,14 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     with open(output_glb_scaled, "rb") as f:
         glb_base64 = base64.b64encode(f.read()).decode("utf-8")
 
-    # Optional click sound; fallback tiny WAV if none
-    DEFAULT_CLICK_DATAURL = (
-        "data:audio/wav;base64,"
-        "UklGRhQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYAaW5mbyBiaXQ="
-    )
+    # Optional click sound data URL if user provided an audio clip
     click_data_url = (
         "data:audio/mpeg;base64," + click_sound_b64
         if (isinstance(click_sound_b64, str) and len(click_sound_b64) > 0)
-        else DEFAULT_CLICK_DATAURL
+        else ""  # empty => use WebAudio fallback
     )
 
-    # HTML (no f-strings in block; we replace placeholders)
+    # HTML (placeholders; no f-strings inside the block)
     html_template = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -90,11 +86,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     background: var(--bgCanvas);
     font-family: "Computer Modern", "CMU Serif", Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
   }
-  #wrap {
-    position: relative;
-    width: 100vw;
-    height: 100vh;
-  }
+  #wrap { position: relative; width: 100vw; height: 100vh; }
   canvas { display: block; width: 100%; height: 100%; }
   .badge {
     position: absolute; bottom: 12px; right: 14px; z-index: 12;
@@ -129,15 +121,17 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   .tog { display: flex; align-items: center; gap: 8px; cursor: pointer; }
   .tog input[type="checkbox"] { accent-color: var(--teal); }
 
-  /* UI-only overlays for the section */
+  /* Section overlays (UI only) */
+  /* Smaller, thinner frame: inset by 12px, 2px border */
   #splitFrame {
-    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
-    border: 3px solid var(--teal); border-radius: 14px; box-sizing: border-box;
+    position: absolute; left: 12px; top: 12px; right: 12px; bottom: 12px;
+    border: 2px solid var(--teal); border-radius: 10px; box-sizing: border-box;
     pointer-events: none; display: none; z-index: 10;
   }
   #sliceFill {
-    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    position: absolute; left: 12px; top: 12px; right: 12px; bottom: 12px;
     background: rgba(14,165,166,0.06); /* subtle teal tint */
+    border-radius: 10px;
     pointer-events: none; display: none; z-index: 9;
   }
 </style>
@@ -183,10 +177,10 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
           <label class="tog"><input id="secEnable" type="checkbox" /> Enable section</label>
         </div>
         <div class="row">
-          <label class="tog"><input id="secFrame" type="checkbox" /> Show slice frame</label>
+          <label class="tog"><input id="secFrame" type="checkbox" checked /> Show slice frame</label>
         </div>
         <div class="row">
-          <label class="tog"><input id="secFill" type="checkbox" checked /> Show slice fill</label>
+          <label class="tog"><input id="secFill" type="checkbox" /> Show slice fill</label>
         </div>
 
         <div class="row">
@@ -224,31 +218,71 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
 
   <script>
-  // ====== Click audio (pool) + debounce ======
-  const CLICK_DEBOUNCE_MS = 120;
-  let lastClickTs = 0;
-  const clickDataURL = "__CLICK_URL__";
-  function makeClickPool(url, n=4){
-    const pool=[]; let idx=0;
-    for(let i=0;i<n;i++){ const a=new Audio(url); a.preload='auto'; a.loop=false; a.volume=1.0; pool.push(a); }
-    return {
-      play(){ try{ const a=pool[idx]; idx=(idx+1)%pool.length; a.currentTime=0; const p=a.play(); p&&p.catch&&p.catch(()=>{}); }catch(_){}}};
-  }
-  const clickPool = makeClickPool(clickDataURL);
-  function buttonClicked(){
-    const now = performance.now();
-    if (now - lastClickTs < CLICK_DEBOUNCE_MS) return;
-    lastClickTs = now;
-    clickPool.play();
+  // ====== Click audio ======
+  // If __CLICK_URL__ is provided, we make a small pool of <audio> players.
+  // Otherwise we use WebAudio beep (short, audible, no autoplay issues).
+  const CLICK_URL = "__CLICK_URL__";
+  let audioPool = [];
+  let poolIdx = 0;
+  let audioCtx = null;
+
+  function ensureAudioCtx(){
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch(e) { audioCtx = null; }
+    }
+    if (audioCtx && audioCtx.state === 'suspended') { audioCtx.resume().catch(()=>{}); }
   }
 
-  // ====== Scene setup (white bg) ======
+  function playBeep(){
+    ensureAudioCtx();
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = 1400; // Hz
+    gain.gain.value = 0.15;
+    osc.connect(gain).connect(audioCtx.destination);
+    const t0 = audioCtx.currentTime;
+    osc.start(t0);
+    // quick decay envelope
+    gain.gain.setValueAtTime(0.18, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.06);
+    osc.stop(t0 + 0.08);
+  }
+
+  function makeAudioPool(url, n=4){
+    const pool=[];
+    for(let i=0;i<n;i++){
+      const a=new Audio(url);
+      a.preload='auto'; a.loop=false; a.volume=1.0;
+      pool.push(a);
+    }
+    return pool;
+  }
+
+  function buttonClicked(){
+    if (CLICK_URL) {
+      if (!audioPool.length) audioPool = makeAudioPool(CLICK_URL, 4);
+      try {
+        const a = audioPool[poolIdx]; poolIdx = (poolIdx+1)%audioPool.length;
+        a.currentTime = 0;
+        const p = a.play();
+        if (p && p.catch) p.catch(()=>{}); // ignore browser quirks
+      } catch(e){ /* fallback to beep */ playBeep(); }
+    } else {
+      // Reliable fallback
+      playBeep();
+    }
+  }
+
+  // ====== Scene (white bg) ======
   const wrap = document.getElementById('wrap');
   const splitFrame = document.getElementById('splitFrame');
   const sliceFill  = document.getElementById('sliceFill');
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xffffff); // pure white
+  scene.background = new THREE.Color(0xffffff);
 
   const aspect = Math.max(1e-6, wrap.clientWidth / wrap.clientHeight);
   const persp = new THREE.PerspectiveCamera(75, aspect, 0.01, 10000);
@@ -317,7 +351,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   let secAxis = 'X';
   let secEnabled = false;
 
-  // 2D overlays toggling (no flicker)
+  // Overlays: smaller frame & fill (no flicker)
   function applyOverlayVisibility(){
     const on = document.getElementById('secEnable').checked;
     const showFrame = document.getElementById('secFrame').checked;
@@ -367,7 +401,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     sizeAxesHelper(maxDim, center);
   }
 
-  // Render modes (no forced non-realistic flags; just opacity where needed)
+  // Render modes
   function setRenderMode(mode){
     if (!model) return;
     model.traverse(o=>{
@@ -452,7 +486,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   loader.parse(arrayBuffer, '', function(gltf){
     model = gltf.scene;
 
-    // keep materials realistic (double-sided helps CAD)
+    // CAD-friendly: double-sided + shadows
     model.traverse(function(node){
       if (node.isMesh && node.material){
         if (Array.isArray(node.material)) node.material.forEach(mat => mat.side = THREE.DoubleSide);
@@ -513,7 +547,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     buttonClicked();
     secEnabled = !!secEnableEl.checked;
     updateSectionPlane();
-    applyOverlayVisibility();   // toggle frame/fill only on checkbox changes (no flicker)
+    applyOverlayVisibility();   // toggle frame/fill on checkbox changes (no flicker)
   });
   secFrameEl.addEventListener('change', ()=>{ buttonClicked(); applyOverlayVisibility(); });
   secFillEl.addEventListener('change', ()=>{ buttonClicked(); applyOverlayVisibility(); });
@@ -549,27 +583,12 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     }
   });
 
-  togGrid.addEventListener('change', ()=>{ buttonClicked(); grid.visible = !!togGrid.checked; });
-  togGround.addEventListener('change', ()=>{ buttonClicked(); ground.visible = !!togGround.checked; dirLight.castShadow = !!togGround.checked; });
-  togAxes.addEventListener('change', ()=>{
-    buttonClicked();
-    axesHelper.visible = !!togAxes.checked;
-    if (model){
-      const box = new THREE.Box3().setFromObject(model);
-      if (!box.isEmpty()){
-        const c = box.getCenter(new THREE.Vector3());
-        const s = box.getSize(new THREE.Vector3());
-        sizeAxesHelper(Math.max(s.x,s.y,s.z)||1, c);
-      }
-    }
-  });
-
   // Initial UI state
-  setDock(False=false);
-  secEnableEl.checked = False=false;
-  secFrameEl.checked  = True=true;   // show frame when section enabled
-  secFillEl.checked   = True=true;   // fill on by default so you SEE the plane
-  applyOverlayVisibility();          // apply once
+  setDock(false);
+  secEnableEl.checked = false;
+  secFrameEl.checked  = true;   // frame default ON when section enabled
+  secFillEl.checked   = false;  // fill default OFF (turn on if you want)
+  applyOverlayVisibility();
 
   // Animate
   (function animate(){
@@ -581,7 +600,6 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
 </html>
     """
 
-    # Safe replacements
     html_content = (
         html_template
         .replace("__TITLE__", Step_Name)
@@ -596,5 +614,3 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     with open(html_name, "r") as f:
         html = f.read()
     display(HTML(html))
-
-
