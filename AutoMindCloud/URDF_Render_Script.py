@@ -4,7 +4,7 @@ from IPython.display import HTML
 import gdown
 
 # -------------------------------
-# Download + unpack a Google Drive ZIP with /urdf and /meshes
+# Descarga y extracción de ZIP con /urdf y /meshes
 # -------------------------------
 def Download_URDF(Drive_Link, Output_Name="Model"):
     root_dir = "/content"
@@ -32,128 +32,25 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
     shutil.rmtree(tmp_extract, ignore_errors=True)
     return final_dir
 
+# -------------------------------
+# Genera HTML y SOLO carga ComponentSelection.js (último commit)
+# -------------------------------
 
-# ============================================================
-# 1) URDF_Functions — load JS stack + your LIB at latest commit
-# ============================================================
-def URDF_Functions(
-    repo="ArtemioA/AutoMindCloudExperimental",
-    branch="main",
-    libFile="AutoMindCloud/JavaScript/urdf_viewer_lib.js",
-    ensure_three=True,
-    three_ver="0.160",
-    urdf_loader_ver="0.12.6"
-):
-    """
-    Loads:
-      - THREE + loaders (if missing and ensure_three=True)
-      - Your library (functions only) from latest commit (fallback to @branch)
-    Exposes:
-      - window.__URDF_FUNCS_READY  (Promise)
-      - window.URDFViewer          (from your lib)
-    Safe to call multiple times; it won’t double-load.
-    """
-    html = f"""
-    <div id="__amc_js_loader" style="font:12px/1.2 Inter,system-ui; color:#555; margin:6px 0;">
-      Loading URDF functions… (only once)
-    </div>
-    <script>
-    (function() {{
-      if (window.__URDF_FUNCS_READY) {{
-        document.getElementById("__amc_js_loader")?.remove();
-        return;
-      }}
-
-      let _resolve;
-      window.__URDF_FUNCS_READY = new Promise(res => _resolve = res);
-
-      const repo = {json.dumps(repo)};
-      const branch = {json.dumps(branch)};
-      const libFile = {json.dumps(libFile)};
-      const needThree = {str(bool(ensure_three)).lower()};
-
-      function loadScript(src){{
-        return new Promise((resolve, reject) => {{
-          const s = document.createElement('script');
-          s.src = src; s.defer = true;
-          s.onload = () => resolve(src);
-          s.onerror = () => reject(new Error("Failed to load " + src));
-          document.head.appendChild(s);
-        }});
-      }}
-
-      async function latestShaOrBranch() {{
-        try {{
-          const api = `https://api.github.com/repos/${{repo}}/commits/${{branch}}?_=${{Date.now()}}`;
-          const r = await fetch(api, {{
-            headers: {{ "Accept":"application/vnd.github+json" }},
-            cache: "no-store"
-          }});
-          if (!r.ok) throw new Error("GitHub API " + r.status);
-          const j = await r.json();
-          return (j.sha || "").slice(0,7) || branch;
-        }} catch(e) {{
-          console.warn("Using fallback @branch due to API error:", e);
-          return branch;
-        }}
-      }}
-
-      async function ensureThreeStack(){{
-        if (typeof window.THREE !== 'undefined') return;
-        // Three + controls + loaders + URDFLoader (UMD)
-        await loadScript("https://cdn.jsdelivr.net/npm/three@{three_ver}/build/three.min.js");
-        await loadScript("https://cdn.jsdelivr.net/npm/three@{three_ver}/examples/js/controls/OrbitControls.js");
-        await loadScript("https://cdn.jsdelivr.net/npm/three@{three_ver}/examples/js/loaders/STLLoader.js");
-        await loadScript("https://cdn.jsdelivr.net/npm/three@{three_ver}/examples/js/loaders/ColladaLoader.js");
-        await loadScript("https://cdn.jsdelivr.net/npm/urdf-loader@{urdf_loader_ver}/umd/URDFLoader.js");
-      }}
-
-      (async () => {{
-        try {{
-          if (needThree && typeof window.THREE === 'undefined') {{
-            await ensureThreeStack();
-          }}
-          const ver = await latestShaOrBranch();
-          const base = `https://cdn.jsdelivr.net/gh/${{repo}}@${{ver}}/`;
-          try {{
-            await loadScript(base + libFile);
-          }} catch (_e) {{
-            // fallback to branch
-            await loadScript(`https://cdn.jsdelivr.net/gh/${{repo}}@${{branch}}/` + libFile);
-          }}
-          document.getElementById("__amc_js_loader")?.remove();
-          _resolve(true);
-        }} catch (e) {{
-          console.warn("URDF_Functions failed:", e);
-          document.getElementById("__amc_js_loader")?.remove();
-          _resolve(false);
-        }}
-      }})();
-    }})();
-    </script>
-    """
-    return HTML(html)
-
-
-# ============================================================
-# 2) URDF_Render — build URDF + meshDB, load RUNNER at latest
-# ============================================================
 def URDF_Render(folder_path="Model",
-                select_mode="link",
-                background=0xf0f0f0,
+                select_mode="link", background=0xf0f0f0,
                 repo="ArtemioA/AutoMindCloudExperimental",
                 branch="main",
-                runFile="AutoMindCloud/JavaScript/urdf_viewer_run.js"):
+                compFile="AutoMindCloud/ComponentSelection.js",
+                ensure_three=True):
     """
-    - Reads URDF + meshes under folder_path (/urdf + /meshes)
-    - Builds base64 mesh DB
-    - Waits for URDF_Functions() to be ready
-    - Loads runner from latest commit (fallback branch) which performs the render
-
-    NOTE: Call URDF_Functions() once before this.
+    - Loads ComponentSelection.js from the repo's latest commit (fallback to @branch).
+    - If URDFViewer exists and URDF data is available, it renders.
+    - If THREE is missing and ensure_three=True, auto-loads THREE + controls + loaders, then renders.
     """
+    import os, re, json, base64
+    from IPython.display import HTML
 
-    # ----- discover folders
+    # Locate optional urdf/meshes so we can render if a viewer exists elsewhere
     def find_dirs(root):
         d_u, d_m = os.path.join(root,"urdf"), os.path.join(root,"meshes")
         if os.path.isdir(d_u) and os.path.isdir(d_m): return d_u, d_m
@@ -174,15 +71,13 @@ def URDF_Render(folder_path="Model",
             with open(urdf_path, "r", encoding="utf-8") as f:
                 urdf_raw = f.read()
 
-            # mesh refs from URDF
-            mesh_refs = re.findall(r'filename="([^"]+\\.(?:stl|dae|step|stp))"', urdf_raw, re.IGNORECASE)
+            mesh_refs = re.findall(r'filename="([^"]+\.(?:stl|dae))"', urdf_raw, re.IGNORECASE)
             mesh_refs = list(dict.fromkeys(mesh_refs))
 
-            # collect disk assets
             disk_files = []
             for root, _, files in os.walk(meshes_dir):
                 for name in files:
-                    if name.lower().endswith((".stl",".dae",".png",".jpg",".jpeg",".step",".stp")):
+                    if name.lower().endswith((".stl",".dae",".png",".jpg",".jpeg")):
                         disk_files.append(os.path.join(root, name))
             by_basename = {os.path.basename(p).lower(): p for p in disk_files}
 
@@ -197,7 +92,6 @@ def URDF_Render(folder_path="Model",
                 k = key.replace("\\","/").lower()
                 if k not in mesh_db: mesh_db[k] = b64(path)
 
-            # map refs -> files on disk (plus useful aliases)
             for ref in mesh_refs:
                 base = os.path.basename(ref).lower()
                 if base in by_basename:
@@ -206,20 +100,14 @@ def URDF_Render(folder_path="Model",
                     add_entry(ref.replace("package://",""), real)
                     add_entry(base, real)
 
-            # extra images that might be referenced by DAE
             for p in disk_files:
                 bn = os.path.basename(p).lower()
                 if bn.endswith((".png",".jpg",".jpeg")) and bn not in mesh_db:
                     add_entry(bn, p)
 
-    # HTML payload
-    def _esc(s: str) -> str:
-        return (s.replace('\\','\\\\')
-                 .replace('`','\\`')
-                 .replace('$','\\$')
-                 .replace("</script>","<\\/script>"))
-
-    urdf_js  = _esc(urdf_raw) if urdf_raw else ""
+    # Prepare HTML
+    esc = lambda s: (s.replace('\\','\\\\').replace('`','\\`').replace('$','\\$').replace("</script>","<\\/script>"))
+    urdf_js  = esc(urdf_raw) if urdf_raw else ""
     mesh_js  = json.dumps(mesh_db)
     bg_js    = 'null' if (background is None) else str(int(background))
     sel_js   = json.dumps(select_mode)
@@ -228,82 +116,107 @@ def URDF_Render(folder_path="Model",
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<title>URDF Render (latest commit)</title>
+<title>ComponentSelection + Auto-THREE</title>
 <style>
   html,body {{ margin:0; height:100%; overflow:hidden; background:#f0f0f0; }}
   #app {{ position:fixed; inset:0; }}
-  .note{{ position:fixed; left:12px; bottom:12px; font:12px/1.3 Inter,system-ui; color:#666; }}
+  .badge{{ position:fixed; right:14px; bottom:12px; z-index:10; user-select:none; pointer-events:none; }}
+  .badge img{{ max-height:40px; display:block; }}
 </style>
 </head>
 <body>
   <div id="app"></div>
-  <div class="note">Waiting for functions, then fetching runner @ latest commit…</div>
+  <div class="badge">
+    <img src="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png" alt="badge"/>
+  </div>
 
   <script>
-  (async function() {{
-    const repo = {json.dumps(repo)};
-    const branch = {json.dumps(branch)};
-    const runFile = {json.dumps(runFile)};
+    (async function() {{
+      const repo = {json.dumps(repo)};
+      const branch = {json.dumps(branch)};
+      const compFile = {json.dumps(compFile)};
+      const needThree = {str(bool(ensure_three)).lower()};
+      const haveURDF = {json.dumps(bool(urdf_raw))};
 
-    // Provide data for the runner (many runners read these globals)
-    window.AMC_URDF = `{urdf_js}`;
-    window.AMC_MESH_DB = {mesh_js};
-    window.AMC_CONFIG = {{
-      background: {bg_js},
-      selectMode: {sel_js},
-      containerId: "app"
-    }};
-
-    function loadScript(url){{
-      return new Promise((res, rej) => {{
-        const s = document.createElement('script');
-        s.src = url; s.defer = true;
-        s.onload = () => res(url);
-        s.onerror = () => rej(new Error("load fail: " + url));
-        document.head.appendChild(s);
-      }});
-    }}
-
-    async function latestShaOrBranch() {{
-      try {{
-        const api = `https://api.github.com/repos/${{repo}}/commits/${{branch}}?_=${{Date.now()}}`;
-        const r = await fetch(api, {{ headers: {{ "Accept":"application/vnd.github+json" }}, cache: "no-store" }});
-        if (!r.ok) throw new Error("GitHub API " + r.status);
-        const j = await r.json();
-        return (j.sha || "").slice(0,7) || branch;
-      }} catch(e) {{
-        console.warn("Using fallback @branch due to API error:", e);
-        return branch;
+      function loadScript(url){{
+        return new Promise((res, rej) => {{
+          const s = document.createElement('script');
+          s.src = url; s.defer = true;
+          s.onload = () => {{ console.log("Loaded:", url); res(url); }};
+          s.onerror = () => {{ console.warn("Failed:", url); rej(new Error("load fail: " + url)); }};
+          document.head.appendChild(s);
+        }});
       }}
-    }}
 
-    // Wait for functions loader
-    const funcsReady = (window.__URDF_FUNCS_READY ? await window.__URDF_FUNCS_READY : false);
-    const haveViewer = (window.URDFViewer && typeof window.URDFViewer.render === 'function');
-    const haveTHREE  = (typeof window.THREE !== 'undefined');
-    const haveURDF   = !!window.AMC_URDF;
+      async function getVersion(){{
+        try {{
+          const api = `https://api.github.com/repos/${{repo}}/commits/${{branch}}?_=${{Date.now()}}`;
+          const r = await fetch(api, {{ headers: {{ "Accept":"application/vnd.github+json" }}, cache: "no-store" }});
+          if (!r.ok) throw new Error("GitHub API " + r.status);
+          const j = await r.json();
+          const sha = (j.sha || "").slice(0,7);
+          return sha || branch;
+        }} catch(e) {{
+          console.warn("Using fallback @branch due to API error:", e);
+          return branch;
+        }}
+      }}
 
-    if (!funcsReady || !haveViewer || !haveTHREE || !haveURDF) {{
-      console.warn("Cannot render yet.", {{funcsReady, haveViewer, haveTHREE, haveURDF}});
-      document.querySelector(".note")?.replaceChildren(document.createTextNode(
-        "Missing stack or URDF. Did you run URDF_Functions() first?"
-      ));
-      return;
-    }}
+      // 1) Load ComponentSelection at latest commit
+      const ver = await getVersion();
+      const base = `https://cdn.jsdelivr.net/gh/${{repo}}@${{ver}}/`;
+      try {{
+        await loadScript(base + compFile);
+      }} catch(e) {{
+        await loadScript(`https://cdn.jsdelivr.net/gh/${{repo}}@${{branch}}/` + compFile);
+      }}
 
-    // Fetch runner from the latest commit; fallback to branch
-    const ver = await latestShaOrBranch();
-    try {{
-      await loadScript(`https://cdn.jsdelivr.net/gh/${{repo}}@${{ver}}/` + runFile);
-    }} catch(_e) {{
-      await loadScript(`https://cdn.jsdelivr.net/gh/${{repo}}@{branch}/` + runFile);
-    }}
+      // 2) If THREE is missing and we might render, load THREE stack
+      const haveViewer = (window.URDFViewer && typeof window.URDFViewer.render === 'function');
+      let haveTHREE = (typeof window.THREE !== 'undefined');
 
-    // If your runner renders automatically, we're done.
-    // If it exposes a callable instead, you could call it here using AMC_* globals.
+      if (!haveTHREE && needThree && haveViewer && haveURDF) {{
+        try {{
+          await loadScript("https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js");
+          await loadScript("https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js");
+          await loadScript("https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js");
+          await loadScript("https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js");
+          await loadScript("https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js");
+          haveTHREE = (typeof window.THREE !== 'undefined');
+        }} catch (e) {{
+          console.warn("Failed to auto-load THREE stack:", e);
+        }}
+      }}
 
-    document.querySelector(".note")?.remove();
-  }})();
+      // 3) Render only if everything needed exists
+      if (haveTHREE && haveViewer && haveURDF) {{
+        const container = document.getElementById('app');
+        const ensureSize = () => {{
+          container.style.width = window.innerWidth + 'px';
+          container.style.height = window.innerHeight + 'px';
+        }};
+        ensureSize(); window.addEventListener('resize', ensureSize);
+
+        const opts = {{
+          container,
+          urdfContent: `{urdf_js}`,
+          meshDB: {mesh_js},
+          selectMode: {sel_js},
+          background: {bg_js}
+        }};
+
+        try {{
+          window.__URDF_APP__ = window.URDFViewer.render(opts);
+          console.log("URDFViewer.render executed.");
+        }} catch (err) {{
+          console.warn("URDFViewer.render failed (skipping):", err);
+        }}
+      }} else {{
+        console.log("Skipping render: haveTHREE=", typeof window.THREE !== 'undefined',
+                    " haveViewer=", (window.URDFViewer && typeof window.URDFViewer.render === 'function'),
+                    " haveURDF=", haveURDF);
+      }}
+    }})();
   </script>
 </body>
 </html>
