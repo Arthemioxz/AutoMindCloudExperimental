@@ -1,7 +1,18 @@
-/* urdf_viewer_separated.js - updated:
-   - Hover aura is now configurable: opts.hover {enabled,color,opacity,throttleMs}
-   - Hover is stable and fast: caches last hover target, throttles pointermove
-   - Keeps your single buttonClicked() handler wiring
+/* urdf_viewer_separated.js - teal/white UI + "Autodesk-like" tools
+   Adds:
+     - Render modes: Solid / Wireframe / X-Ray / Ghost
+     - Explode slider (per-link radial offset)
+     - Section plane (X/Y/Z axis + distance)
+     - Camera presets: Iso / Top / Front / Right
+     - Perspective <-> Orthographic toggle
+     - Grid + Ground + Soft shadows
+     - Fit to view & Snapshot
+   Keeps:
+     - Hover aura (configurable)
+     - Stable, throttled hover
+     - Joint drag (revolute/prismatic) with limits (+Shift fine)
+     - Components panel (isolate & show all), thumbnails off-screen
+     - Single buttonClicked() handler wiring
 */
 (function (root) {
   'use strict';
@@ -9,10 +20,24 @@
   const URDFViewer = {};
   let state = null;
 
+  // ================
+  //  Theme (Teal UI)
+  // ================
+  const THEME = {
+    teal: '#0ea5a6',          // main accent
+    tealSoft: '#14b8b9',
+    tealFaint: 'rgba(20,184,185,0.12)',
+    bgPanel: '#ffffff',
+    bgCanvas: 0xf6fafb,       // scene background (soft teal white)
+    stroke: '#d7e7e7',
+    text: '#0b3b3c',
+    textMuted: '#577e7f',
+    shadow: '0 12px 36px rgba(0,0,0,0.14)'
+  };
+
   // =========================
   // === Utility / Helpers ===
   // =========================
-
   function normKey(s){ return String(s||'').replace(/\\/g,'/').toLowerCase(); }
   function variantsFor(path){
     const out = new Set(), p = normKey(path);
@@ -75,17 +100,27 @@
     obj.updateMatrixWorld(true);
   }
 
-  function fitAndCenter(camera, controls, object, pad=1.0){
+  function fitAndCenter(camera, controls, object, pad=1.08){
     const box = new THREE.Box3().setFromObject(object);
     if (box.isEmpty()) return;
     const center = box.getCenter(new THREE.Vector3());
     const size   = box.getSize(new THREE.Vector3()).multiplyScalar(pad);
     const maxDim = Math.max(size.x,size.y,size.z)||1;
-    const dist   = maxDim * 1.8;
-    camera.near = Math.max(maxDim/1000,0.001);
-    camera.far  = Math.max(maxDim*1000,1000);
-    camera.updateProjectionMatrix();
-    camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
+
+    if (camera.isPerspectiveCamera){
+      const dist   = maxDim * 1.9;
+      camera.near = Math.max(maxDim/1000,0.001);
+      camera.far  = Math.max(maxDim*1500,1500);
+      camera.updateProjectionMatrix();
+      camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
+    } else {
+      camera.left = -maxDim; camera.right = maxDim;
+      camera.top  =  maxDim; camera.bottom= -maxDim;
+      camera.near = Math.max(maxDim/1000,0.001);
+      camera.far  = Math.max(maxDim*1500,1500);
+      camera.updateProjectionMatrix();
+      camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
+    }
     controls.target.copy(center); controls.update();
   }
 
@@ -113,7 +148,7 @@
   }
 
   // === Configurable + cached hover ===
-  function buildHoverAPI({color=0x9e9e9e, opacity=0.35}={}){
+  function buildHoverAPI({color=0x0ea5a6, opacity=0.28}={}){
     const overlays=[];
     function clear(){ for(const o of overlays){ if (o?.parent) o.parent.remove(o); } overlays.length=0; }
     function overlayFor(mesh){
@@ -127,7 +162,7 @@
           depthTest:false,
           depthWrite:false,
           polygonOffset:true,
-          polygonOffsetFactor:-1, // helps avoid z-fighting on thin parts
+          polygonOffsetFactor:-1,
           polygonOffsetUnits:1
         })
       );
@@ -228,21 +263,22 @@
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
 
     const selectMode = (opts && opts.selectMode) || 'link';
-    const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
+    const bg = (opts && opts.background!==undefined) ? opts.background : THEME.bgCanvas;
     const descriptions = (opts && opts.descriptions) || {};
-    const hoverCfg = Object.assign({enabled:true, color:0x9e9e9e, opacity:0.35, throttleMs:16}, (opts && opts.hover)||{});
+    const hoverCfg = Object.assign({enabled:true, color:0x0ea5a6, opacity:0.28, throttleMs:16}, (opts && opts.hover)||{});
 
     const scene = new THREE.Scene();
     if (bg!=null) scene.background = new THREE.Color(bg);
 
-    const camera = new THREE.PerspectiveCamera(
-      75,
-      Math.max(1e-6, (container.clientWidth||1)/(container.clientHeight||1)),
-      0.01,
-      10000
-    );
-    camera.position.set(0,0,3);
+    // === Cameras: Perspective + Ortho (toggle) ===
+    const aspect = Math.max(1e-6, (container.clientWidth||1)/(container.clientHeight||1));
+    const persp = new THREE.PerspectiveCamera(75, aspect, 0.01, 10000);
+    persp.position.set(0,0,3);
+    const orthoSize = 2.5;
+    const ortho = new THREE.OrthographicCamera(-orthoSize*aspect, orthoSize*aspect, orthoSize, -orthoSize, 0.01, 10000);
+    ortho.position.set(0,0,3);
 
+    let camera = persp; // default
     const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
     renderer.setPixelRatio(window.devicePixelRatio||1);
     renderer.setSize(container.clientWidth||1, container.clientHeight||1);
@@ -251,23 +287,48 @@
     renderer.domElement.style.touchAction = 'none';
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.position = 'relative';
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.06;
+    controls.dampingFactor = 0.08;
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
-    dirLight.position.set(2,2,2); scene.add(dirLight);
+    // Lights
+    const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.7);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.05);
+    dirLight.position.set(3,4,2);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.set(1024,1024);
+    dirLight.shadow.camera.near = 0.1;
+    dirLight.shadow.camera.far = 1000;
+    scene.add(hemi); scene.add(dirLight);
+
+    // Ground + grid (toggled)
+    const groundGroup = new THREE.Group(); scene.add(groundGroup);
+    const grid = new THREE.GridHelper(10, 20, 0x84d4d4, 0xdef3f3);
+    grid.visible = true; groundGroup.add(grid);
+    const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200), groundMat);
+    ground.rotation.x = -Math.PI/2; ground.position.y = -0.0001;
+    ground.receiveShadow = true; ground.visible = true; groundGroup.add(ground);
 
     function onResize(){
       const w = container.clientWidth||1, h = container.clientHeight||1;
-      camera.aspect = Math.max(1e-6, w/h);
+      const asp = Math.max(1e-6, w/h);
+      if (camera.isPerspectiveCamera){
+        camera.aspect = asp;
+      } else {
+        const size = orthoSize;
+        camera.left = -size*asp; camera.right = size*asp;
+        camera.top = size; camera.bottom = -size;
+      }
       camera.updateProjectionMatrix();
       renderer.setSize(w,h);
     }
 
+    // Loaders + meshDB
     const urdfLoader = new URDFLoader();
     const textDecoder = new TextDecoder();
     const b64ToUint8 = (b64)=>Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
@@ -303,6 +364,7 @@
         obj.traverse(o=>{
           if (o.isMesh && o.geometry){
             o.userData.__assetKey = bestKey;
+            o.castShadow = true; o.receiveShadow = true;
             const arr = assetToMeshes.get(bestKey) || [];
             arr.push(o);
             assetToMeshes.set(bestKey, arr);
@@ -322,7 +384,7 @@
           geom.computeVertexNormals();
           const mesh = new THREE.Mesh(
             geom,
-            new THREE.MeshStandardMaterial({ color:0x8aa1ff, roughness:0.85, metalness:0.15, side:THREE.DoubleSide })
+            new THREE.MeshStandardMaterial({ color:0x7fd4d4, roughness:0.85, metalness:0.12, side:THREE.DoubleSide })
           );
           tagAndComplete(mesh);
           return;
@@ -370,7 +432,7 @@
     // Pointer + hover + joint drag
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    const hover = buildHoverAPI({color:hoverCfg.color, opacity:hoverCfg.opacity});
+    const hover = buildHoverAPI({color:0x0ea5a6, opacity:hoverCfg.opacity});
 
     let dragState=null;
     const ROT_PER_PIXEL=0.01, PRISM_PER_PIXEL=0.003;
@@ -521,50 +583,59 @@
       return url;
     }
 
-    // UI helpers
-    function showAllAndFrame(){
-      if (!api.robotModel) return;
-      api.robotModel.traverse(o=>{
-        if (o.isMesh && o.geometry) o.visible = true;
+    // =========
+    //   UI
+    // =========
+    function mkTealButton(label){
+      const b = document.createElement('button');
+      b.textContent = label;
+      Object.assign(b.style, {
+        padding: '8px 12px',
+        borderRadius: '12px',
+        border: `1px solid ${THEME.stroke}`,
+        background: THEME.bgPanel,
+        color: THEME.text,
+        fontWeight: '700',
+        cursor: 'pointer',
+        pointerEvents: 'auto'
       });
-      fitAndCenter(camera, controls, api.robotModel, 1.05);
+      b.onpointerdown = ()=>buttonClicked();
+      return b;
     }
-
-    function isolateAssetOnScreen(assetKey){
-      const meshes = assetToMeshes.get(assetKey) || [];
-      api.robotModel.traverse(o=>{
-        if (o.isMesh && o.geometry) o.visible = false;
+    function mkTealToggle(label){
+      const wrap = document.createElement('label');
+      const cb = document.createElement('input'); cb.type='checkbox';
+      const span = document.createElement('span'); span.textContent = label;
+      Object.assign(wrap.style, {display:'flex',alignItems:'center',gap:'8px',cursor:'pointer',pointerEvents:'auto'});
+      cb.style.accentColor = THEME.teal;
+      Object.assign(span.style,{fontWeight:'700', color: THEME.text});
+      wrap.appendChild(cb); wrap.appendChild(span);
+      return {wrap, cb};
+    }
+    function mkSlider(min,max,step,value){
+      const s = document.createElement('input');
+      s.type='range'; s.min=min; s.max=max; s.step=step; s.value=value;
+      s.style.width='100%'; s.style.accentColor = THEME.teal;
+      s.onpointerdown = ()=>buttonClicked();
+      return s;
+    }
+    function mkRow(label, child){
+      const row = document.createElement('div');
+      Object.assign(row.style, {display:'grid', gridTemplateColumns:'120px 1fr', gap:'10px', alignItems:'center', margin:'6px 0'});
+      const l = document.createElement('div'); l.textContent=label; l.style.color=THEME.textMuted; l.style.fontWeight='700';
+      row.appendChild(l); row.appendChild(child);
+      return row;
+    }
+    function mkSelect(options, value){
+      const sel = document.createElement('select');
+      options.forEach(o=>{
+        const opt = document.createElement('option');
+        opt.value = o; opt.textContent = o; sel.appendChild(opt);
       });
-      for (const m of meshes) m.visible = true;
-
-      const box = computeUnionBox(meshes);
-      if (box){
-        const center = box.getCenter(new THREE.Vector3());
-        const size   = box.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x,size.y,size.z)||1;
-        const dist   = maxDim * 1.9;
-        camera.near = Math.max(maxDim/1000,0.001);
-        camera.far  = Math.max(maxDim*1000,1000);
-        camera.updateProjectionMatrix();
-        const az = Math.PI * 0.25, el = Math.PI * 0.18;
-        const dir = new THREE.Vector3(
-          Math.cos(el)*Math.cos(az),
-          Math.sin(el),
-          Math.cos(el)*Math.sin(az)
-        ).multiplyScalar(dist);
-        camera.position.copy(center.clone().add(dir));
-        controls.target.copy(center); controls.update();
-      }
-    }
-
-    // NEW: single handler that should run for every GUI button press.
-    function buttonClicked(){
-      try { console.log("button clicked"); } catch(_) {}
-      try {
-        if (window && window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel){
-          window.Jupyter.notebook.kernel.execute("print('button clicked')");
-        }
-      } catch(e){}
+      sel.value = value;
+      Object.assign(sel.style,{padding:'8px',border:`1px solid ${THEME.stroke}`,borderRadius:'10px',pointerEvents:'auto'});
+      sel.onpointerdown = ()=>buttonClicked();
+      return sel;
     }
 
     function createUI(){
@@ -575,84 +646,95 @@
         width: '100%', height: '100%',
         pointerEvents: 'none',
         zIndex: '9999',
-        fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
+        fontFamily: 'Computer Modern, CMU Serif, Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      const btn = document.createElement('button');
-      btn.textContent = 'Components';
-      Object.assign(btn.style, {
-        position: 'absolute',
-        left: '14px',
-        bottom: '14px',
-        padding: '10px 14px',
-        borderRadius: '14px',
-        border: '1px solid #d0d0d0',
-        background: '#ffffff',
-        boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
-        fontWeight: '700',
-        cursor: 'pointer',
-        pointerEvents: 'auto'
+      // === Components Panel (existing) ===
+      const compBtn = mkTealButton('Components');
+      Object.assign(compBtn.style, { position:'absolute', left:'14px', bottom:'14px', boxShadow: THEME.shadow });
+      const compPanel = document.createElement('div');
+      Object.assign(compPanel.style, {
+        position:'absolute', right:'14px', bottom:'14px',
+        width:'440px', maxHeight:'72%',
+        background: THEME.bgPanel, border:`1px solid ${THEME.stroke}`,
+        boxShadow: THEME.shadow, borderRadius:'18px', overflow:'hidden', display:'none', pointerEvents:'auto'
+      });
+      const compHeader = document.createElement('div');
+      Object.assign(compHeader.style,{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'8px',padding:'10px 12px', borderBottom:`1px solid ${THEME.stroke}`, background: THEME.tealFaint});
+      const compTitle = document.createElement('div'); compTitle.textContent='Components'; Object.assign(compTitle.style,{fontWeight:'800', color:THEME.text});
+      const showAllBtn = mkTealButton('Show all'); Object.assign(showAllBtn.style,{padding:'6px 10px',borderRadius:'10px'});
+      compHeader.appendChild(compTitle); compHeader.appendChild(showAllBtn);
+      const compList = document.createElement('div'); Object.assign(compList.style,{overflowY:'auto', maxHeight:'calc(72vh - 52px)', padding:'10px'});
+      compPanel.appendChild(compHeader); compPanel.appendChild(compList);
+
+      // === Tools Dock (top-right) ===
+      const dock = document.createElement('div');
+      Object.assign(dock.style,{
+        position:'absolute', right:'14px', top:'14px', width:'440px',
+        background: THEME.bgPanel, border:`1px solid ${THEME.stroke}`,
+        borderRadius:'18px', boxShadow: THEME.shadow, pointerEvents:'auto', overflow:'hidden'
       });
 
-      const panel = document.createElement('div');
-      Object.assign(panel.style, {
-        position: 'absolute',
-        right: '14px',
-        bottom: '14px',
-        width: '420px',
-        maxHeight: '72%',
-        background: '#ffffff',
-        border: '1px solid #e4e4e7',
-        boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
-        borderRadius: '16px',
-        overflow: 'hidden',
-        display: 'none',
-        pointerEvents: 'auto'
-      });
+      const dockHeader = document.createElement('div');
+      Object.assign(dockHeader.style,{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px', borderBottom:`1px solid ${THEME.stroke}`, background: THEME.tealFaint});
+      const title = document.createElement('div'); title.textContent='Viewer Tools'; Object.assign(title.style,{fontWeight:'800', color:THEME.text});
+      const fitBtn = mkTealButton('Fit'); Object.assign(fitBtn.style,{padding:'6px 10px',borderRadius:'10px'});
+      dockHeader.appendChild(title); dockHeader.appendChild(fitBtn);
 
-      const header = document.createElement('div');
-      Object.assign(header.style, {
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: '8px',
-        padding: '10px 10px',
-        borderBottom: '1px solid #eee',
-        background: '#fafafa'
-      });
+      const dockBody = document.createElement('div'); dockBody.style.padding='10px 12px';
 
-      const headerTitle = document.createElement('div');
-      headerTitle.textContent = 'Components';
-      Object.assign(headerTitle.style, { fontWeight: '800' });
+      // Render mode
+      const renderMode = mkSelect(['Solid','Wireframe','X-Ray','Ghost'], 'Solid');
+      dockBody.appendChild(mkRow('Render mode', renderMode));
 
-      const showAllBtn = document.createElement('button');
-      showAllBtn.textContent = 'Show all';
-      Object.assign(showAllBtn.style, {
-        padding: '6px 10px',
-        borderRadius: '10px',
-        border: '1px solid #d0d0d0',
-        background: '#ffffff',
-        fontWeight: '700',
-        cursor: 'pointer'
-      });
+      // Explode
+      const explodeSlider = mkSlider(0, 1, 0.01, 0);
+      dockBody.appendChild(mkRow('Explode', explodeSlider));
 
-      header.appendChild(headerTitle);
-      header.appendChild(showAllBtn);
+      // Section plane
+      const axisSel = mkSelect(['X','Y','Z'], 'X');
+      const secDist = mkSlider(-1, 1, 0.001, 0);
+      const secToggle = mkTealToggle('Enable section');
+      dockBody.appendChild(mkRow('Section axis', axisSel));
+      dockBody.appendChild(mkRow('Section dist', secDist));
+      dockBody.appendChild(mkRow('', secToggle.wrap));
 
-      const list = document.createElement('div');
-      Object.assign(list.style, {
-        overflowY: 'auto',
-        maxHeight: 'calc(72vh - 52px)',
-        padding: '10px'
-      });
+      // Camera block
+      const rowCam = document.createElement('div'); Object.assign(rowCam.style,{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:'8px', margin:'8px 0'});
+      const bIso = mkTealButton('Iso'), bTop = mkTealButton('Top'), bFront= mkTealButton('Front'), bRight = mkTealButton('Right'), bSnap = mkTealButton('Snapshot');
+      [bIso,bTop,bFront,bRight,bSnap].forEach(b=>{ b.style.padding='8px'; b.style.borderRadius='10px'; });
+      rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight); rowCam.appendChild(bSnap);
+      dockBody.appendChild(mkRow('Views', rowCam));
 
-      panel.appendChild(header);
-      panel.appendChild(list);
-      root.appendChild(panel);
-      root.appendChild(btn);
+      // Projection + helpers
+      const projSel = mkSelect(['Perspective','Orthographic'], 'Perspective');
+      const togGrid = mkTealToggle('Grid');
+      togGrid.cb.checked = true;
+      const togGround = mkTealToggle('Ground & shadows');
+      togGround.cb.checked = true;
+      dockBody.appendChild(mkRow('Projection', projSel));
+      dockBody.appendChild(mkRow('', togGrid.wrap));
+      dockBody.appendChild(mkRow('', togGround.wrap));
+
+      // Assemble dock
+      dock.appendChild(dockHeader); dock.appendChild(dockBody);
+
+      // Root assembly
+      root.appendChild(compPanel);
+      root.appendChild(compBtn);
+      root.appendChild(dock);
       container.appendChild(root);
 
-      return { root, btn, panel, list, showAllBtn };
+      return {
+        root,
+        // components
+        btn: compBtn, panel: compPanel, list: compList, showAllBtn,
+        // tools
+        fitBtn, renderMode, explodeSlider, axisSel, secDist, secToggle,
+        bIso, bTop, bFront, bRight, bSnap,
+        projSel, togGrid, togGround,
+        dock
+      };
     }
 
     async function buildGallery(listEl){
@@ -682,7 +764,7 @@
           alignItems: 'center',
           padding: '10px',
           borderRadius: '12px',
-          border: '1px solid #f0f0f0',
+          border: `1px solid ${THEME.stroke}`,
           marginBottom: '10px',
           background: '#fff',
           cursor: 'pointer'
@@ -693,24 +775,24 @@
           width: '128px',
           height: '96px',
           objectFit: 'contain',
-          background: '#fafafa',
+          background: '#f7fbfb',
           borderRadius: '10px',
-          border: '1px solid #eee'
+          border: `1px solid ${THEME.stroke}`
         });
         img.alt = ent.base;
 
         const meta = document.createElement('div');
         const title = document.createElement('div');
         title.textContent = ent.base;
-        Object.assign(title.style, { fontWeight: '700', fontSize: '14px' });
+        Object.assign(title.style, { fontWeight: '700', fontSize: '14px', color:THEME.text });
 
         const small = document.createElement('div');
         small.textContent = `.${ent.ext} • ${ent.meshes.length} instance${ent.meshes.length>1?'s':''}`;
-        Object.assign(small.style, { color: '#777', fontSize: '12px', marginTop: '2px' });
+        Object.assign(small.style, { color: THEME.textMuted, fontSize: '12px', marginTop: '2px' });
 
         const desc = document.createElement('div');
-        desc.textContent = descriptions[ent.base] || ' ';
-        Object.assign(desc.style, { color: '#555', fontSize: '12px', marginTop: '4px' });
+        desc.textContent = (opts.descriptions||{})[ent.base] || ' ';
+        Object.assign(desc.style, { color: THEME.textMuted, fontSize: '12px', marginTop: '4px' });
 
         meta.appendChild(title);
         meta.appendChild(small);
@@ -746,13 +828,190 @@
           api.linkSet = markLinksAndJoints(api.robotModel);
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
           state.off = buildOffscreenFromRobot();
+          prepareExplodeVectors();
         }
       } catch(_e){}
     }
 
-    function animate(){
-      state.raf = requestAnimationFrame(animate);
-      controls.update(); renderer.render(scene, camera);
+    // ===========
+    //  Explode
+    // ===========
+    let explodeVecByLink = new Map();
+    function prepareExplodeVectors(){
+      explodeVecByLink.clear();
+      if (!api.robotModel) return;
+
+      const rootBox = new THREE.Box3().setFromObject(api.robotModel);
+      const rootCenter = rootBox.getCenter(new THREE.Vector3());
+
+      api.robotModel.traverse(o=>{
+        if (o.isObject3D && o !== api.robotModel && (!o.isMesh || (o.isMesh && !o.userData.__isHoverOverlay))){
+          const b = new THREE.Box3().setFromObject(o);
+          if (!b.isEmpty()){
+            const c = b.getCenter(new THREE.Vector3());
+            const v = c.clone().sub(rootCenter);
+            if (v.lengthSq() < 1e-10) v.set( (Math.random()*2-1)*0.01, (Math.random()*2-1)*0.01, (Math.random()*2-1)*0.01 );
+            v.normalize();
+            explodeVecByLink.set(o, v);
+            o.userData.__explodeBase = o.userData.__explodeBase || o.position.clone();
+          }
+        }
+      });
+    }
+    function applyExplode(f){
+      if (!api.robotModel) return;
+      api.robotModel.traverse(o=>{
+        if (o.userData && o.userData.__explodeBase && explodeVecByLink.has(o)){
+          const base = o.userData.__explodeBase;
+          const dir = explodeVecByLink.get(o);
+          o.position.copy( base.clone().add( dir.clone().multiplyScalar(f * 0.6) ) );
+        }
+      });
+    }
+
+    // ===========
+    //  Section
+    // ===========
+    let sectionPlane = null;
+    let secAxis = 'X';   // 'X' | 'Y' | 'Z'
+    let secEnabled = false;
+    function updateSectionPlane(){
+      renderer.clippingPlanes = [];
+      if (!secEnabled || !api.robotModel) { renderer.localClippingEnabled=false; return; }
+      const n = new THREE.Vector3(
+        secAxis==='X'?1:0,
+        secAxis==='Y'?1:0,
+        secAxis==='Z'?1:0
+      );
+      // Compute model bounds to scale distance
+      const box = new THREE.Box3().setFromObject(api.robotModel);
+      if (box.isEmpty()){ renderer.localClippingEnabled=false; return; }
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x,size.y,size.z)||1;
+      const center = box.getCenter(new THREE.Vector3());
+      const dist = (Number(state.ui.secDist.value) || 0) * maxDim * 0.5;
+      const plane = new THREE.Plane(n, -center.dot(n) - dist); // n·x + d = 0
+      renderer.localClippingEnabled = true;
+      renderer.clippingPlanes = [ plane ];
+      sectionPlane = plane;
+    }
+
+    // ===========
+    //  Render modes
+    // ===========
+    function setRenderMode(mode){
+      if (!api.robotModel) return;
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.material){
+          const mats = Array.isArray(o.material) ? o.material : [o.material];
+          for (const m of mats){
+            m.wireframe = (mode==='Wireframe');
+            if (mode==='X-Ray'){
+              m.transparent = true;
+              m.opacity = 0.35;
+              m.depthWrite = false;
+              m.depthTest = true;
+            } else if (mode==='Ghost'){
+              m.transparent = true;
+              m.opacity = 0.70;
+              m.depthWrite = true;
+              m.depthTest = true;
+            } else {
+              // Solid
+              m.transparent = false;
+              m.opacity = 1.0;
+              m.depthWrite = true;
+              m.depthTest = true;
+            }
+            m.needsUpdate = true;
+          }
+        }
+      });
+    }
+
+    // ===========
+    //  Views
+    // ===========
+    function viewIso(){
+      if (!api.robotModel) return;
+      const box = new THREE.Box3().setFromObject(api.robotModel);
+      if (box.isEmpty()) return;
+      const c = box.getCenter(new THREE.Vector3());
+      const s = box.getSize(new THREE.Vector3());
+      const d = Math.max(s.x,s.y,s.z) * 1.9;
+      const az = Math.PI * 0.25, el = Math.PI * 0.2;
+      const dir = new THREE.Vector3(Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)).multiplyScalar(d);
+      camera.position.copy(c.clone().add(dir)); controls.target.copy(c); controls.update();
+    }
+    function viewTop(){
+      if (!api.robotModel) return;
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      camera.position.set(c.x, c.y + d, c.z); controls.target.copy(c); controls.update();
+    }
+    function viewFront(){
+      if (!api.robotModel) return;
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      camera.position.set(c.x, c.y, c.z + d); controls.target.copy(c); controls.update();
+    }
+    function viewRight(){
+      if (!api.robotModel) return;
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      camera.position.set(c.x + d, c.y, c.z); controls.target.copy(c); controls.update();
+    }
+
+    // ===========
+    //  Helpers
+    // ===========
+    function showAllAndFrame(){
+      if (!api.robotModel) return;
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry) o.visible = true;
+      });
+      fitAndCenter(camera, controls, api.robotModel, 1.05);
+    }
+
+    function isolateAssetOnScreen(assetKey){
+      const meshes = assetToMeshes.get(assetKey) || [];
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry) o.visible = false;
+      });
+      for (const m of meshes) m.visible = true;
+
+      const box = computeUnionBox(meshes);
+      if (box){
+        const center = box.getCenter(new THREE.Vector3());
+        const size   = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x,size.y,size.z)||1;
+        if (camera.isPerspectiveCamera){
+          const dist   = maxDim * 1.9;
+          camera.near = Math.max(maxDim/1000,0.001);
+          camera.far  = Math.max(maxDim*1000,1000);
+          camera.updateProjectionMatrix();
+          const az = Math.PI * 0.25, el = Math.PI * 0.18;
+          const dir = new THREE.Vector3(
+            Math.cos(el)*Math.cos(az),
+            Math.sin(el),
+            Math.cos(el)*Math.sin(az)
+          ).multiplyScalar(dist);
+          camera.position.copy(center.clone().add(dir));
+        } else {
+          camera.left = -maxDim; camera.right = maxDim; camera.top = maxDim; camera.bottom = -maxDim;
+          camera.near = Math.max(maxDim/1000,0.001); camera.far = Math.max(maxDim*1000,1000);
+          camera.updateProjectionMatrix();
+          camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
+        }
+        controls.target.copy(center); controls.update();
+      }
+    }
+
+    // NEW: single handler that should run for every GUI button press.
+    function buttonClicked(){
+      try { console.log("button clicked"); } catch(_) {}
+      try {
+        if (window && window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel){
+          window.Jupyter.notebook.kernel.execute("print('button clicked')");
+        }
+      } catch(e){}
     }
 
     // attach resize listener
@@ -825,7 +1084,6 @@
       if (now - lastHoverTs >= (hoverCfg.throttleMs|0)){
         scheduleHover(); // next frame
       } else {
-        // still schedule, but let throttle gate actual processing
         scheduleHover();
       }
     }
@@ -854,12 +1112,15 @@
     // Build UI
     state.ui = createUI();
 
-    // UI interactive wiring (kept at the end)
+    // ==== UI Interactions ====
     (function attachUIInteractions(){
-      const { btn, panel, list, showAllBtn } = state.ui;
+      const { btn, panel, list, showAllBtn,
+              fitBtn, renderMode, explodeSlider, axisSel, secDist, secToggle,
+              bIso, bTop, bFront, bRight, bSnap, projSel, togGrid, togGround } = state.ui;
+
       let builtOnce = false;
 
-      // Call buttonClicked for every visible button press
+      // Components panel
       btn.addEventListener('click', async ()=>{
         buttonClicked();
         if (panel.style.display === 'none'){
@@ -870,12 +1131,9 @@
         }
       });
 
-      showAllBtn.addEventListener('click', (ev)=>{
-        buttonClicked();
-        showAllAndFrame();
-      });
+      showAllBtn.addEventListener('click', (ev)=>{ buttonClicked(); showAllAndFrame(); });
 
-      // delegation for clicks on gallery rows -> treat row clicks as button presses
+      // Gallery row delegation
       list.addEventListener('click', (ev)=>{
         let el = ev.target;
         while (el && el !== list && !el.dataset?.assetKey) el = el.parentElement;
@@ -884,13 +1142,78 @@
         const key = el.dataset.assetKey;
         if (key) isolateAssetOnScreen(key);
       });
+
+      // Fit
+      fitBtn.addEventListener('click', ()=>{ buttonClicked(); if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.06); });
+
+      // Render mode
+      renderMode.addEventListener('change', ()=>{ buttonClicked(); setRenderMode(renderMode.value); });
+
+      // Explode
+      explodeSlider.addEventListener('input', ()=>{ applyExplode(Number(explodeSlider.value)); });
+
+      // Section
+      axisSel.addEventListener('change', ()=>{ buttonClicked(); secAxis = axisSel.value; updateSectionPlane(); });
+      secDist.addEventListener('input', ()=>{ updateSectionPlane(); });
+      secToggle.cb.addEventListener('change', ()=>{ buttonClicked(); secEnabled = !!secToggle.cb.checked; updateSectionPlane(); });
+
+      // Views
+      bIso.addEventListener('click', ()=>{ buttonClicked(); viewIso(); });
+      bTop.addEventListener('click', ()=>{ buttonClicked(); viewTop(); });
+      bFront.addEventListener('click', ()=>{ buttonClicked(); viewFront(); });
+      bRight.addEventListener('click', ()=>{ buttonClicked(); viewRight(); });
+
+      // Snapshot
+      bSnap.addEventListener('click', ()=>{
+        buttonClicked();
+        try{
+          const url = renderer.domElement.toDataURL('image/png');
+          const a = document.createElement('a'); a.href=url; a.download='snapshot.png'; a.click();
+        }catch(_e){}
+      });
+
+      // Projection
+      projSel.addEventListener('change', ()=>{
+        buttonClicked();
+        // swap camera
+        const wasPersp = camera.isPerspectiveCamera;
+        const w = container.clientWidth||1, h=container.clientHeight||1, asp = Math.max(1e-6, w/h);
+        if (projSel.value==='Orthographic' && wasPersp){
+          const box = api.robotModel ? new THREE.Box3().setFromObject(api.robotModel) : null;
+          const c = box && !box.isEmpty() ? box.getCenter(new THREE.Vector3()) : controls.target.clone();
+          const size = box && !box.isEmpty() ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(2,2,2);
+          const maxDim = Math.max(size.x,size.y,size.z)||1;
+          ortho.left=-maxDim*asp; ortho.right=maxDim*asp; ortho.top=maxDim; ortho.bottom=-maxDim;
+          ortho.near=Math.max(maxDim/1000,0.001); ortho.far=Math.max(maxDim*1500,1500);
+          ortho.position.copy(camera.position); ortho.updateProjectionMatrix();
+          controls.object = ortho; camera = ortho;
+          controls.target.copy(c); controls.update();
+        } else if (projSel.value==='Perspective' && !wasPersp){
+          persp.aspect = asp; persp.updateProjectionMatrix();
+          persp.position.copy(camera.position);
+          controls.object = persp; camera = persp;
+          controls.update();
+        }
+      });
+
+      // Helpers
+      togGrid.cb.addEventListener('change', ()=>{ buttonClicked(); grid.visible = !!togGrid.cb.checked; });
+      togGround.cb.addEventListener('change', ()=>{ buttonClicked(); ground.visible = !!togGround.cb.checked; dirLight.castShadow = !!togGround.cb.checked; });
+
     })();
+
+    // Animate
+    function animate(){
+      state.raf = requestAnimationFrame(animate);
+      controls.update(); renderer.render(scene, camera);
+    }
 
     loadURDF((opts && opts.urdfContent) || '');
     animate();
 
+    // expose minimal API
     return {
-      scene, camera, renderer, controls,
+      scene, get camera(){ return camera; }, renderer, controls,
       get robot(){ return api.robotModel; },
       openGallery(){ state.ui?.btn?.click?.(); }
     };
