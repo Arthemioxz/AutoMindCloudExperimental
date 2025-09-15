@@ -5,6 +5,7 @@ Jupyter widget panel to cycle orthographic views of a STEP file using CadQuery.
 - Title centered, teal, large font, Computer Modern (via MathJax if present).
 - PNG save as an icon button (no text).
 - Click sound plays on BOTH "Next view" and the save icon.
+- AutoMind logo watermark fixed at bottom-right (configurable).
 """
 
 import os
@@ -84,7 +85,7 @@ def _embed_audio_b64(filename="click_sound.mp3"):
         return None
 
 
-def _make_client_side_html(svgs, audio_dataurl=None):
+def _make_client_side_html(svgs, audio_dataurl=None, logo_url=None, logo_max_h=40):
     uid = "cadview_" + uuid.uuid4().hex[:8]
 
     titles = []
@@ -96,9 +97,11 @@ def _make_client_side_html(svgs, audio_dataurl=None):
     titles_js = json.dumps(titles)
     svgs_js = json.dumps(clean_svgs)
     audio_js = json.dumps(audio_dataurl) if audio_dataurl else "null"
+    logo_js = json.dumps(logo_url) if logo_url else "null"
+    logo_h = int(logo_max_h) if isinstance(logo_max_h, (int, float)) else 40
 
     html = f"""
-<div id="{uid}" style="color:#0f172a;text-align:center;">
+<div id="{uid}" style="color:#0f172a;text-align:center; position:relative;">
   <!-- Title -->
   <div id="{uid}_title"
        style="font-size:22px; font-weight:600; margin:10px 0;
@@ -127,12 +130,21 @@ def _make_client_side_html(svgs, audio_dataurl=None):
       <!-- download icon -->
       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18"
            viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-        <polyline points="7 10 12 15 17 10"/>
-        <line x1="12" y1="15" x2="12" y2="3"/>
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+           aria-hidden="true">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
       </svg>
     </button>
+  </div>
+
+  <!-- Fixed AutoMind badge (bottom-right) -->
+  <div id="{uid}_badge"
+       style="position:fixed; right:14px; bottom:12px; z-index:9999;
+              user-select:none; pointer-events:none; display:none;">
+    <img id="{uid}_badge_img" src="" alt="AutoMind"
+         style="max-height:{logo_h}px; display:block;"/>
   </div>
 </div>
 
@@ -141,14 +153,23 @@ def _make_client_side_html(svgs, audio_dataurl=None):
   const titles = {titles_js};
   const svgs = {svgs_js};
   const AUDIO_DATA_URL = {audio_js};
+  const LOGO_URL = {logo_js};
 
   const nextBtn = document.getElementById("{uid}_btn");
   const saveBtn = document.getElementById("{uid}_save");
   const titleEl = document.getElementById("{uid}_title");
   const svgBox  = document.getElementById("{uid}_svgbox");
+  const badge   = document.getElementById("{uid}_badge");
+  const badgeImg= document.getElementById("{uid}_badge_img");
 
   let idx = 0;
   let clickAudio = null;
+
+  // Init logo if provided
+  if (LOGO_URL) {{
+    badgeImg.src = LOGO_URL;
+    badge.style.display = "block";
+  }}
 
   if (AUDIO_DATA_URL) {{
     try {{
@@ -205,14 +226,17 @@ def _make_client_side_html(svgs, audio_dataurl=None):
   }}
 
   // --- Event listeners (sound on both buttons) ---
+  function playClick() {{
+    if (!clickAudio) return;
+    try {{ clickAudio.pause(); clickAudio.currentTime = 0; }} catch(_){{
+    }}
+    clickAudio.play().catch(()=>{{}});
+  }}
+
   nextBtn.addEventListener("click", (ev) => {{
     ev.preventDefault();
     ev.stopPropagation();
-    if (clickAudio) {{
-      try {{ clickAudio.pause(); clickAudio.currentTime = 0; }} catch(_){{
-      }}
-      clickAudio.play().catch(()=>{{}});
-    }}
+    playClick();
     idx = (idx + 1) % svgs.length;
     render();
   }});
@@ -220,11 +244,7 @@ def _make_client_side_html(svgs, audio_dataurl=None):
   saveBtn.addEventListener("click", (ev) => {{
     ev.preventDefault();
     ev.stopPropagation();
-    if (clickAudio) {{
-      try {{ clickAudio.pause(); clickAudio.currentTime = 0; }} catch(_){{
-      }}
-      clickAudio.play().catch(()=>{{}});
-    }}
+    playClick();
     downloadCurrentAsPNG();
   }});
 
@@ -235,7 +255,26 @@ def _make_client_side_html(svgs, audio_dataurl=None):
     return html
 
 
-def Step_Orthographic_Render(sketch_name_or_path, audio_filename="click_sound.mp3"):
+def Step_Orthographic_Render(
+    sketch_name_or_path,
+    audio_filename="click_sound.mp3",
+    logo_url="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png",  # AutoMind badge (default)
+    logo_max_height=40,
+):
+    """
+    Render orthographic views panel with optional click sound and AutoMind logo.
+
+    Parameters
+    ----------
+    sketch_name_or_path : str
+        Path (or basename without .step) to a STEP file.
+    audio_filename : str
+        Local MP3 to embed and play on button clicks (optional).
+    logo_url : str or None
+        URL to the AutoMind/logo image. If None, hides the badge.
+    logo_max_height : int
+        Max pixel height of the logo at bottom-right.
+    """
     if not sketch_name_or_path.lower().endswith(".step"):
         sketch_path = sketch_name_or_path + ".step"
     else:
@@ -247,9 +286,25 @@ def Step_Orthographic_Render(sketch_name_or_path, audio_filename="click_sound.mp
     result = cq.importers.importStep(sketch_path)
     svgs = _generate_orthographic_svgs(result)
     audio_dataurl = _embed_audio_b64(audio_filename)
-    html_blob = _make_client_side_html(svgs, audio_dataurl=audio_dataurl)
+    html_blob = _make_client_side_html(
+        svgs,
+        audio_dataurl=audio_dataurl,
+        logo_url=logo_url,
+        logo_max_h=logo_max_height,
+    )
     return widgets.HTML(value=html_blob)
 
 
-def create_panel_from_step(sketch_name_or_path, audio_filename="click_sound.mp3"):
-    return Step_Orthographic_Render(sketch_name_or_path, audio_filename=audio_filename)
+def create_panel_from_step(
+    sketch_name_or_path,
+    audio_filename="click_sound.mp3",
+    logo_url="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png",
+    logo_max_height=40,
+):
+    """Convenience wrapper."""
+    return Step_Orthographic_Render(
+        sketch_name_or_path,
+        audio_filename=audio_filename,
+        logo_url=logo_url,
+        logo_max_height=logo_max_height,
+    )
