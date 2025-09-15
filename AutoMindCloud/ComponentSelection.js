@@ -19,20 +19,12 @@ def Download_Step(Drive_Link, Output_Name):
     gdown.download(url, output_step, quiet=True)
 
 
-def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
+def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None, click_sound_mime="audio/mpeg"):
     """
-    STEP -> GLB -> scaled viewer (white bg). Features:
-      - Render modes: Solid / Wireframe / X-Ray / Ghost
-      - Explode slider (auto-hidden if single-part)
-      - Section plane (X/Y/Z + distance) [no overlays]
-      - Camera presets: Iso / Top / Front / Right
-      - Perspective <-> Orthographic toggle
-      - Grid, Ground (soft shadows), Axes toggles
-      - Fit to view & Snapshot
-      - GLOBAL click sound: every <button> (and [role="button"]) plays your base64 audio
-        • overlapping allowed
-        • original volume/pitch preserved
-        • no double sounds (guarded)
+    STEP -> GLB -> scaled viewer (white bg) with global click sound:
+      - Every button plays your sound (base64), overlapping, original volume/pitch.
+      - Reliable in notebook/iframe: WebAudio decode from base64 (no fetch of data URLs).
+      - One-time "Enable sound" banner to satisfy autoplay policies.
     """
     output_step = Step_Name + ".step"
     output_glb = Step_Name + ".glb"
@@ -54,12 +46,8 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     with open(output_glb_scaled, "rb") as f:
         glb_base64 = base64.b64encode(f.read()).decode("utf-8")
 
-    # Audio: base64 data URL (leave empty for no sound)
-    click_data_url = (
-        "data:audio/mpeg;base64," + click_sound_b64
-        if (isinstance(click_sound_b64, str) and len(click_sound_b64) > 0)
-        else ""  # no sound if none provided
-    )
+    # If no sound provided, leave blank (viewer handles gracefully)
+    click_b64 = click_sound_b64 or ""
 
     html_template = r"""
 <!DOCTYPE html>
@@ -79,66 +67,57 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     --textMuted: #577e7f;
     --shadow: 0 12px 36px rgba(0,0,0,0.14);
   }
-  html, body {
-    margin: 0;
-    height: 100%;
-    overflow: hidden;
-    background: var(--bgCanvas);
-    font-family: "Computer Modern", "CMU Serif", Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  }
-  #wrap { position: relative; width: 100vw; height: 100vh; }
-  canvas { display: block; width: 100%; height: 100%; }
+  html, body { margin:0; height:100%; overflow:hidden; background:var(--bgCanvas);
+    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+  #wrap { position:relative; width:100vw; height:100vh; }
+  canvas { display:block; width:100%; height:100%; }
 
   #toolsDock {
-    position: absolute; right: 14px; top: 14px; width: 440px; max-width: calc(100vw - 28px);
-    background: var(--bgPanel); border: 1px solid var(--stroke); border-radius: 18px;
-    box-shadow: var(--shadow); overflow: hidden; display: none; z-index: 11;
+    position:absolute; right:14px; top:14px; width:440px; max-width:calc(100vw - 28px);
+    background:var(--bgPanel); border:1px solid var(--stroke); border-radius:18px;
+    box-shadow:var(--shadow); overflow:hidden; display:none; z-index:11;
   }
-  .dockHeader {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    padding: 10px 12px; border-bottom: 1px solid var(--stroke); background: var(--teal-faint);
-  }
-  .dockHeader .title { font-weight: 800; color: var(--text); }
-  .dockBody { padding: 10px 12px; }
-  .row { display: grid; grid-template-columns: 120px 1fr; gap: 10px; align-items: center; margin: 6px 0; }
-  .row .label { font-weight: 700; color: var(--textMuted); }
-  select, input[type="range"] {
-    width: 100%; accent-color: var(--teal);
-    border: 1px solid var(--stroke); border-radius: 10px; padding: 6px 8px;
-  }
-  .tbtn {
-    padding: 8px 12px; border-radius: 12px; border: 1px solid var(--stroke);
-    background: var(--bgPanel); color: var(--text); font-weight: 700; cursor: pointer;
-  }
-  #toolsToggle {
-    position: absolute; right: 14px; top: 14px; z-index: 12; box-shadow: var(--shadow);
-  }
-  .tog { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-  .tog input[type="checkbox"] { accent-color: var(--teal); }
+  .dockHeader { display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:10px 12px; border-bottom:1px solid var(--stroke); background:var(--teal-faint); }
+  .dockHeader .title { font-weight:800; color:var(--text); }
+  .dockBody { padding:10px 12px; }
+  .row { display:grid; grid-template-columns:120px 1fr; gap:10px; align-items:center; margin:6px 0; }
+  .row .label { font-weight:700; color:var(--textMuted); }
+  select, input[type="range"] { width:100%; accent-color:var(--teal); border:1px solid var(--stroke);
+    border-radius:10px; padding:6px 8px; }
+  .tbtn { padding:8px 12px; border-radius:12px; border:1px solid var(--stroke);
+    background:var(--bgPanel); color:var(--text); font-weight:700; cursor:pointer; }
+  #toolsToggle { position:absolute; right:14px; top:14px; z-index:12; box-shadow:var(--shadow); }
+  .tog { display:flex; align-items:center; gap:8px; cursor:pointer; }
+  .tog input[type="checkbox"] { accent-color:var(--teal); }
 
-  .badge {
-    position: absolute; bottom: 12px; right: 14px; z-index: 12;
-    user-select: none; pointer-events: none;
+  .badge { position:absolute; bottom:12px; right:14px; z-index:12; user-select:none; pointer-events:none; }
+  .badge img { max-height:40px; display:block; }
+
+  /* One-time sound unlock hint */
+  #soundHint {
+    position:absolute; left:50%; top:14px; transform:translateX(-50%);
+    background:var(--bgPanel); color:var(--text); border:1px solid var(--stroke);
+    border-radius:12px; padding:8px 12px; box-shadow:var(--shadow); z-index:13;
+    display:none; font-weight:700;
   }
-  .badge img { max-height: 40px; display: block; }
 </style>
 </head>
 <body>
   <div id="wrap">
-    <button id="toolsToggle" class="tbtn">Open Tools</button>
+    <div id="soundHint">Click anywhere to enable sound</div>
+
+    <button id="toolsToggle" class="tbtn" role="button">Open Tools</button>
     <div id="toolsDock">
       <div class="dockHeader">
         <div class="title">Viewer Tools</div>
-        <button id="fitBtn" class="tbtn" style="padding:6px 10px;border-radius:10px;">Fit</button>
+        <button id="fitBtn" class="tbtn" style="padding:6px 10px;border-radius:10px;" role="button">Fit</button>
       </div>
       <div class="dockBody">
         <div class="row">
           <div class="label">Render mode</div>
           <select id="renderMode">
-            <option>Solid</option>
-            <option>Wireframe</option>
-            <option>X-Ray</option>
-            <option>Ghost</option>
+            <option>Solid</option><option>Wireframe</option><option>X-Ray</option><option>Ghost</option>
           </select>
         </div>
 
@@ -149,9 +128,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
 
         <div class="row">
           <div class="label">Section axis</div>
-          <select id="axisSel">
-            <option>X</option><option>Y</option><option>Z</option>
-          </select>
+          <select id="axisSel"><option>X</option><option>Y</option><option>Z</option></select>
         </div>
         <div class="row">
           <div class="label">Section dist</div>
@@ -164,20 +141,17 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
         <div class="row">
           <div class="label">Views</div>
           <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;">
-            <button id="vIso"  class="tbtn" style="padding:8px;border-radius:10px;">Iso</button>
-            <button id="vTop"  class="tbtn" style="padding:8px;border-radius:10px;">Top</button>
-            <button id="vFront"class="tbtn" style="padding:8px;border-radius:10px;">Front</button>
-            <button id="vRight"class="tbtn" style="padding:8px;border-radius:10px;">Right</button>
-            <button id="shot" class="tbtn" style="padding:8px;border-radius:10px;">Snapshot</button>
+            <button id="vIso"   class="tbtn" role="button">Iso</button>
+            <button id="vTop"   class="tbtn" role="button">Top</button>
+            <button id="vFront" class="tbtn" role="button">Front</button>
+            <button id="vRight" class="tbtn" role="button">Right</button>
+            <button id="shot"   class="tbtn" role="button">Snapshot</button>
           </div>
         </div>
 
         <div class="row">
           <div class="label">Projection</div>
-          <select id="projSel">
-            <option>Perspective</option>
-            <option>Orthographic</option>
-          </select>
+          <select id="projSel"><option>Perspective</option><option>Orthographic</option></select>
         </div>
 
         <div class="row"><label class="tog"><input id="togGrid"   type="checkbox" /> Grid</label></div>
@@ -196,70 +170,77 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
 
   <script>
-  // ====== Global click sound (base64, overlap, original audio) ======
-  const CLICK_URL = "__CLICK_URL__";  // data:audio/...;base64,XXXX
-  let baseAudio = null;
-  let audioUnlocked = false;
-  let __lastCaptureClickTs = 0; // guard to avoid double sound
+  // ====== Robust WebAudio click sound from BASE64 (no data: fetch) ======
+  const CLICK_B64  = "__CLICK_B64__";        // raw base64 (no prefix)
+  const CLICK_MIME = "__CLICK_MIME__";       // e.g., "audio/mpeg" or "audio/wav"
 
-  function ensureBaseAudio(){
-    if (!CLICK_URL) return false;
-    if (!baseAudio){
-      baseAudio = new Audio(CLICK_URL);
-      baseAudio.preload = 'auto'; // keep original properties
-    }
-    return true;
+  let __audioCtx = null;
+  let __clickBuf = null;
+  let __audioReady = false;
+
+  function b64ToUint8(base64){
+    if (!base64) return new Uint8Array();
+    const bin = atob(base64);
+    const len = bin.length;
+    const bytes = new Uint8Array(len);
+    for (let i=0;i<len;i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
   }
 
-  // Unlock once on first user interaction (mobile autoplay policies)
-  function unlockAudioOnce(){
-    if (audioUnlocked) return;
-    if (!ensureBaseAudio()) return;
-    try {
-      const p = baseAudio.play();
-      if (p && p.then){
-        p.then(()=>{
-          baseAudio.pause();
-          baseAudio.currentTime = 0;
-          audioUnlocked = true;
-        }).catch(()=>{ /* try again on next click */ });
-      } else {
-        audioUnlocked = true;
+  async function ensureAudio(){
+    if (!CLICK_B64) return false;               // no sound provided
+    if (!__audioCtx) __audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!__clickBuf){
+      // Decode from base64 directly
+      const bytes = b64ToUint8(CLICK_B64);
+      try {
+        __clickBuf = await __audioCtx.decodeAudioData(bytes.buffer.slice(0));
+      } catch(e){
+        console.warn("Audio decode failed:", e);
+        __clickBuf = null;
       }
-    } catch(e) {}
+    }
+    return !!__clickBuf;
   }
-  window.addEventListener('pointerdown', unlockAudioOnce, { once:true, passive:true });
 
-  // Global click handler: any <button> or [role="button"] plays sound.
+  function playClick(){
+    if (!__clickBuf || !__audioReady) return;
+    try {
+      const src = __audioCtx.createBufferSource();
+      src.buffer = __clickBuf;                   // original audio, no changes
+      const gain = __audioCtx.createGain();      // unity gain (no volume change)
+      gain.gain.value = 1.0;
+      src.connect(gain).connect(__audioCtx.destination);
+      src.start();
+    } catch(e){}
+  }
+
+  // Autoplay unlock (first user action)
+  const soundHint = document.getElementById('soundHint');
+  if (CLICK_B64) soundHint.style.display = 'block';
+
+  async function unlockOnce(){
+    if (!CLICK_B64) return;
+    try {
+      if (!__audioCtx) __audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (__audioCtx.state === 'suspended') await __audioCtx.resume();
+      await ensureAudio();
+      __audioReady = !!__clickBuf;
+      soundHint.style.display = 'none';
+      // Give immediate feedback on first tap
+      playClick();
+    } catch(e){
+      console.warn("Audio unlock failed:", e);
+    }
+  }
+  window.addEventListener('pointerdown', unlockOnce, { once:true, passive:true });
+
+  // Global: every button click fires sound (overlap OK)
   document.addEventListener('click', (ev)=>{
     const el = ev.target.closest('button,[role="button"]');
     if (!el) return;
-    const now = performance.now();
-    __lastCaptureClickTs = now; // mark we already played for this click
-    if (!CLICK_URL) return;
-    if (!audioUnlocked) unlockAudioOnce();
-    if (!ensureBaseAudio()) return;
-    try {
-      const a = baseAudio.cloneNode(true); // allow overlapping
-      const p = a.play();
-      if (p && p.catch) p.catch(()=>{});
-    } catch(e) {}
-  }, {capture:true}); // capture ensures this runs before per-button handlers
-
-  // For legacy handlers that call buttonClicked(), make it skip if global already fired.
-  function buttonClicked(){
-    // If the capture listener just ran for this same click, do nothing.
-    if (performance.now() - __lastCaptureClickTs < 150) return;
-
-    if (!CLICK_URL) return;
-    if (!audioUnlocked) unlockAudioOnce();
-    if (!ensureBaseAudio()) return;
-    try {
-      const a = baseAudio.cloneNode(true);
-      const p = a.play();
-      if (p && p.catch) p.catch(()=>{});
-    } catch(e) {}
-  }
+    playClick();
+  }, {capture:true});
 
   // ====== Scene (white bg) ======
   const wrap = document.getElementById('wrap');
@@ -506,33 +487,30 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     toolsDock.style.display = open ? 'block' : 'none';
     toolsToggle.textContent = open ? 'Close Tools' : 'Open Tools';
   }
-  toolsToggle.addEventListener('click', ()=>{ buttonClicked(); setDock(toolsDock.style.display==='none'); });
+  toolsToggle.addEventListener('click', ()=>{ setDock(toolsDock.style.display==='none'); });
 
-  fitBtn.addEventListener('click', ()=>{ buttonClicked(); if (model) fitAndCenter(model, 1.06); });
-  renderMode.addEventListener('change', ()=>{ buttonClicked(); setRenderMode(renderMode.value); });
+  fitBtn.addEventListener('click', ()=>{ if (model) fitAndCenter(model, 1.06); });
+  renderMode.addEventListener('change', ()=>{ setRenderMode(renderMode.value); });
   explode.addEventListener('input', ()=>{ applyExplode(Number(explode.value)); });
 
-  axisSel.addEventListener('change', ()=>{ buttonClicked(); secAxis = axisSel.value; updateSectionPlane(); });
+  axisSel.addEventListener('change', ()=>{ secAxis = axisSel.value; updateSectionPlane(); });
   secDist.addEventListener('input', ()=>{ updateSectionPlane(); });
 
   secEnableEl.addEventListener('change', ()=>{
-    buttonClicked();
     secEnabled = !!secEnableEl.checked;
     updateSectionPlane();
   });
 
-  vIso.addEventListener('click', ()=>{ buttonClicked(); viewIso(); });
-  vTop.addEventListener('click', ()=>{ buttonClicked(); viewTop(); });
-  vFront.addEventListener('click', ()=>{ buttonClicked(); viewFront(); });
-  vRight.addEventListener('click', ()=>{ buttonClicked(); viewRight(); });
+  vIso.addEventListener('click', ()=>{ viewIso(); });
+  vTop.addEventListener('click', ()=>{ viewTop(); });
+  vFront.addEventListener('click', ()=>{ viewFront(); });
+  vRight.addEventListener('click', ()=>{ viewRight(); });
 
   shot.addEventListener('click', ()=>{
-    buttonClicked();
     try { const url = renderer.domElement.toDataURL('image/png'); const a = document.createElement('a'); a.href=url; a.download='snapshot.png'; a.click(); } catch(_){}
   });
 
   projSel.addEventListener('change', ()=>{
-    buttonClicked();
     const w = wrap.clientWidth||1, h=wrap.clientHeight||1, asp = Math.max(1e-6, w/h);
     if (projSel.value==='Orthographic' && camera.isPerspectiveCamera){
       const box = model ? new THREE.Box3().setFromObject(model) : null;
@@ -570,7 +548,8 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
         html_template
         .replace("__TITLE__", Step_Name)
         .replace("__GLB_B64__", glb_base64)
-        .replace("__CLICK_URL__", click_data_url)
+        .replace("__CLICK_B64__", click_b64)
+        .replace("__CLICK_MIME__", click_sound_mime or "audio/mpeg")
     )
 
     html_name = output_glb_scaled + "_viewer.html"
@@ -580,4 +559,5 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     with open(html_name, "r") as f:
         html = f.read()
     display(HTML(html))
+
 
