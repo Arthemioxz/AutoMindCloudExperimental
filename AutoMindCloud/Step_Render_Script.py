@@ -1,4 +1,4 @@
-import sympy  # requested import (not used directly here, but kept available)
+import sympy  # requested import
 import gdown
 import cascadio
 import trimesh
@@ -25,7 +25,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     and shows a teal/white Autodesk-like viewer with:
       - Render modes: Solid / Wireframe / X-Ray / Ghost
       - Explode slider (auto-hidden if the GLB is single-part)
-      - Section plane (X/Y/Z + distance) + teal frame (no lines by default)
+      - Section plane (X/Y/Z + distance) + optional teal frame (NO LINES)
       - Camera presets: Iso / Top / Front / Right
       - Perspective <-> Orthographic toggle
       - Grid, Ground (soft shadows), Axes toggles
@@ -136,7 +136,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   }}
   .tog input[type="checkbox"] {{ accent-color: var(--teal); }}
 
-  /* Teal split frame (on section enable) */
+  /* Teal split frame (optional, steady; NO lines in scene) */
   #splitFrame {{
     position: absolute; left: 0; top: 0; width: 100%; height: 100%;
     border: 3px solid var(--teal); border-radius: 14px; box-sizing: border-box;
@@ -184,7 +184,8 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
           <label class="tog"><input id="secEnable" type="checkbox" /> Enable section</label>
         </div>
         <div class="row">
-          <label class="tog"><input id="secLines" type="checkbox" /> Show slice plane (lines)</label>
+          <!-- renamed: this no longer shows lines; it only toggles the teal frame overlay -->
+          <label class="tog"><input id="secFrame" type="checkbox" /> Show slice frame</label>
         </div>
 
         <div class="row">
@@ -222,42 +223,27 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
 
   <script>
-  // ====== Theme refs ======
-  const THEME = {{
-    teal: '#0ea5a6',
-    tealFaint: 'rgba(20,184,185,0.12)',
-    stroke: '#d7e7e7',
-    text: '#0b3b3c'
-  }};
-
   // ====== Click audio (pool) + debounce ======
   const CLICK_DEBOUNCE_MS = 120;
   let lastClickTs = 0;
   const clickDataURL = {click_data_url!r};
-  function makeClickPool(url, n=4){{
+  function makeClickPool(url, n=4){
     const pool=[]; let idx=0;
-    for(let i=0;i<n;i++){{ const a=new Audio(url); a.preload='auto'; a.loop=false; a.volume=1.0; pool.push(a); }}
-    return {{
-      play(){{
-        try{{ const a=pool[idx]; idx=(idx+1)%pool.length; a.currentTime=0; const p=a.play(); p&&p.catch&&p.catch(()=>{{}}); }}catch(_){{}}
-      }}
-    }};
-  }}
+    for(let i=0;i<n;i++){ const a=new Audio(url); a.preload='auto'; a.loop=false; a.volume=1.0; pool.push(a); }
+    return {
+      play(){
+        try{ const a=pool[idx]; idx=(idx+1)%pool.length; a.currentTime=0; const p=a.play(); p&&p.catch&&p.catch(()=>{}); }catch(_){}
+      }
+    };
+  }
   const clickPool = makeClickPool(clickDataURL);
-
-  function buttonClicked(){{
+  function buttonClicked(){
     const now = performance.now();
     if (now - lastClickTs < CLICK_DEBOUNCE_MS) return;
     lastClickTs = now;
     clickPool.play();
-    try {{
-      if (window?.Jupyter?.notebook?.kernel) {{
-        window.Jupyter.notebook.kernel.execute("print('button clicked')");
-      }}
-    }} catch(_){{
-      // ignore
-    }}
-  }}
+    try { if (window?.Jupyter?.notebook?.kernel) window.Jupyter.notebook.kernel.execute("print('button clicked')"); } catch(_){}
+  }
 
   // ====== Scene setup ======
   const wrap = document.getElementById('wrap');
@@ -276,7 +262,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
 
   let camera = persp;
 
-  const renderer = new THREE.WebGLRenderer({{ antialias: true, preserveDrawingBuffer:true }});
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer:true });
   renderer.setPixelRatio(window.devicePixelRatio||1);
   renderer.setSize(wrap.clientWidth, wrap.clientHeight);
   wrap.appendChild(renderer.domElement);
@@ -298,7 +284,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   const groundGroup = new THREE.Group(); scene.add(groundGroup);
   const grid = new THREE.GridHelper(10, 20, 0x84d4d4, 0xdef3f3);
   grid.visible = false; groundGroup.add(grid);
-  const groundMat = new THREE.ShadowMaterial({{ opacity: 0.25 }});
+  const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200), groundMat);
   ground.rotation.x = -Math.PI/2; ground.position.y = -0.0001;
   ground.receiveShadow = true; ground.visible = true; groundGroup.add(ground);
@@ -307,33 +293,34 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   const axesHelper = new THREE.AxesHelper(1);
   axesHelper.visible = false; scene.add(axesHelper);
 
-  function sizeAxesHelper(maxDim, center){{
+  function sizeAxesHelper(maxDim, center){
     axesHelper.scale.setScalar(maxDim * 0.75);
     axesHelper.position.copy(center || new THREE.Vector3());
-  }}
+  }
 
-  function onResize(){{
+  function onResize(){
     const w = wrap.clientWidth||1, h = wrap.clientHeight||1;
     const asp = Math.max(1e-6, w/h);
-    if (camera.isPerspectiveCamera){{
+    if (camera.isPerspectiveCamera){
       camera.aspect = asp;
-    }} else {{
+    } else {
       const s = orthoSize;
       camera.left=-s*asp; camera.right=s*asp; camera.top=s; camera.bottom=-s;
-    }}
+    }
     camera.updateProjectionMatrix();
     renderer.setSize(w,h);
-  }}
+    // Frame isn't toggled here -> avoids flicker on resize
+  }
   window.addEventListener('resize', onResize);
 
   // ====== GLB load (embedded base64) ======
-  function base64ToArrayBuffer(base64){{
+  function base64ToArrayBuffer(base64){
     const binary_string = window.atob(base64);
     const len = binary_string.length;
     const bytes = new Uint8Array(len);
     for (let i=0;i<len;i++) bytes[i] = binary_string.charCodeAt(i);
     return bytes.buffer;
-  }}
+  }
   const glbBase64 = "{glb_base64}";
   const arrayBuffer = base64ToArrayBuffer(glbBase64);
 
@@ -341,44 +328,36 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   let sectionPlane = null;
   let secAxis = 'X';
   let secEnabled = false;
-  let secLines = false;
-  let secHelper = null;
 
-  function ensureSectionHelper(){{
-    if (!secHelper){{
-      secHelper = new THREE.PlaneHelper(new THREE.Plane(new THREE.Vector3(1,0,0), 0), 1.0, 0x0ea5a6);
-      secHelper.visible = false; scene.add(secHelper);
-    }}
-    return secHelper;
-  }}
-  function updateTealSplitFrame(){{
-    splitFrame.style.display = secEnabled ? 'block' : 'none';
-  }}
-  function refreshSectionHelper(maxDim){{
-    if (!secHelper) return;
-    const size = Math.max(1e-6, maxDim || 1);
-    secHelper.size = size * 1.2;
-  }}
-  function updateSectionPlane(){{
+  // NO plane helper lines at all (removed) — we only use the teal frame overlay.
+  function setFrameVisible(v){
+    splitFrame.style.display = v ? 'block' : 'none';
+  }
+
+  function updateFrameVisibility(){
+    // Only depends on checkboxes; not on slider movement -> no flicker
+    const secEnable = document.getElementById('secEnable').checked;
+    const secFrame  = document.getElementById('secFrame').checked;
+    setFrameVisible(secEnable && secFrame);
+  }
+
+  function updateSectionPlane(){
     renderer.clippingPlanes = [];
-    if (!secEnabled || !model) {{
+    if (!secEnabled || !model) {
       renderer.localClippingEnabled=false;
-      if (secHelper) secHelper.visible = false;
-      updateTealSplitFrame();
+      // Don't touch the frame here to avoid “palpitations”
       return;
-    }}
+    }
     const n = new THREE.Vector3(
       secAxis==='X'?1:0,
       secAxis==='Y'?1:0,
       secAxis==='Z'?1:0
     );
     const box = new THREE.Box3().setFromObject(model);
-    if (box.isEmpty()){{
+    if (box.isEmpty()){
       renderer.localClippingEnabled=false;
-      if (secHelper) secHelper.visible=false;
-      updateTealSplitFrame();
       return;
-    }}
+    }
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x,size.y,size.z)||1;
     const center = box.getCenter(new THREE.Vector3());
@@ -387,63 +366,57 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     renderer.localClippingEnabled = true;
     renderer.clippingPlanes = [ plane ];
     sectionPlane = plane;
+    // Frame visibility handled elsewhere; not here.
+  }
 
-    ensureSectionHelper();
-    secHelper.plane.copy(plane);
-    secHelper.visible = !!secLines;
-    refreshSectionHelper(maxDim);
-
-    updateTealSplitFrame();
-  }}
-
-  function fitAndCenter(object, pad=1.08){{
+  function fitAndCenter(object, pad=1.08){
     const box = new THREE.Box3().setFromObject(object);
     if (box.isEmpty()) return;
     const center = box.getCenter(new THREE.Vector3());
     const size   = box.getSize(new THREE.Vector3()).multiplyScalar(pad);
     const maxDim = Math.max(size.x,size.y,size.z)||1;
 
-    if (camera.isPerspectiveCamera){{
+    if (camera.isPerspectiveCamera){
       const dist   = maxDim * 1.9;
       camera.near = Math.max(maxDim/1000,0.001);
       camera.far  = Math.max(maxDim*1500,1500);
       camera.updateProjectionMatrix();
       camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
-    }} else {{
+    } else {
       camera.left = -maxDim; camera.right = maxDim;
       camera.top  =  maxDim; camera.bottom= -maxDim;
       camera.near = Math.max(maxDim/1000,0.001);
       camera.far  = Math.max(maxDim*1500,1500);
       camera.updateProjectionMatrix();
       camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
-    }}
+    }
     controls.target.copy(center); controls.update();
     sizeAxesHelper(maxDim, center);
-  }}
+  }
 
   // Render modes
-  function setRenderMode(mode){{
+  function setRenderMode(mode){
     if (!model) return;
-    model.traverse(o=>{{
-      if (o.isMesh && o.material){{
+    model.traverse(o=>{
+      if (o.isMesh && o.material){
         const mats = Array.isArray(o.material) ? o.material : [o.material];
-        for(const m of mats){{
+        for(const m of mats){
           m.wireframe = (mode==='Wireframe');
-          if (mode==='X-Ray'){{
+          if (mode==='X-Ray'){
             m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.depthTest = true;
-          }} else if (mode==='Ghost'){{
+          } else if (mode==='Ghost'){
             m.transparent = true; m.opacity = 0.7; m.depthWrite = true; m.depthTest = true;
-          }} else {{
+          } else {
             m.transparent = false; m.opacity = 1.0; m.depthWrite = true; m.depthTest = true;
-          }}
+          }
           m.needsUpdate = true;
-        }}
-      }}
-    }});
-  }}
+        }
+      }
+    });
+  }
 
   // Camera presets
-  function viewIso(){{
+  function viewIso(){
     if (!model) return;
     const box = new THREE.Box3().setFromObject(model); if (box.isEmpty()) return;
     const c = box.getCenter(new THREE.Vector3());
@@ -451,80 +424,79 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     const az = Math.PI*0.25, el = Math.PI*0.2;
     const dir = new THREE.Vector3(Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)).multiplyScalar(d);
     camera.position.copy(c.clone().add(dir)); controls.target.copy(c); controls.update();
-  }}
-  function viewTop(){{
+  }
+  function viewTop(){
     if (!model) return;
     const b=new THREE.Box3().setFromObject(model); const c=b.getCenter(new THREE.Vector3()); const s=b.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
     camera.position.set(c.x, c.y + d, c.z); controls.target.copy(c); controls.update();
-  }}
-  function viewFront(){{
+  }
+  function viewFront(){
     if (!model) return;
     const b=new THREE.Box3().setFromObject(model); const c=b.getCenter(new THREE.Vector3()); const s=b.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
     camera.position.set(c.x, c.y, c.z + d); controls.target.copy(c); controls.update();
-  }}
-  function viewRight(){{
+  }
+  function viewRight(){
     if (!model) return;
     const b=new THREE.Box3().setFromObject(model); const c=b.getCenter(new THREE.Vector3()); const s=b.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
     camera.position.set(c.x + d, c.y, c.z); controls.target.copy(c); controls.update();
-  }}
+  }
 
   // Explode (auto-enable only if multiple groups exist)
-  let explodeTargets = []; // each: {{node, base:THREE.Vector3, dir:THREE.Vector3}}
-  function prepareExplodeVectors(){{
+  let explodeTargets = []; // each: {node, base:THREE.Vector3, dir:THREE.Vector3}
+  function prepareExplodeVectors(){
     explodeTargets = [];
     if (!model) return;
 
     // Collect top-level children that have geometry
     const children = [];
-    model.children.forEach(ch => {{
+    model.children.forEach(ch => {
       let hasGeom=false;
-      ch.traverse(o=>{{ if (o.isMesh && o.geometry) hasGeom=true; }});
+      ch.traverse(o=>{ if (o.isMesh && o.geometry) hasGeom=true; });
       if (hasGeom) children.push(ch);
-    }});
+    });
 
-    // If only one child or none, hide explode UI
     const explodeRow = document.getElementById('explodeRow');
-    if (children.length <= 1) {{
+    if (children.length <= 1) {
       explodeRow.style.display = 'none';
       return;
-    }} else {{
+    } else {
       explodeRow.style.display = '';
-    }}
+    }
 
     const rootBox = new THREE.Box3().setFromObject(model);
     const rootCenter = rootBox.getCenter(new THREE.Vector3());
 
-    children.forEach(ch => {{
+    children.forEach(ch => {
       const b = new THREE.Box3().setFromObject(ch);
-      if (!b.isEmpty()){{
+      if (!b.isEmpty()){
         const c = b.getCenter(new THREE.Vector3());
         const v = c.clone().sub(rootCenter);
         if (v.lengthSq() < 1e-10) v.set((Math.random()*2-1)*0.01,(Math.random()*2-1)*0.01,(Math.random()*2-1)*0.01);
         v.normalize();
         ch.userData.__explodeBase = ch.position.clone();
-        explodeTargets.push({{ node: ch, base: ch.userData.__explodeBase, dir: v }});
-      }}
-    }});
-  }}
-  function applyExplode(f){{
-    explodeTargets.forEach(t => {{
+        explodeTargets.push({ node: ch, base: ch.userData.__explodeBase, dir: v });
+      }
+    });
+  }
+  function applyExplode(f){
+    explodeTargets.forEach(t => {
       t.node.position.copy( t.base.clone().add( t.dir.clone().multiplyScalar(f * 0.6) ) );
-    }});
-  }}
+    });
+  }
 
   // Load GLB
   const loader = new THREE.GLTFLoader();
-  loader.parse(arrayBuffer, '', function(gltf){{
+  loader.parse(arrayBuffer, '', function(gltf){
     model = gltf.scene;
 
-    // Double-sided
-    model.traverse(function(node){{
-      if (node.isMesh && node.material){{
+    // Double-sided & shadows
+    model.traverse(function(node){
+      if (node.isMesh && node.material){
         if (Array.isArray(node.material)) node.material.forEach(mat => mat.side = THREE.DoubleSide);
         else node.material.side = THREE.DoubleSide;
         node.castShadow = true; node.receiveShadow = true;
-      }}
-    }});
+      }
+    });
 
     scene.add(model);
 
@@ -535,10 +507,10 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
 
     prepareExplodeVectors();
     fitAndCenter(model, 1.06);
-    updateSectionPlane();
-  }}, function(err) {{
+    updateSectionPlane(); // sets clipping, but not the frame
+  }, function(err) {
     console.error('GLB load error:', err);
-  }});
+  });
 
   // ====== UI wiring ======
   const toolsToggle = document.getElementById('toolsToggle');
@@ -548,8 +520,8 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   const explode     = document.getElementById('explode');
   const axisSel     = document.getElementById('axisSel');
   const secDist     = document.getElementById('secDist');
-  const secEnable   = document.getElementById('secEnable');
-  const secLinesChk = document.getElementById('secLines');
+  const secEnableEl = document.getElementById('secEnable');
+  const secFrameEl  = document.getElementById('secFrame');
   const vIso        = document.getElementById('vIso');
   const vTop        = document.getElementById('vTop');
   const vFront      = document.getElementById('vFront');
@@ -560,39 +532,47 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   const togGround   = document.getElementById('togGround');
   const togAxes     = document.getElementById('togAxes');
 
-  function setDock(open){{
+  function setDock(open){
     toolsDock.style.display = open ? 'block' : 'none';
     toolsToggle.textContent = open ? 'Close Tools' : 'Open Tools';
-  }}
-  toolsToggle.addEventListener('click', ()=>{{ buttonClicked(); setDock(toolsDock.style.display==='none'); }});
+  }
+  toolsToggle.addEventListener('click', ()=>{ buttonClicked(); setDock(toolsDock.style.display==='none'); });
 
-  fitBtn.addEventListener('click', ()=>{{ buttonClicked(); if (model) fitAndCenter(model, 1.06); }});
-  renderMode.addEventListener('change', ()=>{{ buttonClicked(); setRenderMode(renderMode.value); }});
-  explode.addEventListener('input', ()=>{{ applyExplode(Number(explode.value)); }});
-  axisSel.addEventListener('change', ()=>{{ buttonClicked(); secAxis = axisSel.value; updateSectionPlane(); }});
-  secDist.addEventListener('input', ()=>{{ updateSectionPlane(); }});
-  secEnable.addEventListener('change', ()=>{{ buttonClicked(); secEnabled = !!secEnable.checked; updateSectionPlane(); }});
-  secLinesChk.addEventListener('change', ()=>{{ buttonClicked(); secLines = !!secLinesChk.checked; updateSectionPlane(); }});
+  fitBtn.addEventListener('click', ()=>{ buttonClicked(); if (model) fitAndCenter(model, 1.06); });
+  renderMode.addEventListener('change', ()=>{ buttonClicked(); setRenderMode(renderMode.value); });
+  explode.addEventListener('input', ()=>{ applyExplode(Number(explode.value)); });
 
-  vIso.addEventListener('click', ()=>{{ buttonClicked(); viewIso(); }});
-  vTop.addEventListener('click', ()=>{{ buttonClicked(); viewTop(); }});
-  vFront.addEventListener('click', ()=>{{ buttonClicked(); viewFront(); }});
-  vRight.addEventListener('click', ()=>{{ buttonClicked(); viewRight(); }});
+  axisSel.addEventListener('change', ()=>{ buttonClicked(); secAxis = axisSel.value; updateSectionPlane(); });
+  secDist.addEventListener('input', ()=>{ updateSectionPlane(); }); // no frame flicker here
 
-  shot.addEventListener('click', ()=>{{
+  secEnableEl.addEventListener('change', ()=>{
     buttonClicked();
-    try {{
+    secEnabled = !!secEnableEl.checked;
+    updateSectionPlane();
+    updateFrameVisibility();  // frame toggled only on checkbox changes
+  });
+  secFrameEl.addEventListener('change', ()=>{
+    buttonClicked();
+    updateFrameVisibility();  // frame toggled only on checkbox changes
+  });
+
+  vIso.addEventListener('click', ()=>{ buttonClicked(); viewIso(); });
+  vTop.addEventListener('click', ()=>{ buttonClicked(); viewTop(); });
+  vFront.addEventListener('click', ()=>{ buttonClicked(); viewFront(); });
+  vRight.addEventListener('click', ()=>{ buttonClicked(); viewRight(); });
+
+  shot.addEventListener('click', ()=>{
+    buttonClicked();
+    try {
       const url = renderer.domElement.toDataURL('image/png');
       const a = document.createElement('a'); a.href=url; a.download='snapshot.png'; a.click();
-    }} catch(_){{
-      // ignore
-    }}
-  }});
+    } catch(_){}
+  });
 
-  projSel.addEventListener('change', ()=>{{
+  projSel.addEventListener('change', ()=>{
     buttonClicked();
     const w = wrap.clientWidth||1, h=wrap.clientHeight||1, asp = Math.max(1e-6, w/h);
-    if (projSel.value==='Orthographic' && camera.isPerspectiveCamera){{
+    if (projSel.value==='Orthographic' && camera.isPerspectiveCamera){
       const box = model ? new THREE.Box3().setFromObject(model) : null;
       const c = box && !box.isEmpty() ? box.getCenter(new THREE.Vector3()) : controls.target.clone();
       const size = box && !box.isEmpty() ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(2,2,2);
@@ -602,37 +582,39 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
       ortho.position.copy(camera.position); ortho.updateProjectionMatrix();
       controls.object = ortho; camera = ortho;
       controls.target.copy(c); controls.update();
-    }} else if (projSel.value==='Perspective' && camera.isOrthographicCamera){{
+    } else if (projSel.value==='Perspective' && camera.isOrthographicCamera){
       persp.aspect = asp; persp.updateProjectionMatrix();
       persp.position.copy(camera.position);
       controls.object = persp; camera = persp;
       controls.update();
-    }}
-  }});
+    }
+  });
 
-  togGrid.addEventListener('change', ()=>{{ buttonClicked(); grid.visible = !!togGrid.checked; }});
-  togGround.addEventListener('change', ()=>{{ buttonClicked(); ground.visible = !!togGround.checked; dirLight.castShadow = !!togGround.checked; }});
-  togAxes.addEventListener('change', ()=>{{
+  togGrid.addEventListener('change', ()=>{ buttonClicked(); grid.visible = !!togGrid.checked; });
+  togGround.addEventListener('change', ()=>{ buttonClicked(); ground.visible = !!togGround.checked; dirLight.castShadow = !!togGround.checked; });
+  togAxes.addEventListener('change', ()=>{
     buttonClicked();
     axesHelper.visible = !!togAxes.checked;
-    if (model){{
+    if (model){
       const box = new THREE.Box3().setFromObject(model);
-      if (!box.isEmpty()){{
+      if (!box.isEmpty()){
         const c = box.getCenter(new THREE.Vector3());
         const s = box.getSize(new THREE.Vector3());
         sizeAxesHelper(Math.max(s.x,s.y,s.z)||1, c);
-      }}
-    }}
-  }});
+      }
+    }
+  });
 
-  // Start with tools closed, section lines off
-  setDock(false); secLinesChk.checked = false;
+  // Initialize checkboxes and frame once (no flicker)
+  secEnableEl.checked = false;
+  secFrameEl.checked = true;  // default to show frame when section is enabled
+  updateFrameVisibility();
 
   // Animate
-  (function animate(){{
+  (function animate(){
     requestAnimationFrame(animate);
     controls.update(); renderer.render(scene, camera);
-  }})();
+  })();
   </script>
 </body>
 </html>
