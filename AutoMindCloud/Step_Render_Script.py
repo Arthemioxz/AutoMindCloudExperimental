@@ -24,14 +24,12 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     STEP -> GLB -> scaled viewer (white bg). Features:
       - Render modes: Solid / Wireframe / X-Ray / Ghost
       - Explode slider (auto-hidden if single-part)
-      - Section plane (X/Y/Z + distance)
-      - Small teal frame overlay (no lines) — steady (no flicker)
-      - Optional translucent teal fill to “see” the section area
+      - Section plane (X/Y/Z + distance) [sin overlays, sin 'Show slice frame/fill']
       - Camera presets: Iso / Top / Front / Right
       - Perspective <-> Orthographic toggle
       - Grid, Ground (soft shadows), Axes toggles
       - Fit to view & Snapshot
-      - Click sound: plays your ORIGINAL audio unmodified (if provided)
+      - Click sound: reproduce TU audio base64 exactamente (si se pasa)
     """
     output_step = Step_Name + ".step"
     output_glb = Step_Name + ".glb"
@@ -53,14 +51,13 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     with open(output_glb_scaled, "rb") as f:
         glb_base64 = base64.b64encode(f.read()).decode("utf-8")
 
-    # If you pass a sound, we’ll play it EXACTLY as-is (no pitch/volume changes).
+    # Audio: obligatoriamente en base64 si quieres sonido (no alteramos nada)
     click_data_url = (
         "data:audio/mpeg;base64," + click_sound_b64
         if (isinstance(click_sound_b64, str) and len(click_sound_b64) > 0)
-        else ""  # no sound if none provided
+        else ""  # sin sonido si no pasas base64
     )
 
-    # HTML (placeholders; no f-strings inside the block)
     html_template = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -73,7 +70,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     --teal: #0ea5a6;
     --teal-faint: rgba(20,184,185,0.12);
     --bgPanel: #ffffff;
-    --bgCanvas: #ffffff; /* pure white background */
+    --bgCanvas: #ffffff; /* fondo blanco puro */
     --stroke: #d7e7e7;
     --text: #0b3b3c;
     --textMuted: #577e7f;
@@ -116,19 +113,6 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   .tog { display: flex; align-items: center; gap: 8px; cursor: pointer; }
   .tog input[type="checkbox"] { accent-color: var(--teal); }
 
-  /* Small, steady teal frame & optional fill (no lines, no flicker) */
-  #splitFrame {
-    position: absolute; left: 12px; top: 12px; right: 12px; bottom: 12px;
-    border: 2px solid var(--teal); border-radius: 10px; box-sizing: border-box;
-    pointer-events: none; display: none; z-index: 10;
-  }
-  #sliceFill {
-    position: absolute; left: 12px; top: 12px; right: 12px; bottom: 12px;
-    background: rgba(14,165,166,0.06);
-    border-radius: 10px;
-    pointer-events: none; display: none; z-index: 9;
-  }
-
   .badge {
     position: absolute; bottom: 12px; right: 14px; z-index: 12;
     user-select: none; pointer-events: none;
@@ -138,9 +122,6 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
 </head>
 <body>
   <div id="wrap">
-    <div id="sliceFill"></div>
-    <div id="splitFrame"></div>
-
     <button id="toolsToggle" class="tbtn">Open Tools</button>
     <div id="toolsDock">
       <div class="dockHeader">
@@ -175,12 +156,6 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
         </div>
         <div class="row">
           <label class="tog"><input id="secEnable" type="checkbox" /> Enable section</label>
-        </div>
-        <div class="row">
-          <label class="tog"><input id="secFrame" type="checkbox" checked /> Show slice frame</label>
-        </div>
-        <div class="row">
-          <label class="tog"><input id="secFill" type="checkbox" /> Show slice fill</label>
         </div>
 
         <div class="row">
@@ -218,39 +193,53 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
 
   <script>
-  // ====== Click audio: ORIGINAL sound only if provided ======
-  // We do NOT change pitch, volume, or playbackRate. We only start it.
-  const CLICK_URL = "__CLICK_URL__";
-  let audioPool = [];
-  let poolIdx = 0;
+  // ====== Click audio: usa tu base64 tal cual ======
+  const CLICK_URL = "__CLICK_URL__";  // data:audio/...;base64,XXXX
+  let baseAudio = null;
+  let audioUnlocked = false;
 
-  function initAudioPool(){
-    // build a small pool so clicks can overlap; we don't touch volume/pitch
-    const N = 6;
-    for (let i=0;i<N;i++){
-      const a = new Audio(CLICK_URL);
-      // do not set volume/loop/playbackRate — preserve original
-      a.preload = 'auto';
-      audioPool.push(a);
+  function ensureBaseAudio(){
+    if (!CLICK_URL) return false;
+    if (!baseAudio){
+      baseAudio = new Audio(CLICK_URL);
+      baseAudio.preload = 'auto'; // no tocamos volume/loop/playbackRate
     }
+    return true;
   }
 
-  function buttonClicked(){
-    if (!CLICK_URL) return; // no sound if none provided
-    if (audioPool.length === 0) initAudioPool();
+  // Desbloqueo para iOS/Safari/Chrome (primera interacción del usuario)
+  function unlockAudioOnce(){
+    if (audioUnlocked) return;
+    if (!ensureBaseAudio()) return;
     try {
-      const a = audioPool[poolIdx];
-      poolIdx = (poolIdx + 1) % audioPool.length;
-      a.currentTime = 0;   // restart from the beginning (doesn't alter sound characteristics)
+      const p = baseAudio.play();
+      if (p && p.then){
+        p.then(()=>{
+          baseAudio.pause();
+          baseAudio.currentTime = 0;
+          audioUnlocked = true;
+        }).catch(()=>{ /* reintenta en el siguiente click */ });
+      } else {
+        audioUnlocked = true;
+      }
+    } catch(e) { /* ignore */ }
+  }
+  window.addEventListener('pointerdown', unlockAudioOnce, { once:true, passive:true });
+
+  function buttonClicked(){
+    if (!CLICK_URL) return;       // sin sonido si no pasas base64
+    if (!audioUnlocked) unlockAudioOnce();
+    if (!ensureBaseAudio()) return;
+    try {
+      // clone por click para superponer; no alteramos propiedades del audio
+      const a = baseAudio.cloneNode(true);
       const p = a.play();
       if (p && p.catch) p.catch(()=>{});
     } catch(e) {}
   }
 
-  // ====== Scene (white bg) ======
+  // ====== Escena (fondo blanco) ======
   const wrap = document.getElementById('wrap');
-  const splitFrame = document.getElementById('splitFrame');
-  const sliceFill  = document.getElementById('sliceFill');
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xffffff);
@@ -273,7 +262,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true; controls.dampingFactor = 0.08;
 
-  // Lights
+  // Luces
   const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.7);
   const dirLight = new THREE.DirectionalLight(0xffffff, 1.05);
   dirLight.position.set(3,4,2);
@@ -303,7 +292,6 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     if (camera.isPerspectiveCamera){ camera.aspect = asp; }
     else { const s = orthoSize; camera.left=-s*asp; camera.right=s*asp; camera.top=s; camera.bottom=-s; }
     camera.updateProjectionMatrix(); renderer.setSize(w,h);
-    // overlays are unaffected -> no flicker
   }
   window.addEventListener('resize', onResize);
 
@@ -322,15 +310,6 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   let sectionPlane = null;
   let secAxis = 'X';
   let secEnabled = false;
-
-  function applyOverlayVisibility(){
-    // Toggled ONLY on checkbox changes (not slider) => no palpitations
-    const on = document.getElementById('secEnable').checked;
-    const showFrame = document.getElementById('secFrame').checked;
-    const showFill  = document.getElementById('secFill').checked;
-    splitFrame.style.display = (on && showFrame) ? 'block' : 'none';
-    sliceFill.style.display  = (on && showFill ) ? 'block' : 'none';
-  }
 
   function updateSectionPlane(){
     renderer.clippingPlanes = [];
@@ -490,8 +469,6 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   const axisSel     = document.getElementById('axisSel');
   const secDist     = document.getElementById('secDist');
   const secEnableEl = document.getElementById('secEnable');
-  const secFrameEl  = document.getElementById('secFrame');
-  const secFillEl   = document.getElementById('secFill');
   const vIso        = document.getElementById('vIso');
   const vTop        = document.getElementById('vTop');
   const vFront      = document.getElementById('vFront');
@@ -519,10 +496,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     buttonClicked();
     secEnabled = !!secEnableEl.checked;
     updateSectionPlane();
-    applyOverlayVisibility();   // toggled only on checkbox changes (no flicker)
   });
-  secFrameEl.addEventListener('change', ()=>{ buttonClicked(); applyOverlayVisibility(); });
-  secFillEl.addEventListener('change', ()=>{ buttonClicked(); applyOverlayVisibility(); });
 
   vIso.addEventListener('click', ()=>{ buttonClicked(); viewIso(); });
   vTop.addEventListener('click', ()=>{ buttonClicked(); viewTop(); });
@@ -555,14 +529,11 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     }
   });
 
-  // Initial UI state
+  // Estado inicial
   setDock(false);
   secEnableEl.checked = false;
-  secFrameEl.checked  = true;   // frame default ON when section enabled
-  secFillEl.checked   = false;  // fill default OFF (toggle if you want)
-  applyOverlayVisibility();
 
-  // Animate
+  // Animación
   (function animate(){
     requestAnimationFrame(animate);
     controls.update(); renderer.render(scene, camera);
@@ -586,6 +557,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     with open(html_name, "r") as f:
         html = f.read()
     display(HTML(html))
+
 
 
 
