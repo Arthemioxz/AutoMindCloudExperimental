@@ -1,12 +1,20 @@
+<script>
 /* urdf_viewer_separated.js - teal/white UI + "Autodesk-like" tools
    Adds:
      - Render modes: Solid / Wireframe / X-Ray / Ghost
      - Explode slider (per-link radial offset)
-     - Section plane (X/Y/Z axis + distance)
+     - Section plane (X/Y/Z axis + distance) + NEW thickness
      - Camera presets: Iso / Top / Front / Right
      - Perspective <-> Orthographic toggle
      - Grid + Ground + Soft shadows
      - Fit to view & Snapshot
+     - NEW Edges overlay
+     - NEW Axes gizmo (compass)
+     - NEW Turntable toggle + speed
+     - NEW Measure tool (2 clicks) + Clear
+     - NEW Reset joints
+     - NEW Camera Save / Load
+     - NEW Lighting intensity + ACES exposure
    Keeps:
      - Hover aura (configurable)
      - Stable, throttled hover
@@ -250,6 +258,7 @@
     try{ state?.renderer?.dispose?.(); }catch(_){}
     try{ state?.ui?.root && state.ui.root.remove(); }catch(_){}
     try{ state?.off?.renderer?.dispose?.(); }catch(_){}
+    try{ state?.axes?.renderer?.dispose?.(); }catch(_){}
     state=null;
   };
 
@@ -289,6 +298,11 @@
     renderer.domElement.style.position = 'relative';
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    // NEW: ACES tone mapping + exposure control
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+
     container.appendChild(renderer.domElement);
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
@@ -326,6 +340,8 @@
       }
       camera.updateProjectionMatrix();
       renderer.setSize(w,h);
+      // NEW: gizmo resize
+      resizeAxesGizmo();
     }
 
     // Loaders + meshDB
@@ -349,6 +365,8 @@
         if (pendingMeshes===0 && api.robotModel){
           rectifyUpForward(api.robotModel);
           fitAndCenter(camera, controls, api.robotModel);
+          // NEW: after fit, build edges if toggled
+          if (state.ui?.togEdges?.cb?.checked) rebuildEdgesOverlay();
         }
       },80);
     }
@@ -670,7 +688,7 @@
       // === Tools Dock (top-right) ===
       const dock = document.createElement('div');
       Object.assign(dock.style,{
-        position:'absolute', right:'14px', top:'14px', width:'440px',
+        position:'absolute', right:'14px', top:'14px', width:'460px',
         background: THEME.bgPanel, border:`1px solid ${THEME.stroke}`,
         borderRadius:'18px', boxShadow: THEME.shadow, pointerEvents:'auto', overflow:'hidden'
       });
@@ -691,19 +709,22 @@
       const explodeSlider = mkSlider(0, 1, 0.01, 0);
       dockBody.appendChild(mkRow('Explode', explodeSlider));
 
-      // Section plane
+      // Section plane + NEW thickness
       const axisSel = mkSelect(['X','Y','Z'], 'X');
       const secDist = mkSlider(-1, 1, 0.001, 0);
+      const secThick = mkSlider(0, 0.5, 0.001, 0); // NEW
       const secToggle = mkTealToggle('Enable section');
       dockBody.appendChild(mkRow('Section axis', axisSel));
       dockBody.appendChild(mkRow('Section dist', secDist));
+      dockBody.appendChild(mkRow('Slice thickness', secThick)); // NEW
       dockBody.appendChild(mkRow('', secToggle.wrap));
 
       // Camera block
-      const rowCam = document.createElement('div'); Object.assign(rowCam.style,{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:'8px', margin:'8px 0'});
+      const rowCam = document.createElement('div'); Object.assign(rowCam.style,{display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:'8px', margin:'8px 0'});
       const bIso = mkTealButton('Iso'), bTop = mkTealButton('Top'), bFront= mkTealButton('Front'), bRight = mkTealButton('Right'), bSnap = mkTealButton('Snapshot');
-      [bIso,bTop,bFront,bRight,bSnap].forEach(b=>{ b.style.padding='8px'; b.style.borderRadius='10px'; });
-      rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight); rowCam.appendChild(bSnap);
+      const bSaveCam = mkTealButton('Save'); const bLoadCam = mkTealButton('Load'); // NEW
+      [bIso,bTop,bFront,bRight,bSnap,bSaveCam,bLoadCam].forEach(b=>{ b.style.padding='8px'; b.style.borderRadius='10px'; });
+      rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight); rowCam.appendChild(bSnap); rowCam.appendChild(bSaveCam); rowCam.appendChild(bLoadCam);
       dockBody.appendChild(mkRow('Views', rowCam));
 
       // Projection + helpers
@@ -712,9 +733,38 @@
       togGrid.cb.checked = true;
       const togGround = mkTealToggle('Ground & shadows');
       togGround.cb.checked = true;
+      const togEdges = mkTealToggle('Edges'); // NEW
+      const togAxes = mkTealToggle('Axes gizmo'); togAxes.cb.checked = true; // NEW
       dockBody.appendChild(mkRow('Projection', projSel));
       dockBody.appendChild(mkRow('', togGrid.wrap));
       dockBody.appendChild(mkRow('', togGround.wrap));
+      dockBody.appendChild(mkRow('', togEdges.wrap)); // NEW
+      dockBody.appendChild(mkRow('', togAxes.wrap)); // NEW
+
+      // Lighting & exposure (NEW)
+      const lightInt = mkSlider(0, 2, 0.01, 1.05);
+      const hemiInt  = mkSlider(0, 2, 0.01, 0.7);
+      const exposure = mkSlider(0.1, 2.5, 0.01, 1.0);
+      dockBody.appendChild(mkRow('Dir light', lightInt));
+      dockBody.appendChild(mkRow('Hemi light', hemiInt));
+      dockBody.appendChild(mkRow('Exposure', exposure));
+
+      // Turntable + speed (NEW)
+      const togTurn = mkTealToggle('Turntable');
+      const turnSpeed = mkSlider(-2, 2, 0.01, 0.3);
+      dockBody.appendChild(mkRow('', togTurn.wrap));
+      dockBody.appendChild(mkRow('Speed (rpm)', turnSpeed));
+
+      // Measure tool (NEW)
+      const togMeasure = mkTealToggle('Measure (2 clicks)');
+      const bClearMeas = mkTealButton('Clear');
+      const measRow = document.createElement('div'); Object.assign(measRow.style,{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px'});
+      measRow.appendChild(togMeasure.wrap); measRow.appendChild(bClearMeas);
+      dockBody.appendChild(mkRow('Measure', measRow));
+
+      // Joints (NEW)
+      const bResetJoints = mkTealButton('Reset joints');
+      dockBody.appendChild(mkRow('Joints', bResetJoints));
 
       // Assemble dock
       dock.appendChild(dockHeader); dock.appendChild(dockBody);
@@ -730,9 +780,13 @@
         // components
         btn: compBtn, panel: compPanel, list: compList, showAllBtn,
         // tools
-        fitBtn, renderMode, explodeSlider, axisSel, secDist, secToggle,
-        bIso, bTop, bFront, bRight, bSnap,
-        projSel, togGrid, togGround,
+        fitBtn, renderMode, explodeSlider, axisSel, secDist, secThick, secToggle,
+        bIso, bTop, bFront, bRight, bSnap, bSaveCam, bLoadCam,
+        projSel, togGrid, togGround, togEdges, togAxes,
+        lightInt, hemiInt, exposure,
+        togTurn, turnSpeed,
+        togMeasure, bClearMeas,
+        bResetJoints,
         dock
       };
     }
@@ -819,6 +873,7 @@
     function loadURDF(urdfText){
       if (api.robotModel){ scene.remove(api.robotModel); api.robotModel=null; }
       if (state.off){ try{ state.off.renderer.dispose(); }catch(_){} state.off=null; }
+      clearEdgesOverlay();
 
       try{
         const robot = urdfLoader.parse(urdfText||'');
@@ -829,6 +884,7 @@
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
           state.off = buildOffscreenFromRobot();
           prepareExplodeVectors();
+          if (state.ui?.togEdges?.cb?.checked) rebuildEdgesOverlay();
         }
       } catch(_e){}
     }
@@ -872,11 +928,12 @@
     // ===========
     //  Section
     // ===========
-    let sectionPlane = null;
+    let sectionPlanes = []; // NEW (two planes for thickness)
     let secAxis = 'X';   // 'X' | 'Y' | 'Z'
     let secEnabled = false;
     function updateSectionPlane(){
       renderer.clippingPlanes = [];
+      sectionPlanes = [];
       if (!secEnabled || !api.robotModel) { renderer.localClippingEnabled=false; return; }
       const n = new THREE.Vector3(
         secAxis==='X'?1:0,
@@ -890,10 +947,22 @@
       const maxDim = Math.max(size.x,size.y,size.z)||1;
       const center = box.getCenter(new THREE.Vector3());
       const dist = (Number(state.ui.secDist.value) || 0) * maxDim * 0.5;
-      const plane = new THREE.Plane(n, -center.dot(n) - dist); // n·x + d = 0
+
+      // NEW: thickness
+      const thick = (Number(state.ui.secThick.value) || 0) * maxDim;
+      const half = thick * 0.5;
+
+      // plane eq: n·x + d = 0  => pass through center+offset along n
+      const d0 = -center.dot(n) - dist;
+      const d1 = d0 - half;
+      const d2 = d0 + half;
+
+      const p1 = new THREE.Plane(n.clone(), d1);
+      const p2 = new THREE.Plane(n.clone().negate(), -d2); // opposing plane
+
       renderer.localClippingEnabled = true;
-      renderer.clippingPlanes = [ plane ];
-      sectionPlane = plane;
+      renderer.clippingPlanes = [ p1, p2 ];
+      sectionPlanes = [ p1, p2 ];
     }
 
     // ===========
@@ -1074,8 +1143,9 @@
         lastHoverKey = newKey;
       }
 
+      // cursor feedback if joint
       const joint = meshHit ? findAncestorJoint(meshHit) : null;
-      renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
+      renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : (measureMode.active ? 'crosshair' : 'auto');
     }
 
     function onPointerMove(e){
@@ -1086,12 +1156,14 @@
       } else {
         scheduleHover();
       }
+      if (measureMode.active) updateMeasureLabelScreenPos();
     }
-
     function onPointerDown(e){
       e.preventDefault();
       if (!api.robotModel || e.button!==0) return;
       getPointer(e);
+      if (measureMode.active){ handleMeasureClick(e); return; }
+
       raycaster.setFromCamera(pointer, camera);
       const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
       const hits = raycaster.intersectObjects(pickables, true);
@@ -1107,16 +1179,178 @@
     renderer.domElement.addEventListener('pointercancel', endJointDrag);
 
     // Public state holder
-    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
+    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null, axes:null };
 
-    // Build UI
+    // ======== NEW: Edges overlay (per mesh) ========
+    const edgesGroup = new THREE.Group(); edgesGroup.visible = false; scene.add(edgesGroup);
+    function clearEdgesOverlay(){
+      while (edgesGroup.children.length) edgesGroup.remove(edgesGroup.children[0]);
+    }
+    function rebuildEdgesOverlay(){
+      clearEdgesOverlay();
+      if (!api.robotModel) return;
+      const color = new THREE.Color('#0b3b3c');
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry && o.visible){
+          try{
+            const eg = new THREE.EdgesGeometry(o.geometry, 30); // thresholdAngle
+            const mat = new THREE.LineBasicMaterial({ color, linewidth: 1 });
+            const lines = new THREE.LineSegments(eg, mat);
+            lines.matrixAutoUpdate = false;
+            lines.applyMatrix4(o.matrixWorld);
+            edgesGroup.add(lines);
+          }catch(_){}
+        }
+      });
+    }
+
+    // ======== NEW: Axes gizmo ========
+    const gizmo = { size: 96, margin: 12, scene: null, camera: null, renderer: null, el: null, axes: null };
+    function buildAxesGizmo(){
+      const s = gizmo.size;
+      const c = document.createElement('canvas'); // we will use WebGLRenderer with canvas target
+      c.width = s; c.height = s;
+      Object.assign(c.style, {
+        position:'absolute',
+        right: (14 + gizmo.margin)+'px',
+        bottom: (14 + gizmo.margin)+'px',
+        width: s+'px', height: s+'px',
+        border: `1px solid ${THEME.stroke}`,
+        background: '#ffffff',
+        borderRadius: '12px',
+        boxShadow: THEME.shadow,
+        pointerEvents:'none'
+      });
+
+      const r = new THREE.WebGLRenderer({ canvas: c, antialias:true, alpha: true });
+      r.setSize(s, s, false);
+
+      const sc = new THREE.Scene();
+      const cam = new THREE.PerspectiveCamera(40, 1, 0.01, 100);
+      cam.position.set(0,0,3);
+
+      const axes = new THREE.AxesHelper(1.0);
+      sc.add(axes);
+
+      gizmo.scene = sc; gizmo.camera = cam; gizmo.renderer = r; gizmo.el = c; gizmo.axes = axes;
+      state.axes = { renderer: r, scene: sc, camera: cam, el: c };
+      container.appendChild(c);
+    }
+    function resizeAxesGizmo(){
+      if (!state.axes) return;
+      const s = gizmo.size;
+      state.axes.renderer.setSize(s,s,false);
+    }
+    buildAxesGizmo();
+
+    function updateAxesGizmo(){
+      if (!state.axes || !api.robotModel) return;
+      // copy camera orientation (inverse)
+      const q = camera.quaternion.clone();
+      // keep gizmo camera looking at origin but rotated like main camera
+      state.axes.camera.position.set(0,0,3);
+      state.axes.camera.quaternion.copy(q);
+      state.axes.camera.updateMatrixWorld(true);
+      state.axes.renderer.render(gizmo.scene, gizmo.camera);
+      // show/hide by toggle
+      state.axes.el.style.display = state.ui?.togAxes?.cb?.checked ? 'block' : 'none';
+    }
+
+    // ======== NEW: Measure tool ========
+    const measureMode = {
+      active: false,
+      p1: null, p2: null,
+      line: null,
+      label: null
+    };
+    function worldToScreen(vec3){
+      const v = vec3.clone().project(camera);
+      const w = renderer.domElement.clientWidth;
+      const h = renderer.domElement.clientHeight;
+      return { x: (v.x*0.5+0.5)*w, y: (-v.y*0.5+0.5)*h };
+    }
+    function ensureMeasureLabel(){
+      if (measureMode.label) return measureMode.label;
+      const div = document.createElement('div');
+      Object.assign(div.style, {
+        position:'absolute',
+        padding:'6px 8px',
+        background:'#ffffff',
+        border:`1px solid ${THEME.stroke}`,
+        borderRadius:'10px',
+        color:THEME.text,
+        fontWeight:'700',
+        fontSize:'12px',
+        pointerEvents:'none',
+        boxShadow: THEME.shadow
+      });
+      div.textContent = '';
+      state.ui.root.appendChild(div);
+      measureMode.label = div;
+      return div;
+    }
+    function updateMeasureVisual(){
+      if (!measureMode.p1 || !measureMode.p2) return;
+      if (!measureMode.line){
+        const geom = new THREE.BufferGeometry().setFromPoints([measureMode.p1, measureMode.p2]);
+        const mat = new THREE.LineBasicMaterial({ color: 0x0ea5a6 });
+        measureMode.line = new THREE.Line(geom, mat);
+        scene.add(measureMode.line);
+      } else {
+        const pos = measureMode.line.geometry.attributes.position;
+        pos.setXYZ(0, measureMode.p1.x, measureMode.p1.y, measureMode.p1.z);
+        pos.setXYZ(1, measureMode.p2.x, measureMode.p2.y, measureMode.p2.z);
+        pos.needsUpdate = true;
+        measureMode.line.geometry.computeBoundingSphere?.();
+      }
+      const mid = measureMode.p1.clone().add(measureMode.p2).multiplyScalar(0.5);
+      const scr = worldToScreen(mid);
+      const L = ensureMeasureLabel();
+      const dist = measureMode.p1.distanceTo(measureMode.p2); // meters-ish
+      L.textContent = `${dist.toFixed(3)} m`;
+      L.style.left = (scr.x + 8) + 'px';
+      L.style.top  = (scr.y - 8) + 'px';
+      L.style.display = 'block';
+    }
+    function updateMeasureLabelScreenPos(){
+      if (!measureMode.p1 || !measureMode.p2 || !measureMode.label) return;
+      const mid = measureMode.p1.clone().add(measureMode.p2).multiplyScalar(0.5);
+      const scr = worldToScreen(mid);
+      measureMode.label.style.left = (scr.x + 8) + 'px';
+      measureMode.label.style.top  = (scr.y - 8) + 'px';
+    }
+    function clearMeasure(){
+      measureMode.p1 = measureMode.p2 = null;
+      if (measureMode.line){ scene.remove(measureMode.line); measureMode.line.geometry.dispose(); measureMode.line.material.dispose(); measureMode.line=null; }
+      if (measureMode.label){ measureMode.label.remove(); measureMode.label=null; }
+    }
+    function handleMeasureClick(e){
+      raycaster.setFromCamera(pointer, camera);
+      const pickables=[]; api.robotModel?.traverse(o=>{ if (o.isMesh && o.geometry && o.visible) pickables.push(o); });
+      const hits = raycaster.intersectObjects(pickables, true);
+      if (!hits.length) return;
+      const hit = hits[0];
+      const p = hit.point.clone();
+      if (!measureMode.p1){ measureMode.p1 = p; measureMode.p2 = null; }
+      else if (!measureMode.p2){ measureMode.p2 = p; updateMeasureVisual(); }
+      else { // start new
+        clearMeasure(); measureMode.p1 = p; measureMode.p2 = null;
+      }
+    }
+
+    // ==== UI construction
     state.ui = createUI();
 
-    // ==== UI Interactions ====
+    // ==== UI Interactions
     (function attachUIInteractions(){
       const { btn, panel, list, showAllBtn,
-              fitBtn, renderMode, explodeSlider, axisSel, secDist, secToggle,
-              bIso, bTop, bFront, bRight, bSnap, projSel, togGrid, togGround } = state.ui;
+              fitBtn, renderMode, explodeSlider, axisSel, secDist, secThick, secToggle,
+              bIso, bTop, bFront, bRight, bSnap, bSaveCam, bLoadCam,
+              projSel, togGrid, togGround, togEdges, togAxes,
+              lightInt, hemiInt, exposure,
+              togTurn, turnSpeed,
+              togMeasure, bClearMeas,
+              bResetJoints } = state.ui;
 
       let builtOnce = false;
 
@@ -1152,9 +1386,10 @@
       // Explode
       explodeSlider.addEventListener('input', ()=>{ applyExplode(Number(explodeSlider.value)); });
 
-      // Section
+      // Section (+ thickness)
       axisSel.addEventListener('change', ()=>{ buttonClicked(); secAxis = axisSel.value; updateSectionPlane(); });
       secDist.addEventListener('input', ()=>{ updateSectionPlane(); });
+      secThick.addEventListener('input', ()=>{ updateSectionPlane(); });
       secToggle.cb.addEventListener('change', ()=>{ buttonClicked(); secEnabled = !!secToggle.cb.checked; updateSectionPlane(); });
 
       // Views
@@ -1172,10 +1407,42 @@
         }catch(_e){}
       });
 
+      // Camera save/load (single slot)
+      let savedCam = null;
+      bSaveCam.addEventListener('click', ()=>{
+        buttonClicked();
+        savedCam = {
+          isPersp: camera.isPerspectiveCamera,
+          pos: camera.position.clone(),
+          target: controls.target.clone(),
+        };
+      });
+      bLoadCam.addEventListener('click', ()=>{
+        buttonClicked();
+        if (!savedCam) return;
+        const w = container.clientWidth||1, h=container.clientHeight||1, asp = Math.max(1e-6, w/h);
+        if (savedCam.isPersp && !camera.isPerspectiveCamera){
+          persp.aspect = asp; persp.updateProjectionMatrix();
+          persp.position.copy(savedCam.pos);
+          controls.object = persp; camera = persp;
+        } else if (!savedCam.isPersp && camera.isPerspectiveCamera){
+          const box = api.robotModel ? new THREE.Box3().setFromObject(api.robotModel) : null;
+          const size = box && !box.isEmpty() ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(2,2,2);
+          const maxDim = Math.max(size.x,size.y,size.z)||1;
+          ortho.left=-maxDim*asp; ortho.right=maxDim*asp; ortho.top=maxDim; ortho.bottom=-maxDim;
+          ortho.near=Math.max(maxDim/1000,0.001); ortho.far=Math.max(maxDim*1500,1500);
+          ortho.updateProjectionMatrix();
+          ortho.position.copy(savedCam.pos);
+          controls.object = ortho; camera = ortho;
+        } else {
+          camera.position.copy(savedCam.pos);
+        }
+        controls.target.copy(savedCam.target); controls.update();
+      });
+
       // Projection
       projSel.addEventListener('change', ()=>{
         buttonClicked();
-        // swap camera
         const wasPersp = camera.isPerspectiveCamera;
         const w = container.clientWidth||1, h=container.clientHeight||1, asp = Math.max(1e-6, w/h);
         if (projSel.value==='Orthographic' && wasPersp){
@@ -1200,12 +1467,65 @@
       togGrid.cb.addEventListener('change', ()=>{ buttonClicked(); grid.visible = !!togGrid.cb.checked; });
       togGround.cb.addEventListener('change', ()=>{ buttonClicked(); ground.visible = !!togGround.cb.checked; dirLight.castShadow = !!togGround.cb.checked; });
 
+      // NEW: edges toggle
+      togEdges.cb.addEventListener('change', ()=>{
+        buttonClicked();
+        edgesGroup.visible = !!togEdges.cb.checked;
+        if (edgesGroup.visible) rebuildEdgesOverlay();
+      });
+
+      // NEW: axes gizmo toggle handled in render loop (display style)
+
+      // NEW: lighting & exposure
+      lightInt.addEventListener('input', ()=>{ dirLight.intensity = Number(lightInt.value); });
+      hemiInt.addEventListener('input',  ()=>{ hemi.intensity     = Number(hemiInt.value); });
+      exposure.addEventListener('input', ()=>{ renderer.toneMappingExposure = Number(exposure.value); });
+
+      // NEW: turntable
+      togTurn.cb.addEventListener('change', ()=>{ buttonClicked(); });
+      turnSpeed.addEventListener('input', ()=>{ /* live changes */ });
+
+      // NEW: measure
+      togMeasure.cb.addEventListener('change', ()=>{
+        buttonClicked();
+        measureMode.active = !!togMeasure.cb.checked;
+        if (!measureMode.active) clearMeasure();
+      });
+      bClearMeas.addEventListener('click', ()=>{ buttonClicked(); clearMeasure(); });
+
+      // NEW: reset joints
+      bResetJoints.addEventListener('click', ()=>{
+        buttonClicked();
+        const joints = Object.values(api.robotModel?.joints||{});
+        for (const j of joints){
+          if (!isMovable(j)) continue;
+          const lim = j.limit || {};
+          let v = 0;
+          if (isPrismatic(j)){
+            if (typeof lim.lower==='number' && typeof lim.upper==='number') v = (lim.lower+lim.upper)/2;
+            else v = 0;
+          } else {
+            if (typeof lim.lower==='number' && typeof lim.upper==='number') v = (lim.lower+lim.upper)/2;
+            else v = 0;
+          }
+          setJointValue(api.robotModel, j, v);
+        }
+      });
     })();
 
     // Animate
     function animate(){
       state.raf = requestAnimationFrame(animate);
-      controls.update(); renderer.render(scene, camera);
+      // NEW: turntable rotate around Y
+      if (state.ui?.togTurn?.cb?.checked && api.robotModel){
+        const rpm = Number(state.ui.turnSpeed.value); // rev/min
+        const radPerSec = rpm * (2*Math.PI)/60;
+        api.robotModel.rotation.y += radPerSec * (1/60); // approx per-frame for 60fps
+      }
+      controls.update();
+      renderer.render(scene, camera);
+      // NEW: axes gizmo render
+      updateAxesGizmo();
     }
 
     loadURDF((opts && opts.urdfContent) || '');
@@ -1221,3 +1541,4 @@
 
   root.URDFViewer = URDFViewer;
 })(typeof window!=='undefined' ? window : this);
+</script>
