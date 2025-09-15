@@ -1,5 +1,7 @@
 /* urdf_viewer_separated.js - updated:
-   - Hover aura is now configurable: opts.hover {enabled,color,opacity,throttleMs}
+   - Teal/white Computer-Modern loading frame with live progress (percent + x/total)
+   - Shows the current digital asset being loaded (filename)
+   - Hover aura configurable: opts.hover {enabled,color,opacity,throttleMs}
    - Hover is stable and fast: caches last hover target, throttles pointermove
    - Keeps your single buttonClicked() handler wiring
 */
@@ -127,7 +129,7 @@
           depthTest:false,
           depthWrite:false,
           polygonOffset:true,
-          polygonOffsetFactor:-1, // helps avoid z-fighting on thin parts
+          polygonOffsetFactor:-1,
           polygonOffsetUnits:1
         })
       );
@@ -214,6 +216,7 @@
     try{ const el = state?.renderer?.domElement; el && el.parentNode && el.parentNode.removeChild(el); }catch(_){}
     try{ state?.renderer?.dispose?.(); }catch(_){}
     try{ state?.ui?.root && state.ui.root.remove(); }catch(_){}
+    try{ state?.loading?.root && state.loading.root.remove(); }catch(_){}
     try{ state?.off?.renderer?.dispose?.(); }catch(_){}
     state=null;
   };
@@ -231,6 +234,17 @@
     const bg = (opts && opts.background!==undefined) ? opts.background : 0xf0f0f0;
     const descriptions = (opts && opts.descriptions) || {};
     const hoverCfg = Object.assign({enabled:true, color:0x9e9e9e, opacity:0.35, throttleMs:16}, (opts && opts.hover)||{});
+
+    // Inject Computer Modern–style font (Computer Modern via CDN) once
+    (function ensureFont(){
+      if (!document.getElementById('cm-font-link')){
+        const l = document.createElement('link');
+        l.id = 'cm-font-link';
+        l.rel = 'stylesheet';
+        l.href = 'https://fonts.cdnfonts.com/css/computer-modern'; // fallback serif if blocked
+        document.head.appendChild(l);
+      }
+    })();
 
     const scene = new THREE.Scene();
     if (bg!=null) scene.background = new THREE.Color(bg);
@@ -266,6 +280,11 @@
       camera.aspect = Math.max(1e-6, w/h);
       camera.updateProjectionMatrix();
       renderer.setSize(w,h);
+      // keep loading frame centered/responsive
+      if (state?.loading?.root){
+        state.loading.root.style.width = `${w}px`;
+        state.loading.root.style.height = `${h}px`;
+      }
     }
 
     const urdfLoader = new URDFLoader();
@@ -282,6 +301,172 @@
 
     const assetToMeshes = new Map();
 
+    // ===== Loading Frame UI (white & teal, Computer Modern) =====
+    function createLoadingFrame(){
+      const root = document.createElement('div');
+      Object.assign(root.style, {
+        position: 'absolute',
+        left: '0', top: '0',
+        width: '100%',
+        height: '100%',
+        display: 'grid',
+        placeItems: 'center',
+        background: 'linear-gradient(180deg, rgba(20,184,166,0.06), rgba(20,184,166,0.02))',
+        pointerEvents: 'none',
+        zIndex: 10000,
+        fontFamily: '"Computer Modern", "Latin Modern Roman", "Times New Roman", serif'
+      });
+
+      const card = document.createElement('div');
+      Object.assign(card.style, {
+        width: 'min(520px, 86vw)',
+        padding: '22px 24px',
+        background: '#ffffff',
+        borderRadius: '18px',
+        border: '1.5px solid #14b8a6',
+        boxShadow: '0 18px 60px rgba(20,184,166,0.18), 0 6px 16px rgba(0,0,0,0.06)',
+        pointerEvents: 'auto'
+      });
+
+      const title = document.createElement('div');
+      title.textContent = 'Loading assets…';
+      Object.assign(title.style, {
+        fontSize: '22px',
+        fontWeight: '700',
+        color: '#0f766e', // darker teal
+        letterSpacing: '0.2px',
+        marginBottom: '12px'
+      });
+
+      const sub = document.createElement('div');
+      sub.textContent = 'Preparing the URDF Viewer';
+      Object.assign(sub.style, {
+        fontSize: '14px',
+        color: '#155e59',
+        marginBottom: '14px'
+      });
+
+      // progress wrapper
+      const barWrap = document.createElement('div');
+      Object.assign(barWrap.style, {
+        width: '100%',
+        height: '12px',
+        borderRadius: '999px',
+        background: '#ecfdf5',
+        border: '1px solid #ccfbf1',
+        overflow: 'hidden',
+        marginBottom: '10px'
+      });
+
+      const bar = document.createElement('div');
+      Object.assign(bar.style, {
+        width: '0%',
+        height: '100%',
+        background: 'linear-gradient(90deg, #14b8a6, #2dd4bf)',
+        transition: 'width 160ms ease-out'
+      });
+      barWrap.appendChild(bar);
+
+      // percent + fraction line
+      const line = document.createElement('div');
+      Object.assign(line.style, {
+        display: 'flex',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        marginTop: '2px',
+        marginBottom: '6px'
+      });
+
+      const percent = document.createElement('div');
+      percent.textContent = '0%';
+      Object.assign(percent.style, { fontSize: '18px', fontWeight: '700', color: '#0f766e' });
+
+      const frac = document.createElement('div');
+      frac.textContent = '0 / 0';
+      Object.assign(frac.style, { fontSize: '14px', color: '#0f766e' });
+
+      line.appendChild(percent);
+      line.appendChild(frac);
+
+      // current asset marquee-ish row
+      const assetRow = document.createElement('div');
+      Object.assign(assetRow.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        fontSize: '13px',
+        color: '#115e59',
+        borderTop: '1px dashed #99f6e4',
+        paddingTop: '10px'
+      });
+
+      const dot = document.createElement('div');
+      Object.assign(dot.style, {
+        width: '8px', height: '8px',
+        borderRadius: '50%',
+        background: '#14b8a6',
+        boxShadow: '0 0 12px rgba(20,184,166,0.7)'
+      });
+
+      const assetLabel = document.createElement('div');
+      assetLabel.textContent = '—';
+      Object.assign(assetLabel.style, {
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        maxWidth: '100%'
+      });
+
+      assetRow.appendChild(dot);
+      assetRow.appendChild(assetLabel);
+
+      card.appendChild(title);
+      card.appendChild(sub);
+      card.appendChild(barWrap);
+      card.appendChild(line);
+      card.appendChild(assetRow);
+      root.appendChild(card);
+      container.appendChild(root);
+
+      return {
+        root,
+        setProgress(p, nDone, nTotal){
+          const clamped = Math.max(0, Math.min(100, Math.round(p)));
+          bar.style.width = clamped + '%';
+          percent.textContent = clamped + '%';
+          frac.textContent = `${nDone} / ${nTotal}`;
+        },
+        setCurrentAsset(name){
+          assetLabel.textContent = name || '—';
+          assetLabel.title = name || '';
+        },
+        hide(){
+          root.style.opacity = '0';
+          root.style.transition = 'opacity 220ms ease';
+          setTimeout(()=>{ root.remove(); }, 250);
+        }
+      };
+    }
+
+    // Instantiate loading frame early
+    const loading = createLoadingFrame();
+
+    // Track asset progress
+    const requestedSet = new Set();  // unique asset keys requested
+    let completedCount = 0;
+
+    function updateLoadingUI(currentKey){
+      const total = requestedSet.size || 0;
+      const p = total ? (completedCount / total) * 100 : 0;
+      loading.setProgress(p, completedCount, total);
+      if (currentKey){
+        // Prefer basename; show full if needed
+        let label = currentKey.split('/').pop();
+        if (!label) label = currentKey;
+        loading.setCurrentAsset(label);
+      }
+    }
+
     function scheduleFit(){
       if (fitTimer) clearTimeout(fitTimer);
       fitTimer = setTimeout(()=>{
@@ -294,9 +479,19 @@
 
     urdfLoader.loadMeshCb = function(path, manager, onComplete){
       const bestKey = pickBestAsset(variantsFor(path), meshDB);
-      if (!bestKey){ onComplete(new THREE.Mesh()); return; }
+      // mark the request (even if missing in DB, still count path tried)
+      if (bestKey && !requestedSet.has(bestKey)){
+        requestedSet.add(bestKey);
+      } else if (!bestKey) {
+        // still reflect the path name to the user
+        const v = variantsFor(path)[0] || String(path||'');
+        if (!requestedSet.has(v)) requestedSet.add(v);
+      }
+      updateLoadingUI(bestKey || String(path||''));
+
+      if (!bestKey){ onComplete(new THREE.Mesh()); completedCount++; updateLoadingUI(); return; }
       const ext = extOf(bestKey);
-      if (!ALLOWED_EXTS.has(ext)){ onComplete(new THREE.Mesh()); return; }
+      if (!ALLOWED_EXTS.has(ext)){ onComplete(new THREE.Mesh()); completedCount++; updateLoadingUI(); return; }
 
       const tagAndComplete = (obj)=>{
         obj.userData.__assetKey = bestKey;
@@ -310,7 +505,12 @@
         });
         applyDoubleSided(obj);
         onComplete(obj);
-        pendingMeshes--; scheduleFit();
+        pendingMeshes--;
+        completedCount++;
+        updateLoadingUI(bestKey);
+        scheduleFit();
+        // if everything is done and robot exists, hide loader
+        maybeHideLoader();
       };
 
       pendingMeshes++;
@@ -354,14 +554,26 @@
         }
         if (ext==='step' || ext==='stp'){
           onComplete(new THREE.Mesh());
-          pendingMeshes--; scheduleFit();
+          pendingMeshes--;
+          completedCount++;
+          updateLoadingUI(bestKey);
+          scheduleFit();
+          maybeHideLoader();
           return;
         }
         onComplete(new THREE.Mesh());
-        pendingMeshes--; scheduleFit();
+        pendingMeshes--;
+        completedCount++;
+        updateLoadingUI(bestKey);
+        scheduleFit();
+        maybeHideLoader();
       }catch(_e){
         onComplete(new THREE.Mesh());
-        pendingMeshes--; scheduleFit();
+        pendingMeshes--;
+        completedCount++;
+        updateLoadingUI(bestKey);
+        scheduleFit();
+        maybeHideLoader();
       }
     };
 
@@ -557,6 +769,15 @@
       }
     }
 
+    // Hide loader when: 1) robot exists, 2) all requested assets completed
+    function maybeHideLoader(){
+      const done = api.robotModel && (completedCount >= requestedSet.size) && pendingMeshes===0;
+      if (done && state?.loading){
+        state.loading.hide();
+        state.loading = null;
+      }
+    }
+
     // NEW: single handler that should run for every GUI button press.
     function buttonClicked(){
       try { console.log("button clicked"); } catch(_) {}
@@ -575,7 +796,7 @@
         width: '100%', height: '100%',
         pointerEvents: 'none',
         zIndex: '9999',
-        fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
+        fontFamily: '"Computer Modern", "Latin Modern Roman", "Times New Roman", serif'
       });
 
       const btn = document.createElement('button');
@@ -586,8 +807,9 @@
         bottom: '14px',
         padding: '10px 14px',
         borderRadius: '14px',
-        border: '1px solid #d0d0d0',
+        border: '1px solid #14b8a6',
         background: '#ffffff',
+        color: '#0f766e',
         boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
         fontWeight: '700',
         cursor: 'pointer',
@@ -607,7 +829,8 @@
         borderRadius: '16px',
         overflow: 'hidden',
         display: 'none',
-        pointerEvents: 'auto'
+        pointerEvents: 'auto',
+        fontFamily: '"Computer Modern", "Latin Modern Roman", "Times New Roman", serif'
       });
 
       const header = document.createElement('div');
@@ -630,8 +853,9 @@
       Object.assign(showAllBtn.style, {
         padding: '6px 10px',
         borderRadius: '10px',
-        border: '1px solid #d0d0d0',
+        border: '1px solid #14b8a6',
         background: '#ffffff',
+        color: '#0f766e',
         fontWeight: '700',
         cursor: 'pointer'
       });
@@ -685,7 +909,8 @@
           border: '1px solid #f0f0f0',
           marginBottom: '10px',
           background: '#fff',
-          cursor: 'pointer'
+          cursor: 'pointer',
+          fontFamily: '"Computer Modern", "Latin Modern Roman", "Times New Roman", serif'
         });
 
         const img = document.createElement('img');
@@ -746,6 +971,8 @@
           api.linkSet = markLinksAndJoints(api.robotModel);
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
           state.off = buildOffscreenFromRobot();
+          // might be finished already if no meshes -> hide loader
+          maybeHideLoader();
         }
       } catch(_e){}
     }
@@ -758,8 +985,8 @@
     // attach resize listener
     window.addEventListener('resize', onResize);
 
-    // === Hover state (prevents flicker & overdraw) ===
-    let lastHoverKey = null; // string key of current hover target
+    // === Hover state ===
+    let lastHoverKey = null;
     const hoverKeyFor = (meshHit)=>{
       if (!meshHit) return null;
       if (selectMode==='link'){
@@ -823,9 +1050,8 @@
       lastMoveEvt = e;
       const now = performance.now();
       if (now - lastHoverTs >= (hoverCfg.throttleMs|0)){
-        scheduleHover(); // next frame
+        scheduleHover();
       } else {
-        // still schedule, but let throttle gate actual processing
         scheduleHover();
       }
     }
@@ -849,7 +1075,7 @@
     renderer.domElement.addEventListener('pointercancel', endJointDrag);
 
     // Public state holder
-    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
+    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null, loading };
 
     // Build UI
     state.ui = createUI();
@@ -875,7 +1101,7 @@
         showAllAndFrame();
       });
 
-      // delegation for clicks on gallery rows -> treat row clicks as button presses
+      // delegation for clicks on gallery rows
       list.addEventListener('click', (ev)=>{
         let el = ev.target;
         while (el && el !== list && !el.dataset?.assetKey) el = el.parentElement;
