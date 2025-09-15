@@ -1,3 +1,4 @@
+
 import sympy  # requested import
 import gdown
 import cascadio
@@ -25,7 +26,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     and shows a teal/white Autodesk-like viewer with:
       - Render modes: Solid / Wireframe / X-Ray / Ghost
       - Explode slider (auto-hidden if the GLB is single-part)
-      - Section plane (X/Y/Z + distance) + optional teal frame (NO LINES)
+      - Section plane (X/Y/Z + distance) + teal frame overlay (NO slice lines, no flicker)
       - Camera presets: Iso / Top / Front / Right
       - Perspective <-> Orthographic toggle
       - Grid, Ground (soft shadows), Axes toggles
@@ -58,20 +59,21 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
         "UklGRhQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYAaW5mbyBiaXQ="
     )
     click_data_url = (
-        f"data:audio/mpeg;base64,{click_sound_b64}"
+        "data:audio/mpeg;base64," + click_sound_b64
         if (isinstance(click_sound_b64, str) and len(click_sound_b64) > 0)
         else DEFAULT_CLICK_DATAURL
     )
 
-    html_content = f"""
+    # ---------- HTML with placeholders (NO f-strings here) ----------
+    html_template = r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>{Step_Name} 3D Viewer</title>
+<title>__TITLE__ 3D Viewer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <style>
-  :root {{
+  :root {
     --teal: #0ea5a6;
     --teal-soft: #14b8b9;
     --teal-faint: rgba(20,184,185,0.12);
@@ -81,67 +83,67 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     --text: #0b3b3c;
     --textMuted: #577e7f;
     --shadow: 0 12px 36px rgba(0,0,0,0.14);
-  }}
-  html, body {{
+  }
+  html, body {
     margin: 0;
     height: 100%;
     overflow: hidden;
     background: var(--bgCanvas);
     font-family: "Computer Modern", "CMU Serif", Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  }}
-  #wrap {{
+  }
+  #wrap {
     position: relative;
     width: 100vw;
     height: 100vh;
-  }}
-  canvas {{
+  }
+  canvas {
     display: block;
     width: 100%;
     height: 100%;
-  }}
-  .badge {{
+  }
+  .badge {
     position: absolute; bottom: 12px; right: 14px; z-index: 12;
     user-select: none; pointer-events: none;
-  }}
-  .badge img {{ max-height: 40px; display: block; }}
+  }
+  .badge img { max-height: 40px; display: block; }
 
   /* Dock panel (starts CLOSED) + floating toggle */
-  #toolsDock {{
+  #toolsDock {
     position: absolute; right: 14px; top: 14px; width: 440px; max-width: calc(100vw - 28px);
     background: var(--bgPanel); border: 1px solid var(--stroke); border-radius: 18px;
     box-shadow: var(--shadow); overflow: hidden; display: none; z-index: 11;
-  }}
-  .dockHeader {{
+  }
+  .dockHeader {
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
     padding: 10px 12px; border-bottom: 1px solid var(--stroke); background: var(--teal-faint);
-  }}
-  .dockHeader .title {{ font-weight: 800; color: var(--text); }}
-  .dockBody {{ padding: 10px 12px; }}
-  .row {{ display: grid; grid-template-columns: 120px 1fr; gap: 10px; align-items: center; margin: 6px 0; }}
-  .row .label {{ font-weight: 700; color: var(--textMuted); }}
-  select, input[type="range"] {{
+  }
+  .dockHeader .title { font-weight: 800; color: var(--text); }
+  .dockBody { padding: 10px 12px; }
+  .row { display: grid; grid-template-columns: 120px 1fr; gap: 10px; align-items: center; margin: 6px 0; }
+  .row .label { font-weight: 700; color: var(--textMuted); }
+  select, input[type="range"] {
     width: 100%; accent-color: var(--teal);
     border: 1px solid var(--stroke); border-radius: 10px; padding: 6px 8px;
-  }}
-  .tbtn {{
+  }
+  .tbtn {
     padding: 8px 12px; border-radius: 12px; border: 1px solid var(--stroke);
     background: var(--bgPanel); color: var(--text); font-weight: 700; cursor: pointer;
-  }}
-  #toolsToggle {{
+  }
+  #toolsToggle {
     position: absolute; right: 14px; top: 14px; z-index: 12;
     box-shadow: var(--shadow);
-  }}
-  .tog {{
+  }
+  .tog {
     display: flex; align-items: center; gap: 8px; cursor: pointer;
-  }}
-  .tog input[type="checkbox"] {{ accent-color: var(--teal); }}
+  }
+  .tog input[type="checkbox"] { accent-color: var(--teal); }
 
-  /* Teal split frame (optional, steady; NO lines in scene) */
-  #splitFrame {{
+  /* Teal split frame overlay (no slice lines) */
+  #splitFrame {
     position: absolute; left: 0; top: 0; width: 100%; height: 100%;
     border: 3px solid var(--teal); border-radius: 14px; box-sizing: border-box;
     pointer-events: none; display: none; z-index: 10;
-  }}
+  }
 </style>
 </head>
 <body>
@@ -184,7 +186,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
           <label class="tog"><input id="secEnable" type="checkbox" /> Enable section</label>
         </div>
         <div class="row">
-          <!-- renamed: this no longer shows lines; it only toggles the teal frame overlay -->
+          <!-- This toggle only shows the teal frame; there are no slice lines -->
           <label class="tog"><input id="secFrame" type="checkbox" /> Show slice frame</label>
         </div>
 
@@ -226,7 +228,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   // ====== Click audio (pool) + debounce ======
   const CLICK_DEBOUNCE_MS = 120;
   let lastClickTs = 0;
-  const clickDataURL = {click_data_url!r};
+  const clickDataURL = "__CLICK_URL__";
   function makeClickPool(url, n=4){
     const pool=[]; let idx=0;
     for(let i=0;i<n;i++){ const a=new Audio(url); a.preload='auto'; a.loop=false; a.volume=1.0; pool.push(a); }
@@ -309,7 +311,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     }
     camera.updateProjectionMatrix();
     renderer.setSize(w,h);
-    // Frame isn't toggled here -> avoids flicker on resize
+    // no frame toggle here -> avoids flicker
   }
   window.addEventListener('resize', onResize);
 
@@ -321,7 +323,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     for (let i=0;i<len;i++) bytes[i] = binary_string.charCodeAt(i);
     return bytes.buffer;
   }
-  const glbBase64 = "{glb_base64}";
+  const glbBase64 = "__GLB_B64__";
   const arrayBuffer = base64ToArrayBuffer(glbBase64);
 
   let model=null;
@@ -329,13 +331,10 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
   let secAxis = 'X';
   let secEnabled = false;
 
-  // NO plane helper lines at all (removed) — we only use the teal frame overlay.
-  function setFrameVisible(v){
-    splitFrame.style.display = v ? 'block' : 'none';
-  }
-
+  // teal frame helper (no lines in 3D)
+  function setFrameVisible(v){ splitFrame.style.display = v ? 'block' : 'none'; }
   function updateFrameVisibility(){
-    // Only depends on checkboxes; not on slider movement -> no flicker
+    // Only on checkbox changes; not on slider -> no flicker
     const secEnable = document.getElementById('secEnable').checked;
     const secFrame  = document.getElementById('secFrame').checked;
     setFrameVisible(secEnable && secFrame);
@@ -345,19 +344,11 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     renderer.clippingPlanes = [];
     if (!secEnabled || !model) {
       renderer.localClippingEnabled=false;
-      // Don't touch the frame here to avoid “palpitations”
-      return;
+      return; // frame handled elsewhere
     }
-    const n = new THREE.Vector3(
-      secAxis==='X'?1:0,
-      secAxis==='Y'?1:0,
-      secAxis==='Z'?1:0
-    );
+    const n = new THREE.Vector3(secAxis==='X'?1:0, secAxis==='Y'?1:0, secAxis==='Z'?1:0);
     const box = new THREE.Box3().setFromObject(model);
-    if (box.isEmpty()){
-      renderer.localClippingEnabled=false;
-      return;
-    }
+    if (box.isEmpty()){ renderer.localClippingEnabled=false; return; }
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x,size.y,size.z)||1;
     const center = box.getCenter(new THREE.Vector3());
@@ -366,7 +357,6 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
     renderer.localClippingEnabled = true;
     renderer.clippingPlanes = [ plane ];
     sectionPlane = plane;
-    // Frame visibility handled elsewhere; not here.
   }
 
   function fitAndCenter(object, pad=1.08){
@@ -507,7 +497,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
 
     prepareExplodeVectors();
     fitAndCenter(model, 1.06);
-    updateSectionPlane(); // sets clipping, but not the frame
+    updateSectionPlane(); // sets clipping, not the frame
   }, function(err) {
     console.error('GLB load error:', err);
   });
@@ -607,7 +597,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
 
   // Initialize checkboxes and frame once (no flicker)
   secEnableEl.checked = false;
-  secFrameEl.checked = true;  // default to show frame when section is enabled
+  secFrameEl.checked = true;
   updateFrameVisibility();
 
   // Animate
@@ -620,11 +610,19 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_b64=None):
 </html>
     """
 
+    # Inject values via safe placeholder replacements
+    html_content = (
+        html_template
+        .replace("__TITLE__", Step_Name)
+        .replace("__GLB_B64__", glb_base64)
+        .replace("__CLICK_URL__", click_data_url)
+    )
+
     html_name = output_glb_scaled + "_viewer.html"
     with open(html_name, "w") as f:
         f.write(html_content)
 
+    # Display in notebook
     with open(html_name, "r") as f:
         html = f.read()
-
     display(HTML(html))
