@@ -1,12 +1,15 @@
-/* urdf_viewer_separated.js - teal/white UI + "Autodesk-like" tools
+/* urdf_viewer_separated.js - teal/white UI + "Autodesk-like" tools (+axes, tab toggle, visible slice plane, click audio)
    Adds:
      - Render modes: Solid / Wireframe / X-Ray / Ghost
      - Explode slider (per-link radial offset)
-     - Section plane (X/Y/Z axis + distance)
+     - Section plane (X/Y/Z axis + distance) + Visible plane helper
      - Camera presets: Iso / Top / Front / Right
      - Perspective <-> Orthographic toggle
-     - Grid + Ground + Soft shadows
+     - Grid + Ground + Soft shadows (grid OFF by default now)
      - Fit to view & Snapshot
+     - XYZ Axes toggle (auto-sized)
+     - Tools tab starts CLOSED + floating "Open/Close Tools" button
+     - Optional click sound on every UI interaction (opts.clickAudioDataURL)
    Keeps:
      - Hover aura (configurable)
      - Stable, throttled hover
@@ -24,11 +27,11 @@
   //  Theme (Teal UI)
   // ================
   const THEME = {
-    teal: '#0ea5a6',          // main accent
+    teal: '#0ea5a6',
     tealSoft: '#14b8b9',
     tealFaint: 'rgba(20,184,185,0.12)',
     bgPanel: '#ffffff',
-    bgCanvas: 0xf6fafb,       // scene background (soft teal white)
+    bgCanvas: 0xf6fafb,
     stroke: '#d7e7e7',
     text: '#0b3b3c',
     textMuted: '#577e7f',
@@ -122,6 +125,10 @@
       camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
     }
     controls.target.copy(center); controls.update();
+
+    // keep helpers in scale
+    sizeAxesHelper(maxDim, center);
+    refreshSectionHelper(maxDim, center);
   }
 
   function collectMeshesInLink(linkObj){
@@ -267,6 +274,17 @@
     const descriptions = (opts && opts.descriptions) || {};
     const hoverCfg = Object.assign({enabled:true, color:0x0ea5a6, opacity:0.28, throttleMs:16}, (opts && opts.hover)||{});
 
+    // Optional click audio (data URL, e.g., "data:audio/mpeg;base64,....")
+    let clickAudio = null;
+    if (opts && typeof opts.clickAudioDataURL === 'string' && opts.clickAudioDataURL.startsWith('data:audio/')) {
+      try {
+        clickAudio = new Audio(opts.clickAudioDataURL);
+        clickAudio.preload = 'auto';
+        clickAudio.loop = false;
+        clickAudio.volume = 1.0;
+      } catch(e){ clickAudio = null; }
+    }
+
     const scene = new THREE.Scene();
     if (bg!=null) scene.background = new THREE.Color(bg);
 
@@ -308,11 +326,21 @@
     // Ground + grid (toggled)
     const groundGroup = new THREE.Group(); scene.add(groundGroup);
     const grid = new THREE.GridHelper(10, 20, 0x84d4d4, 0xdef3f3);
-    grid.visible = true; groundGroup.add(grid);
+    grid.visible = false; // disabled by default per request
+    groundGroup.add(grid);
     const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200), groundMat);
     ground.rotation.x = -Math.PI/2; ground.position.y = -0.0001;
     ground.receiveShadow = true; ground.visible = true; groundGroup.add(ground);
+
+    // XYZ Axes helper (toggle)
+    const axesHelper = new THREE.AxesHelper(1);
+    axesHelper.visible = false; // off by default
+    scene.add(axesHelper);
+    function sizeAxesHelper(maxDim, center){
+      axesHelper.scale.setScalar(maxDim * 0.75);
+      axesHelper.position.copy(center || new THREE.Vector3());
+    }
 
     function onResize(){
       const w = container.clientWidth||1, h = container.clientHeight||1;
@@ -649,7 +677,7 @@
         fontFamily: 'Computer Modern, CMU Serif, Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // === Components Panel (existing) ===
+      // === Components Panel
       const compBtn = mkTealButton('Components');
       Object.assign(compBtn.style, { position:'absolute', left:'14px', bottom:'14px', boxShadow: THEME.shadow });
       const compPanel = document.createElement('div');
@@ -667,12 +695,13 @@
       const compList = document.createElement('div'); Object.assign(compList.style,{overflowY:'auto', maxHeight:'calc(72vh - 52px)', padding:'10px'});
       compPanel.appendChild(compHeader); compPanel.appendChild(compList);
 
-      // === Tools Dock (top-right) ===
+      // === Tools Dock (top-right)
       const dock = document.createElement('div');
       Object.assign(dock.style,{
         position:'absolute', right:'14px', top:'14px', width:'440px',
         background: THEME.bgPanel, border:`1px solid ${THEME.stroke}`,
-        borderRadius:'18px', boxShadow: THEME.shadow, pointerEvents:'auto', overflow:'hidden'
+        borderRadius:'18px', boxShadow: THEME.shadow, pointerEvents:'auto', overflow:'hidden',
+        display: 'none' // start CLOSED
       });
 
       const dockHeader = document.createElement('div');
@@ -695,45 +724,63 @@
       const axisSel = mkSelect(['X','Y','Z'], 'X');
       const secDist = mkSlider(-1, 1, 0.001, 0);
       const secToggle = mkTealToggle('Enable section');
+      const secPlaneToggle = mkTealToggle('Show slice plane');
       dockBody.appendChild(mkRow('Section axis', axisSel));
       dockBody.appendChild(mkRow('Section dist', secDist));
       dockBody.appendChild(mkRow('', secToggle.wrap));
+      dockBody.appendChild(mkRow('', secPlaneToggle.wrap));
 
       // Camera block
       const rowCam = document.createElement('div'); Object.assign(rowCam.style,{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:'8px', margin:'8px 0'});
       const bIso = mkTealButton('Iso'), bTop = mkTealButton('Top'), bFront= mkTealButton('Front'), bRight = mkTealButton('Right'), bSnap = mkTealButton('Snapshot');
       [bIso,bTop,bFront,bRight,bSnap].forEach(b=>{ b.style.padding='8px'; b.style.borderRadius='10px'; });
-      rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight); rowCam.appendChild(bSnap);
       dockBody.appendChild(mkRow('Views', rowCam));
+      rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight); rowCam.appendChild(bSnap);
 
       // Projection + helpers
       const projSel = mkSelect(['Perspective','Orthographic'], 'Perspective');
-      const togGrid = mkTealToggle('Grid');
-      togGrid.cb.checked = true;
-      const togGround = mkTealToggle('Ground & shadows');
-      togGround.cb.checked = true;
+      const togGrid = mkTealToggle('Grid');       // OFF by default, set below
+      const togGround = mkTealToggle('Ground & shadows'); togGround.cb.checked = true;
+      const togAxes = mkTealToggle('XYZ axes');   // axes toggle
+      togAxes.cb.checked = false;
       dockBody.appendChild(mkRow('Projection', projSel));
       dockBody.appendChild(mkRow('', togGrid.wrap));
       dockBody.appendChild(mkRow('', togGround.wrap));
+      dockBody.appendChild(mkRow('', togAxes.wrap));
 
       // Assemble dock
       dock.appendChild(dockHeader); dock.appendChild(dockBody);
+
+      // Floating Tools toggle button
+      const toolsToggleBtn = document.createElement('button');
+      toolsToggleBtn.textContent = 'Open Tools';
+      Object.assign(toolsToggleBtn.style, {
+        position:'absolute', right:'14px', top:'14px',
+        padding:'8px 12px', borderRadius:'12px', border:`1px solid ${THEME.stroke}`,
+        background: THEME.bgPanel, color: THEME.text, fontWeight:'700',
+        boxShadow: THEME.shadow, pointerEvents:'auto', zIndex: '10000'
+      });
+      toolsToggleBtn.onpointerdown = ()=>buttonClicked();
 
       // Root assembly
       root.appendChild(compPanel);
       root.appendChild(compBtn);
       root.appendChild(dock);
+      root.appendChild(toolsToggleBtn);
       container.appendChild(root);
+
+      // Initial defaults
+      togGrid.cb.checked = false; // grid disabled initially
 
       return {
         root,
         // components
         btn: compBtn, panel: compPanel, list: compList, showAllBtn,
         // tools
-        fitBtn, renderMode, explodeSlider, axisSel, secDist, secToggle,
+        fitBtn, renderMode, explodeSlider, axisSel, secDist, secToggle, secPlaneToggle,
         bIso, bTop, bFront, bRight, bSnap,
-        projSel, togGrid, togGround,
-        dock
+        projSel, togGrid, togGround, togAxes,
+        dock, toolsToggleBtn
       };
     }
 
@@ -870,22 +917,46 @@
     }
 
     // ===========
-    //  Section
+    //  Section (with visible helper plane)
     // ===========
     let sectionPlane = null;
     let secAxis = 'X';   // 'X' | 'Y' | 'Z'
     let secEnabled = false;
+    let secPlaneVisible = false;
+    let secHelper = null;
+
+    function ensureSectionHelper(){
+      if (!secHelper){
+        // PlaneHelper shows the plane normal & slice; color teal
+        secHelper = new THREE.PlaneHelper(new THREE.Plane(new THREE.Vector3(1,0,0), 0), 1.0, 0x0ea5a6);
+        secHelper.visible = false;
+        scene.add(secHelper);
+      }
+      return secHelper;
+    }
+
+    function refreshSectionHelper(maxDim, center){
+      if (!secHelper) return;
+      const size = Math.max(1e-6, maxDim || 1);
+      secHelper.size = size * 1.2;
+      // PlaneHelper updates automatically from its plane; position is implicit
+      if (center) { /* PlaneHelper doesn't take position; handled via plane constant */ }
+    }
+
     function updateSectionPlane(){
       renderer.clippingPlanes = [];
-      if (!secEnabled || !api.robotModel) { renderer.localClippingEnabled=false; return; }
+      if (!secEnabled || !api.robotModel) {
+        renderer.localClippingEnabled=false;
+        if (secHelper) secHelper.visible = false;
+        return;
+      }
       const n = new THREE.Vector3(
         secAxis==='X'?1:0,
         secAxis==='Y'?1:0,
         secAxis==='Z'?1:0
       );
-      // Compute model bounds to scale distance
       const box = new THREE.Box3().setFromObject(api.robotModel);
-      if (box.isEmpty()){ renderer.localClippingEnabled=false; return; }
+      if (box.isEmpty()){ renderer.localClippingEnabled=false; if (secHelper) secHelper.visible=false; return; }
       const size = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x,size.y,size.z)||1;
       const center = box.getCenter(new THREE.Vector3());
@@ -894,6 +965,12 @@
       renderer.localClippingEnabled = true;
       renderer.clippingPlanes = [ plane ];
       sectionPlane = plane;
+
+      // helper
+      ensureSectionHelper();
+      secHelper.plane.copy(plane);
+      secHelper.visible = !!secPlaneVisible;
+      refreshSectionHelper(maxDim, center);
     }
 
     // ===========
@@ -917,7 +994,6 @@
               m.depthWrite = true;
               m.depthTest = true;
             } else {
-              // Solid
               m.transparent = false;
               m.opacity = 1.0;
               m.depthWrite = true;
@@ -1001,12 +1077,19 @@
           camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
         }
         controls.target.copy(center); controls.update();
+        sizeAxesHelper(maxDim, center);
       }
     }
 
-    // NEW: single handler that should run for every GUI button press.
+    // NEW: single handler for every GUI button press (+ click sound)
     function buttonClicked(){
       try { console.log("button clicked"); } catch(_) {}
+      try {
+        if (clickAudio){
+          const p = clickAudio.play();
+          if (p && typeof p.catch === 'function') p.catch(()=>{});
+        }
+      } catch(e){}
       try {
         if (window && window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel){
           window.Jupyter.notebook.kernel.execute("print('button clicked')");
@@ -1017,8 +1100,8 @@
     // attach resize listener
     window.addEventListener('resize', onResize);
 
-    // === Hover state (prevents flicker & overdraw) ===
-    let lastHoverKey = null; // string key of current hover target
+    // === Hover state ===
+    let lastHoverKey = null;
     const hoverKeyFor = (meshHit)=>{
       if (!meshHit) return null;
       if (selectMode==='link'){
@@ -1082,7 +1165,7 @@
       lastMoveEvt = e;
       const now = performance.now();
       if (now - lastHoverTs >= (hoverCfg.throttleMs|0)){
-        scheduleHover(); // next frame
+        scheduleHover();
       } else {
         scheduleHover();
       }
@@ -1115,10 +1198,19 @@
     // ==== UI Interactions ====
     (function attachUIInteractions(){
       const { btn, panel, list, showAllBtn,
-              fitBtn, renderMode, explodeSlider, axisSel, secDist, secToggle,
-              bIso, bTop, bFront, bRight, bSnap, projSel, togGrid, togGround } = state.ui;
+              fitBtn, renderMode, explodeSlider, axisSel, secDist, secToggle, secPlaneToggle,
+              bIso, bTop, bFront, bRight, bSnap, projSel, togGrid, togGround, togAxes,
+              dock, toolsToggleBtn } = state.ui;
 
       let builtOnce = false;
+
+      // Tools open/close toggle button
+      function setDock(open){
+        dock.style.display = open ? 'block' : 'none';
+        toolsToggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
+      }
+      toolsToggleBtn.addEventListener('click', ()=>{ buttonClicked(); setDock(dock.style.display==='none'); });
+      setDock(false); // start CLOSED
 
       // Components panel
       btn.addEventListener('click', async ()=>{
@@ -1156,6 +1248,7 @@
       axisSel.addEventListener('change', ()=>{ buttonClicked(); secAxis = axisSel.value; updateSectionPlane(); });
       secDist.addEventListener('input', ()=>{ updateSectionPlane(); });
       secToggle.cb.addEventListener('change', ()=>{ buttonClicked(); secEnabled = !!secToggle.cb.checked; updateSectionPlane(); });
+      secPlaneToggle.cb.addEventListener('change', ()=>{ buttonClicked(); secPlaneVisible = !!secPlaneToggle.cb.checked; updateSectionPlane(); });
 
       // Views
       bIso.addEventListener('click', ()=>{ buttonClicked(); viewIso(); });
@@ -1175,10 +1268,8 @@
       // Projection
       projSel.addEventListener('change', ()=>{
         buttonClicked();
-        // swap camera
-        const wasPersp = camera.isPerspectiveCamera;
         const w = container.clientWidth||1, h=container.clientHeight||1, asp = Math.max(1e-6, w/h);
-        if (projSel.value==='Orthographic' && wasPersp){
+        if (projSel.value==='Orthographic' && camera.isPerspectiveCamera){
           const box = api.robotModel ? new THREE.Box3().setFromObject(api.robotModel) : null;
           const c = box && !box.isEmpty() ? box.getCenter(new THREE.Vector3()) : controls.target.clone();
           const size = box && !box.isEmpty() ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(2,2,2);
@@ -1188,7 +1279,7 @@
           ortho.position.copy(camera.position); ortho.updateProjectionMatrix();
           controls.object = ortho; camera = ortho;
           controls.target.copy(c); controls.update();
-        } else if (projSel.value==='Perspective' && !wasPersp){
+        } else if (projSel.value==='Perspective' && camera.isOrthographicCamera){
           persp.aspect = asp; persp.updateProjectionMatrix();
           persp.position.copy(camera.position);
           controls.object = persp; camera = persp;
@@ -1199,6 +1290,19 @@
       // Helpers
       togGrid.cb.addEventListener('change', ()=>{ buttonClicked(); grid.visible = !!togGrid.cb.checked; });
       togGround.cb.addEventListener('change', ()=>{ buttonClicked(); ground.visible = !!togGround.cb.checked; dirLight.castShadow = !!togGround.cb.checked; });
+      togAxes.cb.addEventListener('change', ()=>{
+        buttonClicked();
+        axesHelper.visible = !!togAxes.cb.checked;
+        // scale/center now
+        if (api.robotModel){
+          const box = new THREE.Box3().setFromObject(api.robotModel);
+          if (!box.isEmpty()){
+            const c = box.getCenter(new THREE.Vector3());
+            const s = box.getSize(new THREE.Vector3());
+            sizeAxesHelper(Math.max(s.x,s.y,s.z)||1, c);
+          }
+        }
+      });
 
     })();
 
@@ -1215,12 +1319,14 @@
     return {
       scene, get camera(){ return camera; }, renderer, controls,
       get robot(){ return api.robotModel; },
-      openGallery(){ state.ui?.btn?.click?.(); }
+      openGallery(){ state.ui?.btn?.click?.(); },
+      openTools(open=true){ if (!state?.ui) return; const s=state.ui; s.toolsToggleBtn.click(); if (!open) s.toolsToggleBtn.click(); }
     };
   };
 
   root.URDFViewer = URDFViewer;
 })(typeof window!=='undefined' ? window : this);
+
 
 
 
