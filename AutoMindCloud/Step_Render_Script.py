@@ -1,4 +1,22 @@
+import sympy
+import gdown
+import cascadio
+import trimesh
+import base64
+from IPython.display import display, HTML
+import os
 
+def Download_Step(Drive_Link, Output_Name):
+    """
+    Downloads a STEP file from Google Drive using the full Drive link.
+    Saves it as Output_Name.step in /content.
+    """
+    root_dir = "/content"
+    file_id = Drive_Link.split('/d/')[1].split('/')[0]  # Extract ID from full link
+    url = f"https://drive.google.com/uc?id={file_id}"
+    output_step = os.path.join(root_dir, Output_Name + ".step")
+    gdown.download(url, output_step, quiet=True)
+    
 def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sound.mp3", background=0xffffff):
     """
     STEP -> GLB -> scaled viewer (white UI). Features preserved:
