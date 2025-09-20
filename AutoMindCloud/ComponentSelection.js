@@ -1,9 +1,27 @@
 /* urdf_viewer_separated.js - teal/white UI + "Autodesk-like" tools (+axes, tab toggle, stable slice plane, single-fire click audio)
-   Now with:
-     - White background by default
-     - Shadows OFF on init (toggleable in Tools)
-     - Lazy Components: thumbnails & list only build when URDFViewer.loadComponentsNow() is called (e.g., from Python)
-     - Fast-click teal marker: selection overlay flashes even if pointer doesn't move
+   Adds:
+     - Render modes: Solid / Wireframe / X-Ray / Ghost
+     - Explode slider (per-link radial offset)
+     - Section plane (X/Y/Z axis + distance) + stable teal plane (no grid/wire; no pulsing)
+     - Camera presets: Iso / Top / Front / Right
+     - Perspective <-> Orthographic toggle
+     - Grid + Ground + Soft shadows (grid OFF by default)
+     - Fit to view & Snapshot
+     - XYZ Axes toggle (auto-sized)
+     - Tools tab starts CLOSED + floating "Open/Close Tools" button
+     - Optional click sound on every UI interaction (opts.clickAudioDataURL) with overlapping playback
+   Keeps:
+     - Hover aura (configurable)
+     - Stable, throttled hover
+     - Joint drag (revolute/prismatic) with limits (+Shift fine)
+     - Components panel (isolate & show all), thumbnails off-screen
+     - Single buttonClicked() handler wiring
+
+   NEW in this build per your request:
+     - Pure white canvas background
+     - Initialize with NO SHADOWS (renderer.shadowMap disabled, ground hidden, light shadow casting off)
+     - Pre-build Components gallery (and thumbnails) at load so opening is instant (no lag)
+     - Persistent teal selection marker (Box3Helper) that stays visible while orbiting/rotating or dragging joints
 */
 (function (root) {
   'use strict';
@@ -19,7 +37,7 @@
     tealSoft: '#14b8b9',
     tealFaint: 'rgba(20,184,185,0.12)',
     bgPanel: '#ffffff',
-    bgCanvas: 0xffffff, // WHITE background
+    bgCanvas: 0xffffff,   // << pure white canvas
     stroke: '#d7e7e7',
     text: '#0b3b3c',
     textMuted: '#577e7f',
@@ -78,7 +96,7 @@
       if (n.isMesh && n.geometry){
         if (Array.isArray(n.material)) n.material.forEach(m=>m.side=THREE.DoubleSide);
         else if (n.material) n.material.side = THREE.DoubleSide;
-        n.castShadow = n.receiveShadow = true;
+        n.castShadow = n.receiveShadow = false; // default no shadows
         n.geometry.computeVertexNormals?.();
       }
     });
@@ -117,6 +135,9 @@
     // keep helpers in scale/position
     sizeAxesHelper(maxDim, center);
     refreshSectionVisual(maxDim, center);
+
+    // keep selection marker sized
+    refreshSelectionMarker();
   }
 
   function collectMeshesInLink(linkObj){
@@ -174,18 +195,7 @@
         if (ov){ m.add(ov); overlays.push(ov); }
       }
     }
-    // Quick flash marker (for fast clicks)
-    function flashOn(meshOrLink, ms=220){
-      const keep = new Set();
-      if (meshOrLink?.isMesh){
-        const ov = overlayFor(meshOrLink); if (ov){ meshOrLink.add(ov); keep.add(ov); }
-      } else if (meshOrLink){
-        const arr = collectMeshesInLink(meshOrLink);
-        for(const m of arr){ const ov = overlayFor(m); if (ov){ m.add(ov); keep.add(ov); } }
-      }
-      if (keep.size){ setTimeout(()=>{ keep.forEach(o=>o?.parent?.remove(o)); }, ms); }
-    }
-    return { clear, showMesh, showLink, flashOn };
+    return { clear, showMesh, showLink };
   }
 
   function isMovable(j){ const t = (j?.jointType||'').toString().toLowerCase(); return t && t !== 'fixed'; }
@@ -250,16 +260,18 @@
   }
 
   URDFViewer.destroy = function(){
-    try{ cancelAnimationFrame(state?.raf); }catch(_){}}
-  ;
+    try{ cancelAnimationFrame(state?.raf); }catch(_){}
+    try{ window.removeEventListener('resize', state?.onResize); }catch(_){}
+    try{ const el = state?.renderer?.domElement; el && el.parentNode && el.parentNode.removeChild(el); }catch(_){}
+    try{ state?.renderer?.dispose?.(); }catch(_){}
+    try{ state?.ui?.root && state.ui.root.remove(); }catch(_){}
+    try{ state?.off?.renderer?.dispose?.(); }catch(_){}
+    state=null;
+  };
 
   // ============================
   // === URDFViewer.render API ===
   // ============================
-  // opts:
-  //  - background (number | null) default white
-  //  - shadows (bool) default false
-  //  - deferComponents (bool) default true — build thumbnails/list only when loadComponentsNow() is called
   URDFViewer.render = function(opts){
     if (state) URDFViewer.destroy();
 
@@ -267,10 +279,7 @@
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
 
     const selectMode = (opts && opts.selectMode) || 'link';
-    const bg = (opts && opts.background!==undefined) ? opts.background : THEME.bgCanvas; // default white
     const hoverCfg = Object.assign({enabled:true, color:0x0ea5a6, opacity:0.28, throttleMs:16}, (opts && opts.hover)||{});
-    const wantShadows = !!opts?.shadows; // default false
-    const deferComponents = (opts?.deferComponents!==undefined) ? !!opts.deferComponents : true;
 
     // Optional click audio via WebAudio (overlapping playback)
     let audioCtx = null, clickBuf = null, clickURL =
@@ -293,12 +302,25 @@
       if (!clickURL) return;
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       if (audioCtx.state === 'suspended') { audioCtx.resume(); }
-      if (!clickBuf){ ensureClickBuffer().then(()=>{ if (clickBuf){ const s=audioCtx.createBufferSource(); s.buffer=clickBuf; s.connect(audioCtx.destination); try{s.start();}catch(_){}} }).catch(()=>{}); return; }
-      const src = audioCtx.createBufferSource(); src.buffer = clickBuf; src.connect(audioCtx.destination); try { src.start(); } catch(_){}
+      if (!clickBuf){
+        ensureClickBuffer().then(()=>{
+          if (clickBuf){
+            const src = audioCtx.createBufferSource();
+            src.buffer = clickBuf;
+            src.connect(audioCtx.destination);
+            try { src.start(); } catch(_){}
+          }
+        }).catch(()=>{});
+        return;
+      }
+      const src = audioCtx.createBufferSource();
+      src.buffer = clickBuf;
+      src.connect(audioCtx.destination);
+      try { src.start(); } catch(_){}
     }
 
     const scene = new THREE.Scene();
-    if (bg!=null) scene.background = new THREE.Color(bg);
+    scene.background = new THREE.Color(THEME.bgCanvas); // white
 
     // === Cameras: Perspective + Ortho (toggle) ===
     const aspect = Math.max(1e-6, (container.clientWidth||1)/(container.clientHeight||1));
@@ -312,30 +334,33 @@
     const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
     renderer.setPixelRatio(window.devicePixelRatio||1);
     renderer.setSize(container.clientWidth||1, container.clientHeight||1);
-    renderer.domElement.style.width = '100%';
-    renderer.domElement.style.height = '100%';
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
     renderer.domElement.style.touchAction = 'none';
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.position = 'relative';
-    renderer.shadowMap.enabled = wantShadows; // INIT: no shadows unless requested
+
+    // === NO SHADOWS on init ===
+    renderer.shadowMap.enabled = false; // off
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
     container.appendChild(renderer.domElement);
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
 
-    // Lights
+    // Lights (no shadow casting by default)
     const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.7);
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.05);
     dirLight.position.set(3,4,2);
-    dirLight.castShadow = wantShadows; // INIT: shadows off
+    dirLight.castShadow = false; // off initially
     dirLight.shadow.mapSize.set(1024,1024);
     dirLight.shadow.camera.near = 0.1;
     dirLight.shadow.camera.far = 1000;
     scene.add(hemi); scene.add(dirLight);
 
-    // Ground + grid (toggled)
+    // Ground + grid (both hidden by default; grid toggle OFF, ground toggle OFF)
     const groundGroup = new THREE.Group(); scene.add(groundGroup);
     const grid = new THREE.GridHelper(10, 20, 0x84d4d4, 0xdef3f3);
     grid.visible = false; // disabled by default
@@ -343,8 +368,7 @@
     const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200), groundMat);
     ground.rotation.x = -Math.PI/2; ground.position.y = -0.0001;
-    ground.receiveShadow = true;
-    ground.visible = false; // INIT: ground/shadows OFF
+    ground.receiveShadow = false; ground.visible = false; // hidden by default
     groundGroup.add(ground);
 
     // XYZ Axes helper (toggle)
@@ -406,7 +430,7 @@
         obj.traverse(o=>{
           if (o.isMesh && o.geometry){
             o.userData.__assetKey = bestKey;
-            o.castShadow = wantShadows; o.receiveShadow = wantShadows;
+            o.castShadow = false; o.receiveShadow = false; // no shadows init
             const arr = assetToMeshes.get(bestKey) || [];
             arr.push(o);
             assetToMeshes.set(bestKey, arr);
@@ -474,7 +498,7 @@
     // Pointer + hover + joint drag
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    const hover = buildHoverAPI({color:0x0ea5a6, opacity:hoverCfg.opacity});
+    const hover = buildHoverAPI({color:0x0ea5a6, opacity:Math.max(0, Math.min(1, hoverCfg.opacity ?? 0.28))});
 
     let dragState=null;
     const ROT_PER_PIXEL=0.01, PRISM_PER_PIXEL=0.003;
@@ -522,7 +546,7 @@
         } else {
           delta = -(dY * PRISM_PER_PIXEL);
         }
-        ds.value += delta * fine; setJointValue(api.robotModel, ds.joint, ds.value); return;
+        ds.value += delta * fine; setJointValue(api.robotModel, ds.joint, ds.value); refreshSelectionMarker(); return;
       }
 
       let applied=false; const hit=new THREE.Vector3();
@@ -535,12 +559,12 @@
           const sign = Math.sign(ds.axisW.dot(cross)) || 1;
           const delta = Math.atan2(cross.length(), dot) * sign;
           ds.value += (delta * fine); ds.r0 = r1;
-          setJointValue(api.robotModel, ds.joint, ds.value); applied=true;
+          setJointValue(api.robotModel, ds.joint, ds.value); applied=true; refreshSelectionMarker();
         }
       }
       if (!applied){
         const delta = (dX * ROT_PER_PIXEL) * fine;
-        ds.value += delta; setJointValue(api.robotModel, ds.joint, ds.value);
+        ds.value += delta; setJointValue(api.robotModel, ds.joint, ds.value); refreshSelectionMarker();
       }
     }
 
@@ -549,7 +573,7 @@
       dragState=null; controls.enabled=true; renderer.domElement.style.cursor='auto';
     }
 
-    // OFF-SCREEN snapshot rig (only built when primed)
+    // OFF-SCREEN snapshot rig
     function buildOffscreenFromRobot(){
       if (!api.robotModel) return null;
 
@@ -591,7 +615,9 @@
       if (!meshes.length) return null;
 
       const vis = [];
-      off.robotClone.traverse(o=>{ if (o.isMesh && o.geometry) vis.push([o, o.visible]); });
+      off.robotClone.traverse(o=>{
+        if (o.isMesh && o.geometry) vis.push([o, o.visible]);
+      });
 
       for (const [m] of vis) m.visible = false;
       for (const m of meshes) m.visible = true;
@@ -621,6 +647,56 @@
       for (const [o,v] of vis) o.visible = v;
 
       return url;
+    }
+
+    // =========
+    //  Selection marker (persistent)
+    // =========
+    let selectedMeshes = [];
+    let selectionHelper = null;
+
+    function ensureSelectionHelper(){
+      if (!selectionHelper){
+        const box = new THREE.Box3(new THREE.Vector3(-0.5,-0.5,-0.5), new THREE.Vector3(0.5,0.5,0.5));
+        selectionHelper = new THREE.Box3Helper(box, new THREE.Color(THEME.teal));
+        selectionHelper.visible = false;
+        selectionHelper.renderOrder = 10001;
+        scene.add(selectionHelper);
+      }
+      return selectionHelper;
+    }
+
+    function setSelectedMeshes(meshes){
+      selectedMeshes = meshes.filter(Boolean);
+      refreshSelectionMarker();
+    }
+
+    function refreshSelectionMarker(){
+      ensureSelectionHelper();
+      if (!api.robotModel || !selectedMeshes.length){
+        selectionHelper.visible = false;
+        return;
+      }
+      const box = computeUnionBox(selectedMeshes);
+      if (!box){
+        selectionHelper.visible = false;
+        return;
+      }
+      // Update helper box and visibility
+      selectionHelper.box.copy(box);
+      selectionHelper.updateMatrixWorld(true);
+      selectionHelper.visible = true;
+    }
+
+    function selectFromHit(meshHit){
+      if (!meshHit) { setSelectedMeshes([]); return; }
+      if (selectMode==='link'){
+        const link = findAncestorLink(meshHit, api.linkSet);
+        const meshes = link ? collectMeshesInLink(link) : [meshHit];
+        setSelectedMeshes(meshes);
+      } else {
+        setSelectedMeshes([meshHit]);
+      }
     }
 
     // =========
@@ -666,7 +742,10 @@
     }
     function mkSelect(options, value){
       const sel = document.createElement('select');
-      options.forEach(o=>{ const opt = document.createElement('option'); opt.value=o; opt.textContent=o; sel.appendChild(opt); });
+      options.forEach(o=>{
+        const opt = document.createElement('option');
+        opt.value = o; opt.textContent = o; sel.appendChild(opt);
+      });
       sel.value = value;
       Object.assign(sel.style,{padding:'8px',border:`1px solid ${THEME.stroke}`,borderRadius:'10px',pointerEvents:'auto'});
       return sel;
@@ -675,17 +754,21 @@
     function createUI(){
       const root = document.createElement('div');
       Object.assign(root.style, {
-        position: 'absolute', left: '0', top: '0', width: '100%', height: '100%',
-        pointerEvents: 'none', zIndex: '9999',
+        position: 'absolute',
+        left: '0', top: '0',
+        width: '100%', height: '100%',
+        pointerEvents: 'none',
+        zIndex: '9999',
         fontFamily: 'Computer Modern, CMU Serif, Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // === Components Panel
+      // === Components Panel (pre-built later, but UI is ready)
       const compBtn = mkTealButton('Components');
       Object.assign(compBtn.style, { position:'absolute', left:'14px', bottom:'14px', boxShadow: THEME.shadow });
       const compPanel = document.createElement('div');
       Object.assign(compPanel.style, {
-        position:'absolute', right:'14px', bottom:'14px', width:'440px', maxHeight:'72%',
+        position:'absolute', right:'14px', bottom:'14px',
+        width:'440px', maxHeight:'72%',
         background: THEME.bgPanel, border:`1px solid ${THEME.stroke}`,
         boxShadow: THEME.shadow, borderRadius:'18px', overflow:'hidden', display:'none', pointerEvents:'auto'
       });
@@ -742,7 +825,8 @@
       // Projection + helpers
       const projSel = mkSelect(['Perspective','Orthographic'], 'Perspective');
       const togGrid = mkTealToggle('Grid');       // OFF by default
-      const togGround = mkTealToggle('Ground & shadows'); // INIT unchecked
+      const togGround = mkTealToggle('Ground & shadows'); // start OFF (no shadows)
+      togGround.cb.checked = false;
       const togAxes = mkTealToggle('XYZ axes');   // axes toggle
       togAxes.cb.checked = false;
       dockBody.appendChild(mkRow('Projection', projSel));
@@ -772,7 +856,7 @@
 
       // Initial defaults
       togGrid.cb.checked = false; // grid disabled initially
-      togGround.cb.checked = false; // INIT: shadows/ground off
+      // ground & shadows off initially (already applied at renderer level)
 
       return {
         root,
@@ -786,8 +870,6 @@
       };
     }
 
-    // === Lazy Components machinery ===
-    let componentsPrimed = !deferComponents; // if not deferring, consider primed
     async function buildGallery(listEl){
       listEl.innerHTML = '';
 
@@ -802,31 +884,68 @@
 
       entries.sort((a,b)=> a.base.localeCompare(b.base, undefined, {numeric:true, sensitivity:'base'}));
 
-      if (!entries.length){ listEl.textContent = 'No components with visual geometry found.'; return; }
+      if (!entries.length){
+        listEl.textContent = 'No components with visual geometry found.'; return;
+      }
 
       for (const ent of entries){
         const row = document.createElement('div');
         Object.assign(row.style, {
-          display: 'grid', gridTemplateColumns: '128px 1fr', gap: '12px', alignItems: 'center', padding: '10px',
-          borderRadius: '12px', border: `1px solid ${THEME.stroke}`, marginBottom: '10px', background: '#fff', cursor: 'pointer'
+          display: 'grid',
+          gridTemplateColumns: '128px 1fr',
+          gap: '12px',
+          alignItems: 'center',
+          padding: '10px',
+          borderRadius: '12px',
+          border: `1px solid ${THEME.stroke}`,
+          marginBottom: '10px',
+          background: '#fff',
+          cursor: 'pointer'
         });
 
         const img = document.createElement('img');
-        Object.assign(img.style, { width: '128px', height: '96px', objectFit: 'contain', background: '#f7fbfb', borderRadius: '10px', border: `1px solid ${THEME.stroke}` });
+        Object.assign(img.style, {
+          width: '128px',
+          height: '96px',
+          objectFit: 'contain',
+          background: '#f7fbfb',
+          borderRadius: '10px',
+          border: `1px solid ${THEME.stroke}`
+        });
         img.alt = ent.base;
 
         const meta = document.createElement('div');
-        const title = document.createElement('div'); title.textContent = ent.base; Object.assign(title.style, { fontWeight: '700', fontSize: '14px', color:THEME.text });
-        const small = document.createElement('div'); small.textContent = `.${ent.ext} • ${ent.meshes.length} instance${ent.meshes.length>1?'s':''}`; Object.assign(small.style, { color: THEME.textMuted, fontSize: '12px', marginTop: '2px' });
-        const desc = document.createElement('div'); desc.textContent = (opts?.descriptions||{})[ent.base] || ' '; Object.assign(desc.style, { color: THEME.textMuted, fontSize: '12px', marginTop: '4px' });
+        const title = document.createElement('div');
+        title.textContent = ent.base;
+        Object.assign(title.style, { fontWeight: '700', fontSize: '14px', color:THEME.text });
 
-        meta.appendChild(title); meta.appendChild(small); if (desc.textContent.trim()) meta.appendChild(desc);
-        row.appendChild(img); row.appendChild(meta);
+        const small = document.createElement('div');
+        small.textContent = `.${ent.ext} • ${ent.meshes.length} instance${ent.meshes.length>1?'s':''}`;
+        Object.assign(small.style, { color: THEME.textMuted, fontSize: '12px', marginTop: '2px' });
 
-        row.dataset.assetKey = ent.assetKey; row.dataset.base = ent.base; row.dataset.ext = ent.ext;
+        const desc = document.createElement('div');
+        desc.textContent = (opts?.descriptions||{})[ent.base] || ' ';
+        Object.assign(desc.style, { color: THEME.textMuted, fontSize: '12px', marginTop: '4px' });
+
+        meta.appendChild(title);
+        meta.appendChild(small);
+        if (desc.textContent.trim()) meta.appendChild(desc);
+
+        row.appendChild(img);
+        row.appendChild(meta);
+
+        row.dataset.assetKey = ent.assetKey;
+        row.dataset.base = ent.base;
+        row.dataset.ext = ent.ext;
+
         listEl.appendChild(row);
 
-        (async ()=>{ try{ const url = await snapshotAssetOffscreen(ent.assetKey); if (url) img.src = url; }catch(_e){} })();
+        (async ()=>{
+          try{
+            const url = await snapshotAssetOffscreen(ent.assetKey);
+            if (url) img.src = url;
+          }catch(_e){}
+        })();
       }
     }
 
@@ -841,15 +960,21 @@
           rectifyUpForward(api.robotModel);
           api.linkSet = markLinksAndJoints(api.robotModel);
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
-          if (!deferComponents){ state.off = buildOffscreenFromRobot(); }
+          state.off = buildOffscreenFromRobot();
+
+          // PRE-BUILD COMPONENTS GALLERY RIGHT AWAY (so opening button is instant)
+          if (state?.ui?.list){
+            buildGallery(state.ui.list).catch(()=>{});
+          }
+
           prepareExplodeVectors();
         }
       } catch(_e){}
     }
 
-    // ==========
+    // ===========
     //  Explode
-    // ==========
+    // ===========
     let explodeVecByLink = new Map();
     function prepareExplodeVectors(){
       explodeVecByLink.clear();
@@ -881,49 +1006,89 @@
           o.position.copy( base.clone().add( dir.clone().multiplyScalar(f * 0.6) ) );
         }
       });
+      refreshSelectionMarker();
     }
 
-    // ==========
-    //  Section
-    // ==========
+    // ===========
+    //  Section (clipping + STABLE teal plane visual)
+    // ===========
     let sectionPlane = null;
-    let secAxis = 'X';
+    let secAxis = 'X';         // 'X' | 'Y' | 'Z'
     let secEnabled = false;
     let secPlaneVisible = false;
 
     // visual: translucent teal sheet (no wire/grid) — tuned to avoid pulsing
-    let secVisual = null; // THREE.Mesh for the plane
+    let secVisual = null;      // THREE.Mesh for the plane
+
     function ensureSectionVisual(){
       if (!secVisual){
         const geom = new THREE.PlaneGeometry(1,1,1,1);
-        const mat  = new THREE.MeshBasicMaterial({ color: 0x0ea5a6, transparent: true, opacity: 0.14, depthWrite: false, depthTest: false, toneMapped: false, side: THREE.DoubleSide });
+        const mat  = new THREE.MeshBasicMaterial({
+          color: 0x0ea5a6,
+          transparent: true,
+          opacity: 0.14,
+          depthWrite: false,
+          depthTest: false,     // draw on top; no z-fighting
+          toneMapped: false,
+          side: THREE.DoubleSide
+        });
         secVisual = new THREE.Mesh(geom, mat);
-        secVisual.visible = false; secVisual.renderOrder = 10000; scene.add(secVisual);
+        secVisual.visible = false;
+        secVisual.renderOrder = 10000; // very high to stay stable
+        scene.add(secVisual);
       }
       return secVisual;
     }
-    function refreshSectionVisual(maxDim, center){ if (!secVisual) return; const size=Math.max(1e-6, maxDim||1); secVisual.scale.set(size*1.2, size*1.2, 1); if (center) secVisual.position.copy(center); }
+
+    function refreshSectionVisual(maxDim, center){
+      if (!secVisual) return;
+      const size = Math.max(1e-6, maxDim || 1);
+      secVisual.scale.set(size*1.2, size*1.2, 1);
+      if (center) secVisual.position.copy(center);
+    }
+
     function updateSectionPlane(){
       renderer.clippingPlanes = [];
-      if (!secEnabled || !api.robotModel) { renderer.localClippingEnabled=false; if (secVisual) secVisual.visible = false; return; }
-      const n = new THREE.Vector3( secAxis==='X'?1:0, secAxis==='Y'?1:0, secAxis==='Z'?1:0 );
+      if (!secEnabled || !api.robotModel) {
+        renderer.localClippingEnabled=false;
+        if (secVisual) secVisual.visible = false;
+        return;
+      }
+      const n = new THREE.Vector3(
+        secAxis==='X'?1:0,
+        secAxis==='Y'?1:0,
+        secAxis==='Z'?1:0
+      );
       const box = new THREE.Box3().setFromObject(api.robotModel);
       if (box.isEmpty()){ renderer.localClippingEnabled=false; if (secVisual) secVisual.visible=false; return; }
       const size   = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x,size.y,size.z)||1;
       const center = box.getCenter(new THREE.Vector3());
       const dist = (Number(state.ui.secDist.value) || 0) * maxDim * 0.5;
-      const plane = new THREE.Plane(n, -center.dot(n) - dist);
-      renderer.localClippingEnabled = true; renderer.clippingPlanes = [ plane ]; sectionPlane = plane;
-      ensureSectionVisual(); refreshSectionVisual(maxDim, center); secVisual.visible = !!secPlaneVisible;
-      const look = new THREE.Vector3().copy(n); const up = new THREE.Vector3(0,1,0); if (Math.abs(look.dot(up)) > 0.999) up.set(1,0,0);
-      const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0,0,0), look, up); const q = new THREE.Quaternion().setFromRotationMatrix(m);
-      secVisual.setRotationFromQuaternion(q); const p0 = n.clone().multiplyScalar(-plane.constant); secVisual.position.copy(p0);
+      const plane = new THREE.Plane(n, -center.dot(n) - dist); // n·x + d = 0
+      renderer.localClippingEnabled = true;
+      renderer.clippingPlanes = [ plane ];
+      sectionPlane = plane;
+
+      // orient & show the teal sheet (stable, no pulsing)
+      ensureSectionVisual();
+      refreshSectionVisual(maxDim, center);
+      secVisual.visible = !!secPlaneVisible;
+
+      // align to plane
+      const look = new THREE.Vector3().copy(n);
+      const up   = new THREE.Vector3(0,1,0);
+      if (Math.abs(look.dot(up)) > 0.999) up.set(1,0,0);
+      const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0,0,0), look, up);
+      const q = new THREE.Quaternion().setFromRotationMatrix(m);
+      secVisual.setRotationFromQuaternion(q);
+      const p0 = n.clone().multiplyScalar(-plane.constant);
+      secVisual.position.copy(p0);
     }
 
-    // ==========
+    // ===========
     //  Render modes
-    // ==========
+    // ===========
     function setRenderMode(mode){
       if (!api.robotModel) return;
       api.robotModel.traverse(o=>{
@@ -932,11 +1097,20 @@
           for (const m of mats){
             m.wireframe = (mode==='Wireframe');
             if (mode==='X-Ray'){
-              m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.depthTest = true;
+              m.transparent = true;
+              m.opacity = 0.35;
+              m.depthWrite = false;
+              m.depthTest = true;
             } else if (mode==='Ghost'){
-              m.transparent = true; m.opacity = 0.70; m.depthWrite = true; m.depthTest = true;
+              m.transparent = true;
+              m.opacity = 0.70;
+              m.depthWrite = true;
+              m.depthTest = true;
             } else {
-              m.transparent = false; m.opacity = 1.0; m.depthWrite = true; m.depthTest = true;
+              m.transparent = false;
+              m.opacity = 1.0;
+              m.depthWrite = true;
+              m.depthTest = true;
             }
             m.needsUpdate = true;
           }
@@ -944,40 +1118,96 @@
       });
     }
 
-    // ==========
+    // ===========
     //  Views
-    // ==========
-    function viewIso(){ if (!api.robotModel) return; const box=new THREE.Box3().setFromObject(api.robotModel); if (box.isEmpty()) return; const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9; const az=Math.PI*0.25, el=Math.PI*0.2; const dir=new THREE.Vector3(Math.cos(el)*Math.cos(az),Math.sin(el),Math.cos(el)*Math.sin(az)).multiplyScalar(d); camera.position.copy(c.clone().add(dir)); controls.target.copy(c); controls.update(); }
-    function viewTop(){ if (!api.robotModel) return; const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9; camera.position.set(c.x, c.y + d, c.z); controls.target.copy(c); controls.update(); }
-    function viewFront(){ if (!api.robotModel) return; const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9; camera.position.set(c.x, c.y, c.z + d); controls.target.copy(c); controls.update(); }
-    function viewRight(){ if (!api.robotModel) return; const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9; camera.position.set(c.x + d, c.y, c.z); controls.target.copy(c); controls.update(); }
+    // ===========
+    function viewIso(){
+      if (!api.robotModel) return;
+      const box = new THREE.Box3().setFromObject(api.robotModel);
+      if (box.isEmpty()) return;
+      const c = box.getCenter(new THREE.Vector3());
+      const s = box.getSize(new THREE.Vector3());
+      const d = Math.max(s.x,s.y,s.z) * 1.9;
+      const az = Math.PI * 0.25, el = Math.PI * 0.2;
+      const dir = new THREE.Vector3(Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)).multiplyScalar(d);
+      camera.position.copy(c.clone().add(dir)); controls.target.copy(c); controls.update();
+      refreshSelectionMarker();
+    }
+    function viewTop(){
+      if (!api.robotModel) return;
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      camera.position.set(c.x, c.y + d, c.z); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+    }
+    function viewFront(){
+      if (!api.robotModel) return;
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      camera.position.set(c.x, c.y, c.z + d); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+    }
+    function viewRight(){
+      if (!api.robotModel) return;
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      camera.position.set(c.x + d, c.y, c.z); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+    }
 
-    // ==========
+    // ===========
     //  Helpers
-    // ==========
-    function showAllAndFrame(){ if (!api.robotModel) return; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry) o.visible = true; }); fitAndCenter(camera, controls, api.robotModel, 1.05); }
+    // ===========
+    function showAllAndFrame(){
+      if (!api.robotModel) return;
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry) o.visible = true;
+      });
+      fitAndCenter(camera, controls, api.robotModel, 1.05);
+      setSelectedMeshes([]); // clear selection on show-all
+    }
 
     function isolateAssetOnScreen(assetKey){
       const meshes = assetToMeshes.get(assetKey) || [];
-      api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry) o.visible = false; });
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry) o.visible = false;
+      });
       for (const m of meshes) m.visible = true;
+
       const box = computeUnionBox(meshes);
       if (box){
-        const center = box.getCenter(new THREE.Vector3()); const size = box.getSize(new THREE.Vector3()); const maxDim = Math.max(size.x,size.y,size.z)||1;
+        const center = box.getCenter(new THREE.Vector3());
+        const size   = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x,size.y,size.z)||1;
         if (camera.isPerspectiveCamera){
-          const dist = maxDim * 1.9; camera.near=Math.max(maxDim/1000,0.001); camera.far=Math.max(maxDim*1000,1000); camera.updateProjectionMatrix();
-          const az = Math.PI * 0.25, el = Math.PI * 0.18; const dir = new THREE.Vector3(Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)).multiplyScalar(dist); camera.position.copy(center.clone().add(dir));
+          const dist   = maxDim * 1.9;
+          camera.near = Math.max(maxDim/1000,0.001);
+          camera.far  = Math.max(maxDim*1000,1000);
+          camera.updateProjectionMatrix();
+          const az = Math.PI * 0.25, el = Math.PI * 0.18;
+          const dir = new THREE.Vector3(
+            Math.cos(el)*Math.cos(az),
+            Math.sin(el),
+            Math.cos(el)*Math.sin(az)
+          ).multiplyScalar(dist);
+          camera.position.copy(center.clone().add(dir));
         } else {
-          camera.left=-maxDim; camera.right=maxDim; camera.top=maxDim; camera.bottom=-maxDim; camera.near=Math.max(maxDim/1000,0.001); camera.far=Math.max(maxDim*1000,1000); camera.updateProjectionMatrix();
+          camera.left = -maxDim; camera.right = maxDim; camera.top = maxDim; camera.bottom = -maxDim;
+          camera.near = Math.max(maxDim/1000,0.001); camera.far = Math.max(maxDim*1000,1000);
+          camera.updateProjectionMatrix();
           camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
         }
         controls.target.copy(center); controls.update();
         sizeAxesHelper(maxDim, center);
       }
+
+      // Make selection persistent on isolation
+      setSelectedMeshes(meshes);
     }
 
-    // Single handler: GUI press + click sound
-    function buttonClicked(){ try { playClick(); } catch(_){} }
+    // Single handler: GUI press + click sound (exactly once per user action)
+    function buttonClicked(){
+      try { playClick(); } catch(_){}
+      try {
+        if (window && window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel){
+          window.Jupyter.notebook.kernel.execute("print('button clicked')");
+        }
+      } catch(e){}
+    }
 
     // attach resize listener
     window.addEventListener('resize', onResize);
@@ -995,11 +1225,23 @@
 
     // throttled pointermove
     let hoverRafPending = false, lastMoveEvt=null, lastHoverTs=0;
-    function scheduleHover(){ if (hoverRafPending) return; hoverRafPending = true; requestAnimationFrame(()=>{ hoverRafPending = false; if (!lastMoveEvt) return; processHover(lastMoveEvt); }); }
+    function scheduleHover(){
+      if (hoverRafPending) return;
+      hoverRafPending = true;
+      requestAnimationFrame(()=>{
+        hoverRafPending = false;
+        if (!lastMoveEvt) return;
+        processHover(lastMoveEvt);
+      });
+    }
 
     function processHover(e){
       lastHoverTs = performance.now();
-      if (!api.robotModel || !hoverCfg.enabled){ hover.clear(); renderer.domElement.style.cursor='auto'; return; }
+      if (!api.robotModel || !hoverCfg.enabled){
+        hover.clear();
+        renderer.domElement.style.cursor='auto';
+        return;
+      }
       getPointer(e);
       if (dragState){ updateJointDrag(e); return; }
 
@@ -1007,8 +1249,12 @@
       const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
       const hits = raycaster.intersectObjects(pickables, true);
 
-      let newKey = null; let meshHit = null;
-      if (hits.length){ meshHit = hits[0].object; newKey = hoverKeyFor(meshHit); }
+      let newKey = null;
+      let meshHit = null;
+      if (hits.length){
+        meshHit = hits[0].object;
+        newKey = hoverKeyFor(meshHit);
+      }
 
       if (newKey !== lastHoverKey){
         hover.clear();
@@ -1016,7 +1262,9 @@
           if (selectMode==='link'){
             const link = findAncestorLink(meshHit, api.linkSet);
             if (link) hover.showLink(link); else hover.showMesh(meshHit);
-          }else{ hover.showMesh(meshHit); }
+          }else{
+            hover.showMesh(meshHit);
+          }
         }
         lastHoverKey = newKey;
       }
@@ -1025,7 +1273,10 @@
       renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
     }
 
-    function onPointerMove(e){ lastMoveEvt = e; const now = performance.now(); if (now - lastHoverTs >= (hoverCfg.throttleMs|0)){ scheduleHover(); } else { scheduleHover(); } }
+    function onPointerMove(e){
+      lastMoveEvt = e;
+      scheduleHover();
+    }
 
     function onPointerDown(e){
       e.preventDefault();
@@ -1035,11 +1286,11 @@
       const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
       const hits = raycaster.intersectObjects(pickables, true);
       if (!hits.length) return;
-      const hitObj = hits[0].object;
-      const link = (selectMode==='link') ? findAncestorLink(hitObj, api.linkSet) : null;
-      // Fast-click teal marker flash to guarantee visual feedback
-      if (link) hover.flashOn(link); else hover.flashOn(hitObj);
-      const joint = findAncestorJoint(hitObj);
+      const meshHit = hits[0].object;
+
+      // If joint found, start drag; but still set selection marker
+      const joint = findAncestorJoint(meshHit);
+      selectFromHit(meshHit);
       if (joint && isMovable(joint)) startJointDrag(joint, e);
     }
 
@@ -1064,8 +1315,11 @@
 
       let galleryBuilt = false;
 
-      // Tools open/close toggle button
-      function setDock(open){ dock.style.display = open ? 'block' : 'none'; toolsToggleBtn.textContent = open ? 'Close Tools' : 'Open Tools'; }
+      // Tools open/close toggle button (single click handler)
+      function setDock(open){
+        dock.style.display = open ? 'block' : 'none';
+        toolsToggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
+      }
       toolsToggleBtn.addEventListener('click', ()=>{ buttonClicked(); setDock(dock.style.display==='none'); });
       setDock(false); // start CLOSED
 
@@ -1074,18 +1328,31 @@
         buttonClicked();
         if (panel.style.display === 'none'){
           panel.style.display = 'block';
-          if (componentsPrimed && !galleryBuilt){ if (!state.off) state.off = buildOffscreenFromRobot(); await buildGallery(list); galleryBuilt = true; }
-          if (!componentsPrimed){ list.innerHTML = '<div style="color:'+THEME.textMuted+';padding:8px">Run <b>URDFViewer.loadComponentsNow()</b> from Python to load components & photos.</div>'; }
-        } else { panel.style.display = 'none'; }
+          // If not yet built (e.g., URDF arrived late), build now
+          if (!galleryBuilt){ await buildGallery(list); galleryBuilt = true; }
+        } else {
+          panel.style.display = 'none';
+        }
       });
 
       showAllBtn.addEventListener('click', (ev)=>{ buttonClicked(); showAllAndFrame(); });
 
       // Gallery row delegation
       list.addEventListener('click', (ev)=>{
-        let el = ev.target; while (el && el !== list && !el.dataset?.assetKey) el = el.parentElement; if (!el || el === list) return;
-        buttonClicked(); const key = el.dataset.assetKey; if (key) isolateAssetOnScreen(key);
+        let el = ev.target;
+        while (el && el !== list && !el.dataset?.assetKey) el = el.parentElement;
+        if (!el || el === list) return;
+        buttonClicked();
+        const key = el.dataset.assetKey;
+        if (key) isolateAssetOnScreen(key);
       });
+
+      // PRE-BUILD gallery contents ASAP once robot loads
+      const maybePrebuildGallery = ()=>{
+        if (state.off && !galleryBuilt && state.ui?.list){
+          buildGallery(state.ui.list).then(()=>{ galleryBuilt = true; }).catch(()=>{});
+        }
+      };
 
       // Fit
       fitBtn.addEventListener('click', ()=>{ buttonClicked(); if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.06); });
@@ -1094,11 +1361,11 @@
       renderMode.addEventListener('change', ()=>{ buttonClicked(); setRenderMode(renderMode.value); });
 
       // Explode
-      explodeSlider.addEventListener('input', ()=>{ applyExplode(Number(explodeSlider.value)); });
+      explodeSlider.addEventListener('input', ()=>{ /* no sound on slider move */ applyExplode(Number(explodeSlider.value)); });
 
       // Section
       axisSel.addEventListener('change', ()=>{ buttonClicked(); secAxis = axisSel.value; updateSectionPlane(); });
-      secDist.addEventListener('input', ()=>{ updateSectionPlane(); }); // continuous
+      secDist.addEventListener('input', ()=>{ updateSectionPlane(); }); // continuous — no sound
       secToggle.cb.addEventListener('change', ()=>{ buttonClicked(); secEnabled = !!secToggle.cb.checked; updateSectionPlane(); });
       secPlaneToggle.cb.addEventListener('change', ()=>{ buttonClicked(); secPlaneVisible = !!secPlaneToggle.cb.checked; updateSectionPlane(); });
 
@@ -1109,7 +1376,13 @@
       bRight.addEventListener('click', ()=>{ buttonClicked(); viewRight(); });
 
       // Snapshot
-      bSnap.addEventListener('click', ()=>{ buttonClicked(); try{ const url = renderer.domElement.toDataURL('image/png'); const a=document.createElement('a'); a.href=url; a.download='snapshot.png'; a.click(); }catch(_e){} });
+      bSnap.addEventListener('click', ()=>{
+        buttonClicked();
+        try{
+          const url = renderer.domElement.toDataURL('image/png');
+          const a = document.createElement('a'); a.href=url; a.download='snapshot.png'; a.click();
+        }catch(_e){}
+      });
 
       // Projection
       projSel.addEventListener('change', ()=>{
@@ -1120,37 +1393,66 @@
           const c = box && !box.isEmpty() ? box.getCenter(new THREE.Vector3()) : controls.target.clone();
           const size = box && !box.isEmpty() ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(2,2,2);
           const maxDim = Math.max(size.x,size.y,size.z)||1;
-          ortho.left=-maxDim*asp; ortho.right=maxDim*asp; ortho.top=maxDim; ortho.bottom=-maxDim; ortho.near=Math.max(maxDim/1000,0.001); ortho.far=Math.max(maxDim*1500,1500);
+          ortho.left=-maxDim*asp; ortho.right=maxDim*asp; ortho.top=maxDim; ortho.bottom=-maxDim;
+          ortho.near=Math.max(maxDim/1000,0.001); ortho.far=Math.max(maxDim*1500,1500);
           ortho.position.copy(camera.position); ortho.updateProjectionMatrix();
-          controls.object = ortho; camera = ortho; controls.target.copy(c); controls.update();
+          controls.object = ortho; camera = ortho;
+          controls.target.copy(c); controls.update();
         } else if (projSel.value==='Perspective' && camera.isOrthographicCamera){
-          persp.aspect = asp; persp.updateProjectionMatrix(); persp.position.copy(camera.position); controls.object = persp; camera = persp; controls.update();
+          persp.aspect = asp; persp.updateProjectionMatrix();
+          persp.position.copy(camera.position);
+          controls.object = persp; camera = persp;
+          controls.update();
         }
+        refreshSelectionMarker();
       });
 
       // Helpers
       togGrid.cb.addEventListener('change', ()=>{ buttonClicked(); grid.visible = !!togGrid.cb.checked; });
-      togGround.cb.addEventListener('change', ()=>{ buttonClicked(); const on=!!togGround.cb.checked; ground.visible = on; dirLight.castShadow = on; renderer.shadowMap.enabled = on; });
-      togAxes.cb.addEventListener('change', ()=>{ buttonClicked(); axesHelper.visible = !!togAxes.cb.checked; if (api.robotModel){ const box=new THREE.Box3().setFromObject(api.robotModel); if (!box.isEmpty()){ const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); sizeAxesHelper(Math.max(s.x,s.y,s.z)||1, c); } } });
 
+      // Ground & shadows: toggling ON enables shadows; OFF disables everything shadowy
+      togGround.cb.addEventListener('change', ()=>{
+        buttonClicked();
+        const on = !!togGround.cb.checked;
+        ground.visible = on;
+        dirLight.castShadow = on;
+        renderer.shadowMap.enabled = on;
+        // meshes already have cast/receive false from init; if turning on, enable them
+        api.robotModel?.traverse(o=>{
+          if (o.isMesh && o.geometry){
+            o.castShadow = on;
+            o.receiveShadow = on;
+          }
+        });
+      });
+
+      togAxes.cb.addEventListener('change', ()=>{
+        buttonClicked();
+        axesHelper.visible = !!togAxes.cb.checked;
+        if (api.robotModel){
+          const box = new THREE.Box3().setFromObject(api.robotModel);
+          if (!box.isEmpty()){
+            const c = box.getCenter(new THREE.Vector3());
+            const s = box.getSize(new THREE.Vector3());
+            sizeAxesHelper(Math.max(s.x,s.y,s.z)||1, c);
+          }
+        }
+      });
+
+      // Kick a prebuild if robot already loaded late
+      maybePrebuildGallery();
     })();
 
     // Animate
-    function animate(){ state.raf = requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
+    function animate(){
+      state.raf = requestAnimationFrame(animate);
+      controls.update(); renderer.render(scene, camera);
+    }
 
     loadURDF((opts && opts.urdfContent) || '');
     animate();
 
-    // ===== Public API additions =====
-    // Call this from Python to load Components button functions & photos
-    URDFViewer.loadComponentsNow = async function(){
-      componentsPrimed = true;
-      if (!state?.off) state.off = buildOffscreenFromRobot();
-      if (state?.ui?.panel && state.ui.panel.style.display !== 'none'){
-        await buildGallery(state.ui.list);
-      }
-    };
-
+    // expose minimal API
     return {
       scene, get camera(){ return camera; }, renderer, controls,
       get robot(){ return api.robotModel; },
@@ -1161,8 +1463,3 @@
 
   root.URDFViewer = URDFViewer;
 })(typeof window!=='undefined' ? window : this);
-
-
-
-
-
