@@ -5,7 +5,7 @@
      - Section plane (X/Y/Z axis + distance) + stable teal plane (no grid/wire; no pulsing)
      - Camera presets: Iso / Top / Front / Right
      - Perspective <-> Orthographic toggle
-     - Grid + Ground + Soft shadows (grid OFF by default)
+     - Grid + Ground & shadows (OFF by default; turn on via toggle)
      - Fit to view & Snapshot
      - XYZ Axes toggle (auto-sized)
      - Tools tab starts CLOSED + floating "Open/Close Tools" button
@@ -16,6 +16,13 @@
      - Joint drag (revolute/prismatic) with limits (+Shift fine)
      - Components panel (isolate & show all), thumbnails off-screen
      - Single buttonClicked() handler wiring
+
+   UPDATED per your requests:
+     - Pure white background
+     - Selection "teal box" marker (persistent while rotating)
+     - Deselect when clicking empty canvas (no robot hit)
+     - No shadows on init
+     - Precreate UI and prebuild Components list to avoid first-click lag
 */
 (function (root) {
   'use strict';
@@ -31,7 +38,7 @@
     tealSoft: '#14b8b9',
     tealFaint: 'rgba(20,184,185,0.12)',
     bgPanel: '#ffffff',
-    bgCanvas: 0xf6fafb,
+    bgCanvas: 0xffffff, // pure white
     stroke: '#d7e7e7',
     text: '#0b3b3c',
     textMuted: '#577e7f',
@@ -90,7 +97,7 @@
       if (n.isMesh && n.geometry){
         if (Array.isArray(n.material)) n.material.forEach(m=>m.side=THREE.DoubleSide);
         else if (n.material) n.material.side = THREE.DoubleSide;
-        n.castShadow = n.receiveShadow = true;
+        n.castShadow = n.receiveShadow = false; // start with shadows OFF
         n.geometry.computeVertexNormals?.();
       }
     });
@@ -101,45 +108,6 @@
     obj.rotateX(-Math.PI/2);
     obj.userData.__rectified = true;
     obj.updateMatrixWorld(true);
-  }
-
-  function fitAndCenter(camera, controls, object, pad=1.08){
-    const box = new THREE.Box3().setFromObject(object);
-    if (box.isEmpty()) return;
-    const center = box.getCenter(new THREE.Vector3());
-    const size   = box.getSize(new THREE.Vector3()).multiplyScalar(pad);
-    const maxDim = Math.max(size.x,size.y,size.z)||1;
-
-    if (camera.isPerspectiveCamera){
-      const dist   = maxDim * 1.9;
-      camera.near = Math.max(maxDim/1000,0.001);
-      camera.far  = Math.max(maxDim*1500,1500);
-      camera.updateProjectionMatrix();
-      camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
-    } else {
-      camera.left = -maxDim; camera.right = maxDim;
-      camera.top  =  maxDim; camera.bottom= -maxDim;
-      camera.near = Math.max(maxDim/1000,0.001);
-      camera.far  = Math.max(maxDim*1500,1500);
-      camera.updateProjectionMatrix();
-      camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
-    }
-    controls.target.copy(center); controls.update();
-
-    // keep helpers in scale/position
-    sizeAxesHelper(maxDim, center);
-    refreshSectionVisual(maxDim, center);
-  }
-
-  function collectMeshesInLink(linkObj){
-    const t=[], stack=[linkObj];
-    while (stack.length){
-      const n = stack.pop(); if (!n) continue;
-      if (n.isMesh && n.geometry && !n.userData.__isHoverOverlay) t.push(n);
-      const kids = n.children ? n.children.slice() : [];
-      for (let i=0;i<kids.length;i++) stack.push(kids[i]);
-    }
-    return t;
   }
 
   function computeUnionBox(meshes){
@@ -154,7 +122,18 @@
     return has ? box : null;
   }
 
-  // === Configurable + cached hover ===
+  function collectMeshesInLink(linkObj){
+    const t=[], stack=[linkObj];
+    while (stack.length){
+      const n = stack.pop(); if (!n) continue;
+      if (n.isMesh && n.geometry && !n.userData.__isHoverOverlay) t.push(n);
+      const kids = n.children ? n.children.slice() : [];
+      for (let i=0;i<kids.length;i++) stack.push(kids[i]);
+    }
+    return t;
+  }
+
+  // === Hover overlay ===
   function buildHoverAPI({color=0x0ea5a6, opacity=0.28}={}){
     const overlays=[];
     function clear(){ for(const o of overlays){ if (o?.parent) o.parent.remove(o); } overlays.length=0; }
@@ -270,10 +249,9 @@
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
 
     const selectMode = (opts && opts.selectMode) || 'link';
-    const bg = (opts && opts.background!==undefined) ? opts.background : THEME.bgCanvas;
     const hoverCfg = Object.assign({enabled:true, color:0x0ea5a6, opacity:0.28, throttleMs:16}, (opts && opts.hover)||{});
 
-    // Optional click audio via WebAudio (overlapping playback)
+    // === Overlapping click-audio system ===
     let audioCtx = null, clickBuf = null, clickURL =
       (opts && typeof opts.clickAudioDataURL === 'string' && opts.clickAudioDataURL.startsWith('data:audio/'))
         ? opts.clickAudioDataURL
@@ -312,9 +290,9 @@
     }
 
     const scene = new THREE.Scene();
-    if (bg!=null) scene.background = new THREE.Color(bg);
+    scene.background = new THREE.Color(THEME.bgCanvas);
 
-    // === Cameras: Perspective + Ortho (toggle) ===
+    // Cameras
     const aspect = Math.max(1e-6, (container.clientWidth||1)/(container.clientHeight||1));
     const persp = new THREE.PerspectiveCamera(75, aspect, 0.01, 10000);
     persp.position.set(0,0,3);
@@ -331,7 +309,9 @@
     renderer.domElement.style.touchAction = 'none';
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.position = 'relative';
-    renderer.shadowMap.enabled = true;
+
+    // Start with NO shadows
+    renderer.shadowMap.enabled = false;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
 
@@ -343,25 +323,26 @@
     const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.7);
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.05);
     dirLight.position.set(3,4,2);
-    dirLight.castShadow = true;
+    dirLight.castShadow = false; // off initially
     dirLight.shadow.mapSize.set(1024,1024);
     dirLight.shadow.camera.near = 0.1;
     dirLight.shadow.camera.far = 1000;
     scene.add(hemi); scene.add(dirLight);
 
-    // Ground + grid (toggled)
+    // Ground + grid (hidden by default)
     const groundGroup = new THREE.Group(); scene.add(groundGroup);
     const grid = new THREE.GridHelper(10, 20, 0x84d4d4, 0xdef3f3);
-    grid.visible = false; // disabled by default
+    grid.visible = false;
     groundGroup.add(grid);
     const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200), groundMat);
     ground.rotation.x = -Math.PI/2; ground.position.y = -0.0001;
-    ground.receiveShadow = true; ground.visible = true; groundGroup.add(ground);
+    ground.receiveShadow = false; ground.visible = false;
+    groundGroup.add(ground);
 
-    // XYZ Axes helper (toggle)
+    // Axes helper
     const axesHelper = new THREE.AxesHelper(1);
-    axesHelper.visible = false; // off by default
+    axesHelper.visible = false;
     scene.add(axesHelper);
     function sizeAxesHelper(maxDim, center){
       axesHelper.scale.setScalar(maxDim * 0.75);
@@ -381,6 +362,7 @@
       camera.updateProjectionMatrix();
       renderer.setSize(w,h);
     }
+    window.addEventListener('resize', onResize);
 
     // Loaders + meshDB
     const urdfLoader = new URDFLoader();
@@ -407,6 +389,35 @@
       },80);
     }
 
+    function fitAndCenter(camera, controls, object, pad=1.08){
+      const box = new THREE.Box3().setFromObject(object);
+      if (box.isEmpty()) return;
+      const center = box.getCenter(new THREE.Vector3());
+      const size   = box.getSize(new THREE.Vector3()).multiplyScalar(pad);
+      const maxDim = Math.max(size.x,size.y,size.z)||1;
+
+      if (camera.isPerspectiveCamera){
+        const dist   = maxDim * 1.9;
+        camera.near = Math.max(maxDim/1000,0.001);
+        camera.far  = Math.max(maxDim*1500,1500);
+        camera.updateProjectionMatrix();
+        camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
+      } else {
+        camera.left = -maxDim; camera.right = maxDim;
+        camera.top  =  maxDim; camera.bottom= -maxDim;
+        camera.near = Math.max(maxDim/1000,0.001);
+        camera.far  = Math.max(maxDim*1500,1500);
+        camera.updateProjectionMatrix();
+        camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
+      }
+      controls.target.copy(center); controls.update();
+
+      // keep helpers in scale/position
+      sizeAxesHelper(maxDim, center);
+      refreshSectionVisual(maxDim, center);
+      refreshSelectionMarker();
+    }
+
     urdfLoader.loadMeshCb = function(path, manager, onComplete){
       const bestKey = pickBestAsset(variantsFor(path), meshDB);
       if (!bestKey){ onComplete(new THREE.Mesh()); return; }
@@ -418,7 +429,7 @@
         obj.traverse(o=>{
           if (o.isMesh && o.geometry){
             o.userData.__assetKey = bestKey;
-            o.castShadow = true; o.receiveShadow = true;
+            o.castShadow = false; o.receiveShadow = false; // start off
             const arr = assetToMeshes.get(bestKey) || [];
             arr.push(o);
             assetToMeshes.set(bestKey, arr);
@@ -486,10 +497,52 @@
     // Pointer + hover + joint drag
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    const hover = buildHoverAPI({color:0x0ea5a6, opacity:hoverCfg.opacity});
+    const hover = buildHoverAPI({color:0x0ea5a6, opacity:Math.max(0, Math.min(1, hoverCfg.opacity ?? 0.28))});
 
     let dragState=null;
     const ROT_PER_PIXEL=0.01, PRISM_PER_PIXEL=0.003;
+
+    // === Persistent selection marker (teal box) ===
+    let selectedMeshes = [];
+    let selectionHelper = null;
+    function ensureSelectionHelper(){
+      if (!selectionHelper){
+        const box = new THREE.Box3(
+          new THREE.Vector3(-0.5,-0.5,-0.5),
+          new THREE.Vector3(0.5,0.5,0.5)
+        );
+        selectionHelper = new THREE.Box3Helper(box, new THREE.Color(THEME.teal));
+        selectionHelper.visible = false;
+        selectionHelper.renderOrder = 10001;
+        scene.add(selectionHelper);
+      }
+      return selectionHelper;
+    }
+    function setSelectedMeshes(meshes){
+      selectedMeshes = (meshes||[]).filter(Boolean);
+      refreshSelectionMarker();
+    }
+    function refreshSelectionMarker(){
+      ensureSelectionHelper();
+      if (!api.robotModel || !selectedMeshes.length){
+        selectionHelper.visible = false; return;
+      }
+      const box = computeUnionBox(selectedMeshes);
+      if (!box){ selectionHelper.visible = false; return; }
+      selectionHelper.box.copy(box);
+      selectionHelper.updateMatrixWorld(true);
+      selectionHelper.visible = true;
+    }
+    function selectFromHit(meshHit){
+      if (!meshHit){ setSelectedMeshes([]); return; }
+      if (selectMode==='link'){
+        const link = findAncestorLink(meshHit, api.linkSet);
+        const meshes = link ? collectMeshesInLink(link) : [meshHit];
+        setSelectedMeshes(meshes);
+      } else {
+        setSelectedMeshes([meshHit]);
+      }
+    }
 
     function getPointer(e){
       const r = renderer.domElement.getBoundingClientRect();
@@ -534,7 +587,7 @@
         } else {
           delta = -(dY * PRISM_PER_PIXEL);
         }
-        ds.value += delta * fine; setJointValue(api.robotModel, ds.joint, ds.value); return;
+        ds.value += delta * fine; setJointValue(api.robotModel, ds.joint, ds.value); refreshSelectionMarker(); return;
       }
 
       let applied=false; const hit=new THREE.Vector3();
@@ -547,12 +600,12 @@
           const sign = Math.sign(ds.axisW.dot(cross)) || 1;
           const delta = Math.atan2(cross.length(), dot) * sign;
           ds.value += (delta * fine); ds.r0 = r1;
-          setJointValue(api.robotModel, ds.joint, ds.value); applied=true;
+          setJointValue(api.robotModel, ds.joint, ds.value); applied=true; refreshSelectionMarker();
         }
       }
       if (!applied){
         const delta = (dX * ROT_PER_PIXEL) * fine;
-        ds.value += delta; setJointValue(api.robotModel, ds.joint, ds.value);
+        ds.value += delta; setJointValue(api.robotModel, ds.joint, ds.value); refreshSelectionMarker();
       }
     }
 
@@ -561,7 +614,7 @@
       dragState=null; controls.enabled=true; renderer.domElement.style.cursor='auto';
     }
 
-    // OFF-SCREEN snapshot rig
+    // Offscreen thumbnails
     function buildOffscreenFromRobot(){
       if (!api.robotModel) return null;
 
@@ -637,6 +690,296 @@
       return url;
     }
 
+    // ===========
+    //  Section plane
+    // ===========
+    let sectionPlane = null;
+    let secAxis = 'X';
+    let secEnabled = false;
+    let secPlaneVisible = false;
+    let secVisual = null;
+
+    function ensureSectionVisual(){
+      if (!secVisual){
+        const geom = new THREE.PlaneGeometry(1,1,1,1);
+        const mat  = new THREE.MeshBasicMaterial({
+          color: 0x0ea5a6,
+          transparent: true,
+          opacity: 0.14,
+          depthWrite: false,
+          depthTest: false,
+          toneMapped: false,
+          side: THREE.DoubleSide
+        });
+        secVisual = new THREE.Mesh(geom, mat);
+        secVisual.visible = false;
+        secVisual.renderOrder = 10000;
+        scene.add(secVisual);
+      }
+      return secVisual;
+    }
+    function refreshSectionVisual(maxDim, center){
+      if (!secVisual) return;
+      const size = Math.max(1e-6, maxDim || 1);
+      secVisual.scale.set(size*1.2, size*1.2, 1);
+      if (center) secVisual.position.copy(center);
+    }
+    function updateSectionPlane(){
+      renderer.clippingPlanes = [];
+      if (!secEnabled || !api.robotModel) {
+        renderer.localClippingEnabled=false;
+        if (secVisual) secVisual.visible = false;
+        return;
+      }
+      const n = new THREE.Vector3(secAxis==='X'?1:0, secAxis==='Y'?1:0, secAxis==='Z'?1:0);
+      const box = new THREE.Box3().setFromObject(api.robotModel);
+      if (box.isEmpty()){ renderer.localClippingEnabled=false; if (secVisual) secVisual.visible=false; return; }
+      const size   = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x,size.y,size.z)||1;
+      const center = box.getCenter(new THREE.Vector3());
+      const dist = (Number(state.ui.secDist.value) || 0) * maxDim * 0.5;
+      const plane = new THREE.Plane(n, -center.dot(n) - dist); // n·x + d = 0
+      renderer.localClippingEnabled = true;
+      renderer.clippingPlanes = [ plane ];
+      sectionPlane = plane;
+
+      ensureSectionVisual();
+      refreshSectionVisual(maxDim, center);
+      secVisual.visible = !!secPlaneVisible;
+
+      const look = new THREE.Vector3().copy(n);
+      const up   = new THREE.Vector3(0,1,0);
+      if (Math.abs(look.dot(up)) > 0.999) up.set(1,0,0);
+      const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0,0,0), look, up);
+      const q = new THREE.Quaternion().setFromRotationMatrix(m);
+      secVisual.setRotationFromQuaternion(q);
+      const p0 = n.clone().multiplyScalar(-plane.constant);
+      secVisual.position.copy(p0);
+    }
+
+    // ===========
+    //  Render modes
+    // ===========
+    function setRenderMode(mode){
+      if (!api.robotModel) return;
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.material){
+          const mats = Array.isArray(o.material) ? o.material : [o.material];
+          for (const m of mats){
+            m.wireframe = (mode==='Wireframe');
+            if (mode==='X-Ray'){
+              m.transparent = true;
+              m.opacity = 0.35;
+              m.depthWrite = false;
+              m.depthTest = true;
+            } else if (mode==='Ghost'){
+              m.transparent = true;
+              m.opacity = 0.70;
+              m.depthWrite = true;
+              m.depthTest = true;
+            } else {
+              m.transparent = false;
+              m.opacity = 1.0;
+              m.depthWrite = true;
+              m.depthTest = true;
+            }
+            m.needsUpdate = true;
+          }
+        }
+      });
+    }
+
+    // ===========
+    //  Views
+    // ===========
+    function viewIso(){
+      if (!api.robotModel) return;
+      const box = new THREE.Box3().setFromObject(api.robotModel);
+      if (box.isEmpty()) return;
+      const c = box.getCenter(new THREE.Vector3());
+      const s = box.getSize(new THREE.Vector3());
+      const d = Math.max(s.x,s.y,s.z) * 1.9;
+      const az = Math.PI * 0.25, el = Math.PI * 0.2;
+      const dir = new THREE.Vector3(Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)).multiplyScalar(d);
+      camera.position.copy(c.clone().add(dir)); controls.target.copy(c); controls.update();
+      refreshSelectionMarker();
+    }
+    function viewTop(){
+      if (!api.robotModel) return;
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      camera.position.set(c.x, c.y + d, c.z); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+    }
+    function viewFront(){
+      if (!api.robotModel) return;
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      camera.position.set(c.x, c.y, c.z + d); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+    }
+    function viewRight(){
+      if (!api.robotModel) return;
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      camera.position.set(c.x + d, c.y, c.z); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+    }
+
+    // ===========
+    //  Helpers
+    // ===========
+    function showAllAndFrame(){
+      if (!api.robotModel) return;
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry) o.visible = true;
+      });
+      fitAndCenter(camera, controls, api.robotModel, 1.05);
+      setSelectedMeshes([]); // clear selection on show-all
+    }
+
+    function isolateAssetOnScreen(assetKey){
+      const meshes = assetToMeshes.get(assetKey) || [];
+      api.robotModel.traverse(o=>{
+        if (o.isMesh && o.geometry) o.visible = false;
+      });
+      for (const m of meshes) m.visible = true;
+
+      const box = computeUnionBox(meshes);
+      if (box){
+        const center = box.getCenter(new THREE.Vector3());
+        const size   = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x,size.y,size.z)||1;
+        if (camera.isPerspectiveCamera){
+          const dist   = maxDim * 1.9;
+          camera.near = Math.max(maxDim/1000,0.001);
+          camera.far  = Math.max(maxDim*1000,1000);
+          camera.updateProjectionMatrix();
+          const az = Math.PI * 0.25, el = Math.PI * 0.18;
+          const dir = new THREE.Vector3(
+            Math.cos(el)*Math.cos(az),
+            Math.sin(el),
+            Math.cos(el)*Math.sin(az)
+          ).multiplyScalar(dist);
+          camera.position.copy(center.clone().add(dir));
+        } else {
+          camera.left = -maxDim; camera.right = maxDim; camera.top = maxDim; camera.bottom = -maxDim;
+          camera.near = Math.max(maxDim/1000,0.001); camera.far = Math.max(maxDim*1000,1000);
+          camera.updateProjectionMatrix();
+          camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
+        }
+        controls.target.copy(center); controls.update();
+        sizeAxesHelper(maxDim, center);
+      }
+
+      // Persist selection on isolation
+      setSelectedMeshes(meshes);
+    }
+
+    // Single handler: GUI press + click sound (exactly once per UI button)
+    function buttonClicked(){
+      try { playClick(); } catch(_){}
+      try {
+        if (window && window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel){
+          window.Jupyter.notebook.kernel.execute("print('button clicked')");
+        }
+      } catch(e){}
+    }
+
+    // === Hover state ===
+    let lastHoverKey = null;
+    const hoverKeyFor = (meshHit)=>{
+      if (!meshHit) return null;
+      if (selectMode==='link'){
+        const link = findAncestorLink(meshHit, api.linkSet);
+        return link ? ('link#'+link.id) : ('mesh#'+meshHit.id);
+      }
+      return 'mesh#'+meshHit.id;
+    };
+
+    let hoverRafPending = false, lastMoveEvt=null;
+    function scheduleHover(){
+      if (hoverRafPending) return;
+      hoverRafPending = true;
+      requestAnimationFrame(()=>{
+        hoverRafPending = false;
+        if (!lastMoveEvt) return;
+        processHover(lastMoveEvt);
+      });
+    }
+
+    function processHover(e){
+      if (!api.robotModel || !hoverCfg.enabled){
+        hover.clear();
+        renderer.domElement.style.cursor='auto';
+        return;
+      }
+      getPointer(e);
+      if (dragState){ updateJointDrag(e); return; }
+
+      raycaster.setFromCamera(pointer, camera);
+      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
+      const hits = raycaster.intersectObjects(pickables, true);
+
+      let newKey = null;
+      let meshHit = null;
+      if (hits.length){
+        meshHit = hits[0].object;
+        newKey = hoverKeyFor(meshHit);
+      }
+
+      if (newKey !== lastHoverKey){
+        hover.clear();
+        if (newKey && meshHit){
+          if (selectMode==='link'){
+            const link = findAncestorLink(meshHit, api.linkSet);
+            if (link) hover.showLink(link); else hover.showMesh(meshHit);
+          }else{
+            hover.showMesh(meshHit);
+          }
+        }
+        lastHoverKey = newKey;
+      }
+
+      const joint = meshHit ? findAncestorJoint(meshHit) : null;
+      renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
+    }
+
+    function onPointerMove(e){
+      lastMoveEvt = e;
+      scheduleHover();
+    }
+
+    // === CLICK-TO-DESELECT when not clicking the robot ===
+    function onPointerDown(e){
+      e.preventDefault();
+      if (!api.robotModel || e.button!==0) return;
+      getPointer(e);
+      raycaster.setFromCamera(pointer, camera);
+
+      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
+      const hits = raycaster.intersectObjects(pickables, true);
+
+      if (!hits.length){
+        // Clicked empty space / non-robot: clear selection and play click
+        setSelectedMeshes([]);
+        playClick();
+        return;
+      }
+
+      const meshHit = hits[0].object;
+      // Always set selection (persistent teal box)
+      selectFromHit(meshHit);
+      playClick();
+
+      // If a movable joint is under the hit, begin drag
+      const joint = findAncestorJoint(meshHit);
+      if (joint && isMovable(joint)) startJointDrag(joint, e);
+    }
+
+    renderer.domElement.addEventListener('pointermove', onPointerMove, {passive:true});
+    renderer.domElement.addEventListener('pointerdown', onPointerDown, {passive:false});
+    renderer.domElement.addEventListener('pointerup', endJointDrag);
+    renderer.domElement.addEventListener('pointerleave', endJointDrag);
+    renderer.domElement.addEventListener('pointercancel', endJointDrag);
+
+    // Public state holder
+    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
+
     // =========
     //   UI
     // =========
@@ -653,7 +996,6 @@
         cursor: 'pointer',
         pointerEvents: 'auto'
       });
-      // IMPORTANT: no onpointerdown here (prevents double sound)
       return b;
     }
     function mkTealToggle(label){
@@ -670,7 +1012,6 @@
       const s = document.createElement('input');
       s.type='range'; s.min=min; s.max=max; s.step=step; s.value=value;
       s.style.width='100%'; s.style.accentColor = THEME.teal;
-      // no pointerdown hook
       return s;
     }
     function mkRow(label, child){
@@ -688,7 +1029,6 @@
       });
       sel.value = value;
       Object.assign(sel.style,{padding:'8px',border:`1px solid ${THEME.stroke}`,borderRadius:'10px',pointerEvents:'auto'});
-      // no pointerdown hook
       return sel;
     }
 
@@ -703,7 +1043,7 @@
         fontFamily: 'Computer Modern, CMU Serif, Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // === Components Panel
+      // Components Panel
       const compBtn = mkTealButton('Components');
       Object.assign(compBtn.style, { position:'absolute', left:'14px', bottom:'14px', boxShadow: THEME.shadow });
       const compPanel = document.createElement('div');
@@ -721,13 +1061,13 @@
       const compList = document.createElement('div'); Object.assign(compList.style,{overflowY:'auto', maxHeight:'calc(72vh - 52px)', padding:'10px'});
       compPanel.appendChild(compHeader); compPanel.appendChild(compList);
 
-      // === Tools Dock (top-right)
+      // Tools Dock
       const dock = document.createElement('div');
       Object.assign(dock.style,{
         position:'absolute', right:'14px', top:'14px', width:'440px',
         background: THEME.bgPanel, border:`1px solid ${THEME.stroke}`,
         borderRadius:'18px', boxShadow: THEME.shadow, pointerEvents:'auto', overflow:'hidden',
-        display: 'none' // start CLOSED
+        display: 'none'
       });
 
       const dockHeader = document.createElement('div');
@@ -738,15 +1078,12 @@
 
       const dockBody = document.createElement('div'); dockBody.style.padding='10px 12px';
 
-      // Render mode
       const renderMode = mkSelect(['Solid','Wireframe','X-Ray','Ghost'], 'Solid');
       dockBody.appendChild(mkRow('Render mode', renderMode));
 
-      // Explode
       const explodeSlider = mkSlider(0, 1, 0.01, 0);
       dockBody.appendChild(mkRow('Explode', explodeSlider));
 
-      // Section plane
       const axisSel = mkSelect(['X','Y','Z'], 'X');
       const secDist = mkSlider(-1, 1, 0.001, 0);
       const secToggle = mkTealToggle('Enable section');
@@ -756,18 +1093,17 @@
       dockBody.appendChild(mkRow('', secToggle.wrap));
       dockBody.appendChild(mkRow('', secPlaneToggle.wrap));
 
-      // Camera block
       const rowCam = document.createElement('div'); Object.assign(rowCam.style,{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:'8px', margin:'8px 0'});
       const bIso = mkTealButton('Iso'), bTop = mkTealButton('Top'), bFront= mkTealButton('Front'), bRight = mkTealButton('Right'), bSnap = mkTealButton('Snapshot');
       [bIso,bTop,bFront,bRight,bSnap].forEach(b=>{ b.style.padding='8px'; b.style.borderRadius='10px'; });
       dockBody.appendChild(mkRow('Views', rowCam));
       rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight); rowCam.appendChild(bSnap);
 
-      // Projection + helpers
       const projSel = mkSelect(['Perspective','Orthographic'], 'Perspective');
       const togGrid = mkTealToggle('Grid');       // OFF by default
-      const togGround = mkTealToggle('Ground & shadows'); togGround.cb.checked = true;
-      const togAxes = mkTealToggle('XYZ axes');   // axes toggle
+      const togGround = mkTealToggle('Ground & shadows'); // start OFF
+      togGround.cb.checked = false;
+      const togAxes = mkTealToggle('XYZ axes');
       togAxes.cb.checked = false;
       dockBody.appendChild(mkRow('Projection', projSel));
       dockBody.appendChild(mkRow('', togGrid.wrap));
@@ -777,7 +1113,6 @@
       // Assemble dock
       dock.appendChild(dockHeader); dock.appendChild(dockBody);
 
-      // Floating Tools toggle button
       const toolsToggleBtn = document.createElement('button');
       toolsToggleBtn.textContent = 'Open Tools';
       Object.assign(toolsToggleBtn.style, {
@@ -786,7 +1121,6 @@
         background: THEME.bgPanel, color: THEME.text, fontWeight:'700',
         boxShadow: THEME.shadow, pointerEvents:'auto', zIndex: '10000'
       });
-      // no pointerdown hook
 
       // Root assembly
       root.appendChild(compPanel);
@@ -795,19 +1129,130 @@
       root.appendChild(toolsToggleBtn);
       container.appendChild(root);
 
-      // Initial defaults
-      togGrid.cb.checked = false; // grid disabled initially
+      // Defaults
+      togGrid.cb.checked = false;
 
       return {
         root,
-        // components
         btn: compBtn, panel: compPanel, list: compList, showAllBtn,
-        // tools
         fitBtn, renderMode, explodeSlider, axisSel, secDist, secToggle, secPlaneToggle,
         bIso, bTop, bFront, bRight, bSnap,
         projSel, togGrid, togGround, togAxes,
         dock, toolsToggleBtn
       };
+    }
+
+    function createAndWireUI(){
+      state.ui = createUI();
+      const { btn, panel, list, showAllBtn,
+              fitBtn, renderMode, explodeSlider, axisSel, secDist, secToggle, secPlaneToggle,
+              bIso, bTop, bFront, bRight, bSnap, projSel, togGrid, togGround, togAxes,
+              dock, toolsToggleBtn } = state.ui;
+
+      let galleryBuilt = false;
+
+      function setDock(open){
+        dock.style.display = open ? 'block' : 'none';
+        toolsToggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
+      }
+      toolsToggleBtn.addEventListener('click', ()=>{ buttonClicked(); setDock(dock.style.display==='none'); });
+      setDock(false);
+
+      btn.addEventListener('click', async ()=>{
+        buttonClicked();
+        if (panel.style.display === 'none'){
+          panel.style.display = 'block';
+          if (!galleryBuilt){ await buildGallery(list); galleryBuilt = true; }
+        } else {
+          panel.style.display = 'none';
+        }
+      });
+
+      showAllBtn.addEventListener('click', ()=>{ buttonClicked(); showAllAndFrame(); });
+
+      list.addEventListener('click', (ev)=>{
+        let el = ev.target;
+        while (el && el !== list && !el.dataset?.assetKey) el = el.parentElement;
+        if (!el || el === list) return;
+        buttonClicked();
+        const key = el.dataset.assetKey;
+        if (key) isolateAssetOnScreen(key);
+      });
+
+      fitBtn.addEventListener('click', ()=>{ buttonClicked(); if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.06); });
+
+      renderMode.addEventListener('change', ()=>{ buttonClicked(); setRenderMode(renderMode.value); });
+
+      explodeSlider.addEventListener('input', ()=>{ applyExplode(Number(explodeSlider.value)); });
+
+      axisSel.addEventListener('change', ()=>{ buttonClicked(); secAxis = axisSel.value; updateSectionPlane(); });
+      secDist.addEventListener('input', ()=>{ updateSectionPlane(); });
+      secToggle.cb.addEventListener('change', ()=>{ buttonClicked(); secEnabled = !!secToggle.cb.checked; updateSectionPlane(); });
+      secPlaneToggle.cb.addEventListener('change', ()=>{ buttonClicked(); secPlaneVisible = !!secPlaneToggle.cb.checked; updateSectionPlane(); });
+
+      bIso.addEventListener('click', ()=>{ buttonClicked(); viewIso(); });
+      bTop.addEventListener('click', ()=>{ buttonClicked(); viewTop(); });
+      bFront.addEventListener('click', ()=>{ buttonClicked(); viewFront(); });
+      bRight.addEventListener('click', ()=>{ buttonClicked(); viewRight(); });
+
+      bSnap.addEventListener('click', ()=>{
+        buttonClicked();
+        try{
+          const url = renderer.domElement.toDataURL('image/png');
+          const a = document.createElement('a'); a.href=url; a.download='snapshot.png'; a.click();
+        }catch(_e){}
+      });
+
+      projSel.addEventListener('change', ()=>{
+        buttonClicked();
+        const w = container.clientWidth||1, h=container.clientHeight||1, asp = Math.max(1e-6, w/h);
+        if (projSel.value==='Orthographic' && camera.isPerspectiveCamera){
+          const box = api.robotModel ? new THREE.Box3().setFromObject(api.robotModel) : null;
+          const c = box && !box.isEmpty() ? box.getCenter(new THREE.Vector3()) : controls.target.clone();
+          const size = box && !box.isEmpty() ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(2,2,2);
+          const maxDim = Math.max(size.x,size.y,size.z)||1;
+          ortho.left=-maxDim*asp; ortho.right=maxDim*asp; ortho.top=maxDim; ortho.bottom=-maxDim;
+          ortho.near=Math.max(maxDim/1000,0.001); ortho.far=Math.max(maxDim*1500,1500);
+          ortho.position.copy(camera.position); ortho.updateProjectionMatrix();
+          controls.object = ortho; camera = ortho;
+          controls.target.copy(c); controls.update();
+        } else if (projSel.value==='Perspective' && camera.isOrthographicCamera){
+          persp.aspect = asp; persp.updateProjectionMatrix();
+          persp.position.copy(camera.position);
+          controls.object = persp; camera = persp;
+          controls.update();
+        }
+        refreshSelectionMarker();
+      });
+
+      togGrid.cb.addEventListener('change', ()=>{ buttonClicked(); grid.visible = !!togGrid.cb.checked; });
+
+      togGround.cb.addEventListener('change', ()=>{
+        buttonClicked();
+        const on = !!togGround.cb.checked;
+        ground.visible = on;
+        dirLight.castShadow = on;
+        renderer.shadowMap.enabled = on;
+        api.robotModel?.traverse(o=>{
+          if (o.isMesh && o.geometry){
+            o.castShadow = on;
+            o.receiveShadow = on;
+          }
+        });
+      });
+
+      togAxes.cb.addEventListener('change', ()=>{
+        buttonClicked();
+        axesHelper.visible = !!togAxes.cb.checked;
+        if (api.robotModel){
+          const box = new THREE.Box3().setFromObject(api.robotModel);
+          if (!box.isEmpty()){
+            const c = box.getCenter(new THREE.Vector3());
+            const s = box.getSize(new THREE.Vector3());
+            sizeAxesHelper(Math.max(s.x,s.y,s.z)||1, c);
+          }
+        }
+      });
     }
 
     async function buildGallery(listEl){
@@ -901,14 +1346,17 @@
           api.linkSet = markLinksAndJoints(api.robotModel);
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
           state.off = buildOffscreenFromRobot();
+
+          // Precreate UI and prebuild gallery for instant Components panel
+          if (!state.ui) createAndWireUI();
+          if (state.ui?.list) buildGallery(state.ui.list).catch(()=>{});
+
           prepareExplodeVectors();
         }
       } catch(_e){}
     }
 
-    // ===========
-    //  Explode
-    // ===========
+    // =========== Explode ===========
     let explodeVecByLink = new Map();
     function prepareExplodeVectors(){
       explodeVecByLink.clear();
@@ -940,410 +1388,11 @@
           o.position.copy( base.clone().add( dir.clone().multiplyScalar(f * 0.6) ) );
         }
       });
+      refreshSelectionMarker();
     }
 
-    // ===========
-    //  Section (clipping + STABLE teal plane visual)
-    // ===========
-    let sectionPlane = null;
-    let secAxis = 'X';         // 'X' | 'Y' | 'Z'
-    let secEnabled = false;
-    let secPlaneVisible = false;
-
-    // visual: translucent teal sheet (no wire/grid) — tuned to avoid pulsing
-    let secVisual = null;      // THREE.Mesh for the plane
-
-    function ensureSectionVisual(){
-      if (!secVisual){
-        const geom = new THREE.PlaneGeometry(1,1,1,1);
-        const mat  = new THREE.MeshBasicMaterial({
-          color: 0x0ea5a6,
-          transparent: true,
-          opacity: 0.14,
-          depthWrite: false,
-          depthTest: false,     // draw on top; no z-fighting
-          toneMapped: false,
-          side: THREE.DoubleSide
-        });
-        secVisual = new THREE.Mesh(geom, mat);
-        secVisual.visible = false;
-        secVisual.renderOrder = 10000; // very high to stay stable
-        scene.add(secVisual);
-      }
-      return secVisual;
-    }
-
-    function refreshSectionVisual(maxDim, center){
-      if (!secVisual) return;
-      const size = Math.max(1e-6, maxDim || 1);
-      secVisual.scale.set(size*1.2, size*1.2, 1);
-      if (center) secVisual.position.copy(center);
-    }
-
-    function updateSectionPlane(){
-      renderer.clippingPlanes = [];
-      if (!secEnabled || !api.robotModel) {
-        renderer.localClippingEnabled=false;
-        if (secVisual) secVisual.visible = false;
-        return;
-      }
-      const n = new THREE.Vector3(
-        secAxis==='X'?1:0,
-        secAxis==='Y'?1:0,
-        secAxis==='Z'?1:0
-      );
-      const box = new THREE.Box3().setFromObject(api.robotModel);
-      if (box.isEmpty()){ renderer.localClippingEnabled=false; if (secVisual) secVisual.visible=false; return; }
-      const size   = box.getSize(new THREE.Vector3());
-      const maxDim = Math.max(size.x,size.y,size.z)||1;
-      const center = box.getCenter(new THREE.Vector3());
-      const dist = (Number(state.ui.secDist.value) || 0) * maxDim * 0.5;
-      const plane = new THREE.Plane(n, -center.dot(n) - dist); // n·x + d = 0
-      renderer.localClippingEnabled = true;
-      renderer.clippingPlanes = [ plane ];
-      sectionPlane = plane;
-
-      // orient & show the teal sheet (stable, no pulsing)
-      ensureSectionVisual();
-      refreshSectionVisual(maxDim, center);
-      secVisual.visible = !!secPlaneVisible;
-
-      // align to plane
-      const look = new THREE.Vector3().copy(n);
-      const up   = new THREE.Vector3(0,1,0);
-      if (Math.abs(look.dot(up)) > 0.999) up.set(1,0,0);
-      const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0,0,0), look, up);
-      const q = new THREE.Quaternion().setFromRotationMatrix(m);
-      secVisual.setRotationFromQuaternion(q);
-      const p0 = n.clone().multiplyScalar(-plane.constant);
-      secVisual.position.copy(p0);
-    }
-
-    // ===========
-    //  Render modes
-    // ===========
-    function setRenderMode(mode){
-      if (!api.robotModel) return;
-      api.robotModel.traverse(o=>{
-        if (o.isMesh && o.material){
-          const mats = Array.isArray(o.material) ? o.material : [o.material];
-          for (const m of mats){
-            m.wireframe = (mode==='Wireframe');
-            if (mode==='X-Ray'){
-              m.transparent = true;
-              m.opacity = 0.35;
-              m.depthWrite = false;
-              m.depthTest = true;
-            } else if (mode==='Ghost'){
-              m.transparent = true;
-              m.opacity = 0.70;
-              m.depthWrite = true;
-              m.depthTest = true;
-            } else {
-              m.transparent = false;
-              m.opacity = 1.0;
-              m.depthWrite = true;
-              m.depthTest = true;
-            }
-            m.needsUpdate = true;
-          }
-        }
-      });
-    }
-
-    // ===========
-    //  Views
-    // ===========
-    function viewIso(){
-      if (!api.robotModel) return;
-      const box = new THREE.Box3().setFromObject(api.robotModel);
-      if (box.isEmpty()) return;
-      const c = box.getCenter(new THREE.Vector3());
-      const s = box.getSize(new THREE.Vector3());
-      const d = Math.max(s.x,s.y,s.z) * 1.9;
-      const az = Math.PI * 0.25, el = Math.PI * 0.2;
-      const dir = new THREE.Vector3(Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)).multiplyScalar(d);
-      camera.position.copy(c.clone().add(dir)); controls.target.copy(c); controls.update();
-    }
-    function viewTop(){
-      if (!api.robotModel) return;
-      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
-      camera.position.set(c.x, c.y + d, c.z); controls.target.copy(c); controls.update();
-    }
-    function viewFront(){
-      if (!api.robotModel) return;
-      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
-      camera.position.set(c.x, c.y, c.z + d); controls.target.copy(c); controls.update();
-    }
-    function viewRight(){
-      if (!api.robotModel) return;
-      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
-      camera.position.set(c.x + d, c.y, c.z); controls.target.copy(c); controls.update();
-    }
-
-    // ===========
-    //  Helpers
-    // ===========
-    function showAllAndFrame(){
-      if (!api.robotModel) return;
-      api.robotModel.traverse(o=>{
-        if (o.isMesh && o.geometry) o.visible = true;
-      });
-      fitAndCenter(camera, controls, api.robotModel, 1.05);
-    }
-
-    function isolateAssetOnScreen(assetKey){
-      const meshes = assetToMeshes.get(assetKey) || [];
-      api.robotModel.traverse(o=>{
-        if (o.isMesh && o.geometry) o.visible = false;
-      });
-      for (const m of meshes) m.visible = true;
-
-      const box = computeUnionBox(meshes);
-      if (box){
-        const center = box.getCenter(new THREE.Vector3());
-        const size   = box.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x,size.y,size.z)||1;
-        if (camera.isPerspectiveCamera){
-          const dist   = maxDim * 1.9;
-          camera.near = Math.max(maxDim/1000,0.001);
-          camera.far  = Math.max(maxDim*1000,1000);
-          camera.updateProjectionMatrix();
-          const az = Math.PI * 0.25, el = Math.PI * 0.18;
-          const dir = new THREE.Vector3(
-            Math.cos(el)*Math.cos(az),
-            Math.sin(el),
-            Math.cos(el)*Math.sin(az)
-          ).multiplyScalar(dist);
-          camera.position.copy(center.clone().add(dir));
-        } else {
-          camera.left = -maxDim; camera.right = maxDim; camera.top = maxDim; camera.bottom = -maxDim;
-          camera.near = Math.max(maxDim/1000,0.001); camera.far = Math.max(maxDim*1000,1000);
-          camera.updateProjectionMatrix();
-          camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
-        }
-        controls.target.copy(center); controls.update();
-        sizeAxesHelper(maxDim, center);
-      }
-    }
-
-    // Single handler: GUI press + click sound (exactly once per user action)
-    function buttonClicked(){
-      try { playClick(); } catch(_){}
-      try {
-        if (window && window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel){
-          window.Jupyter.notebook.kernel.execute("print('button clicked')");
-        }
-      } catch(e){}
-    }
-
-    // attach resize listener
-    window.addEventListener('resize', onResize);
-
-    // === Hover state ===
-    let lastHoverKey = null;
-    const hoverKeyFor = (meshHit)=>{
-      if (!meshHit) return null;
-      if (selectMode==='link'){
-        const link = findAncestorLink(meshHit, api.linkSet);
-        return link ? ('link#'+link.id) : ('mesh#'+meshHit.id);
-      }
-      return 'mesh#'+meshHit.id;
-    };
-
-    // throttled pointermove
-    let hoverRafPending = false, lastMoveEvt=null, lastHoverTs=0;
-    function scheduleHover(){
-      if (hoverRafPending) return;
-      hoverRafPending = true;
-      requestAnimationFrame(()=>{
-        hoverRafPending = false;
-        if (!lastMoveEvt) return;
-        processHover(lastMoveEvt);
-      });
-    }
-
-    function processHover(e){
-      lastHoverTs = performance.now();
-      if (!api.robotModel || !hoverCfg.enabled){
-        hover.clear();
-        renderer.domElement.style.cursor='auto';
-        return;
-      }
-      getPointer(e);
-      if (dragState){ updateJointDrag(e); return; }
-
-      raycaster.setFromCamera(pointer, camera);
-      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
-      const hits = raycaster.intersectObjects(pickables, true);
-
-      let newKey = null;
-      let meshHit = null;
-      if (hits.length){
-        meshHit = hits[0].object;
-        newKey = hoverKeyFor(meshHit);
-      }
-
-      if (newKey !== lastHoverKey){
-        hover.clear();
-        if (newKey && meshHit){
-          if (selectMode==='link'){
-            const link = findAncestorLink(meshHit, api.linkSet);
-            if (link) hover.showLink(link); else hover.showMesh(meshHit);
-          }else{
-            hover.showMesh(meshHit);
-          }
-        }
-        lastHoverKey = newKey;
-      }
-
-      const joint = meshHit ? findAncestorJoint(meshHit) : null;
-      renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
-    }
-
-    function onPointerMove(e){
-      lastMoveEvt = e;
-      const now = performance.now();
-      if (now - lastHoverTs >= (hoverCfg.throttleMs|0)){
-        scheduleHover();
-      } else {
-        scheduleHover();
-      }
-    }
-
-    function onPointerDown(e){
-      e.preventDefault();
-      if (!api.robotModel || e.button!==0) return;
-      getPointer(e);
-      raycaster.setFromCamera(pointer, camera);
-      const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
-      const hits = raycaster.intersectObjects(pickables, true);
-      if (!hits.length) return;
-      const joint = findAncestorJoint(hits[0].object);
-      if (joint && isMovable(joint)) startJointDrag(joint, e);
-    }
-
-    renderer.domElement.addEventListener('pointermove', onPointerMove, {passive:true});
-    renderer.domElement.addEventListener('pointerdown', onPointerDown, {passive:false});
-    renderer.domElement.addEventListener('pointerup', endJointDrag);
-    renderer.domElement.addEventListener('pointerleave', endJointDrag);
-    renderer.domElement.addEventListener('pointercancel', endJointDrag);
-
-    // Public state holder
-    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
-
-    // Build UI
-    state.ui = createUI();
-
-    // ==== UI Interactions ====
-    (function attachUIInteractions(){
-      const { btn, panel, list, showAllBtn,
-              fitBtn, renderMode, explodeSlider, axisSel, secDist, secToggle, secPlaneToggle,
-              bIso, bTop, bFront, bRight, bSnap, projSel, togGrid, togGround, togAxes,
-              dock, toolsToggleBtn } = state.ui;
-
-      let builtOnce = false;
-
-      // Tools open/close toggle button (single click handler)
-      function setDock(open){
-        dock.style.display = open ? 'block' : 'none';
-        toolsToggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
-      }
-      toolsToggleBtn.addEventListener('click', ()=>{ buttonClicked(); setDock(dock.style.display==='none'); });
-      setDock(false); // start CLOSED
-
-      // Components panel (single click handler)
-      btn.addEventListener('click', async ()=>{
-        buttonClicked();
-        if (panel.style.display === 'none'){
-          panel.style.display = 'block';
-          if (!builtOnce){ await buildGallery(list); builtOnce = true; }
-        } else {
-          panel.style.display = 'none';
-        }
-      });
-
-      showAllBtn.addEventListener('click', (ev)=>{ buttonClicked(); showAllAndFrame(); });
-
-      // Gallery row delegation
-      list.addEventListener('click', (ev)=>{
-        let el = ev.target;
-        while (el && el !== list && !el.dataset?.assetKey) el = el.parentElement;
-        if (!el || el === list) return;
-        buttonClicked();
-        const key = el.dataset.assetKey;
-        if (key) isolateAssetOnScreen(key);
-      });
-
-      // Fit
-      fitBtn.addEventListener('click', ()=>{ buttonClicked(); if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.06); });
-
-      // Render mode
-      renderMode.addEventListener('change', ()=>{ buttonClicked(); setRenderMode(renderMode.value); });
-
-      // Explode
-      explodeSlider.addEventListener('input', ()=>{ /* no sound on slider move */ applyExplode(Number(explodeSlider.value)); });
-
-      // Section
-      axisSel.addEventListener('change', ()=>{ buttonClicked(); secAxis = axisSel.value; updateSectionPlane(); });
-      secDist.addEventListener('input', ()=>{ updateSectionPlane(); }); // continuous — no sound
-      secToggle.cb.addEventListener('change', ()=>{ buttonClicked(); secEnabled = !!secToggle.cb.checked; updateSectionPlane(); });
-      secPlaneToggle.cb.addEventListener('change', ()=>{ buttonClicked(); secPlaneVisible = !!secPlaneToggle.cb.checked; updateSectionPlane(); });
-
-      // Views
-      bIso.addEventListener('click', ()=>{ buttonClicked(); viewIso(); });
-      bTop.addEventListener('click', ()=>{ buttonClicked(); viewTop(); });
-      bFront.addEventListener('click', ()=>{ buttonClicked(); viewFront(); });
-      bRight.addEventListener('click', ()=>{ buttonClicked(); viewRight(); });
-
-      // Snapshot
-      bSnap.addEventListener('click', ()=>{
-        buttonClicked();
-        try{
-          const url = renderer.domElement.toDataURL('image/png');
-          const a = document.createElement('a'); a.href=url; a.download='snapshot.png'; a.click();
-        }catch(_e){}
-      });
-
-      // Projection
-      projSel.addEventListener('change', ()=>{
-        buttonClicked();
-        const w = container.clientWidth||1, h=container.clientHeight||1, asp = Math.max(1e-6, w/h);
-        if (projSel.value==='Orthographic' && camera.isPerspectiveCamera){
-          const box = api.robotModel ? new THREE.Box3().setFromObject(api.robotModel) : null;
-          const c = box && !box.isEmpty() ? box.getCenter(new THREE.Vector3()) : controls.target.clone();
-          const size = box && !box.isEmpty() ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(2,2,2);
-          const maxDim = Math.max(size.x,size.y,size.z)||1;
-          ortho.left=-maxDim*asp; ortho.right=maxDim*asp; ortho.top=maxDim; ortho.bottom=-maxDim;
-          ortho.near=Math.max(maxDim/1000,0.001); ortho.far=Math.max(maxDim*1500,1500);
-          ortho.position.copy(camera.position); ortho.updateProjectionMatrix();
-          controls.object = ortho; camera = ortho;
-          controls.target.copy(c); controls.update();
-        } else if (projSel.value==='Perspective' && camera.isOrthographicCamera){
-          persp.aspect = asp; persp.updateProjectionMatrix();
-          persp.position.copy(camera.position);
-          controls.object = persp; camera = persp;
-          controls.update();
-        }
-      });
-
-      // Helpers
-      togGrid.cb.addEventListener('change', ()=>{ buttonClicked(); grid.visible = !!togGrid.cb.checked; });
-      togGround.cb.addEventListener('change', ()=>{ buttonClicked(); ground.visible = !!togGround.cb.checked; dirLight.castShadow = !!togGround.cb.checked; });
-      togAxes.cb.addEventListener('change', ()=>{
-        buttonClicked();
-        axesHelper.visible = !!togAxes.cb.checked;
-        if (api.robotModel){
-          const box = new THREE.Box3().setFromObject(api.robotModel);
-          if (!box.isEmpty()){
-            const c = box.getCenter(new THREE.Vector3());
-            const s = box.getSize(new THREE.Vector3());
-            sizeAxesHelper(Math.max(s.x,s.y,s.z)||1, c);
-          }
-        }
-      });
-
-    })();
+    // Build UI immediately (so buttons exist before first clicks)
+    createAndWireUI();
 
     // Animate
     function animate(){
@@ -1365,6 +1414,3 @@
 
   root.URDFViewer = URDFViewer;
 })(typeof window!=='undefined' ? window : this);
-
-
-
