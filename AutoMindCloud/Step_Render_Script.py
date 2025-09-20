@@ -9,25 +9,38 @@ import os
 def Download_Step(Drive_Link, Output_Name):
     """
     Downloads a STEP file from Google Drive using the full Drive link.
-    Saves it as Output_Name.step in /content.
+    Saves it as /content/<Output_Name>.step
     """
     root_dir = "/content"
     file_id = Drive_Link.split('/d/')[1].split('/')[0]  # Extract ID from full link
     url = f"https://drive.google.com/uc?id={file_id}"
     output_step = os.path.join(root_dir, Output_Name + ".step")
     gdown.download(url, output_step, quiet=True)
-    
-def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sound.mp3", background=0xffffff):
+
+def Step_Render(
+    Base_Name,
+    target_size=2.0,
+    click_sound_path="/content/click_sound.mp3",
+    background=0xffffff
+):
     """
-    STEP -> GLB -> scaled viewer (white UI). Features preserved:
+    Loads either /content/<Base_Name>.step (preferred) OR /content/<Base_Name>.stl,
+    converts to GLB (if needed), scales to ~target_size, and shows a viewer.
+
+    Changes you asked:
+      • Camera: auto-fit to show the entire model on load (precise FOV framing).
+      • Starts with NO SHADOWS (shadow map disabled, ground hidden). You can enable from the UI.
+
+    Preserved:
       - Render modes: Solid / Wireframe / X-Ray / Ghost
-      - Section plane (X/Y/Z axis + distance) + visible teal plane
+      - Section plane (X/Y/Z + distance) with visible teal plane
       - Camera presets: Iso / Top / Front / Right
-      - Perspective <-> Orthographic toggle
-      - Grid + Ground + Soft shadows
+      - Perspective ⟷ Orthographic toggle
+      - Grid toggle
+      - Ground & shadows toggle (off by default now)
       - Fit to view & Snapshot
       - XYZ Axes toggle (auto-sized)
-      - Click sound via MP3 buffer (no oscillator; pitch unchanged)
+      - MP3 click sound (overlapping playback, pitch unchanged)
     """
     import base64, os
     import trimesh
@@ -44,18 +57,46 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
             pass
         return None
 
-    output_step = Step_Name + ".step"
-    output_glb = Step_Name + ".glb"
-    output_glb_scaled = Step_Name + "_scaled.glb"
+    # ---------- Resolve input (STEP preferred, else STL) ----------
+    step_path = f"/content/{Base_Name}.step"
+    stl_path  = f"/content/{Base_Name}.stl"
+    input_kind = None
+    if os.path.exists(step_path):
+        input_kind = "step"
+        input_path = step_path
+    elif os.path.exists(stl_path):
+        input_kind = "stl"
+        input_path = stl_path
+    else:
+        # Fallback to local working dir if they didn't use /content
+        step_local = f"{Base_Name}.step"
+        stl_local  = f"{Base_Name}.stl"
+        if os.path.exists(step_local):
+            input_kind, input_path = "step", step_local
+        elif os.path.exists(stl_local):
+            input_kind, input_path = "stl", stl_local
+        else:
+            raise FileNotFoundError(
+                f"Neither {Base_Name}.step nor {Base_Name}.stl found in /content or cwd."
+            )
 
-    # STEP -> GLB
-    _ = cascadio.step_to_glb(output_step, output_glb)
+    output_glb = f"{Base_Name}.glb"
+    output_glb_scaled = f"{Base_Name}_scaled.glb"
 
-    # scale to target_size ~ 2.0
+    # ---------- Convert to GLB if needed ----------
+    if input_kind == "step":
+        _ = cascadio.step_to_glb(input_path, output_glb)
+    else:
+        # Load STL and export to GLB via trimesh
+        mesh_in = trimesh.load(input_path)
+        mesh_in.export(output_glb)
+
+    # ---------- Scale to target_size ----------
     mesh = trimesh.load(output_glb)
-    current_size = max(getattr(mesh, "extents", [1,1,1]))
-    if not current_size or current_size <= 0: current_size = 1.0
-    mesh.apply_scale(float(target_size)/float(current_size))
+    current_size = max(getattr(mesh, "extents", [1, 1, 1]))
+    if not current_size or current_size <= 0:
+        current_size = 1.0
+    mesh.apply_scale(float(target_size) / float(current_size))
     mesh.export(output_glb_scaled)
 
     with open(output_glb_scaled, "rb") as f:
@@ -71,7 +112,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<title>{Step_Name} 3D Viewer</title>
+<title>{Base_Name} 3D Viewer</title>
 <style>
   html, body {{ margin:0; height:100%; overflow:hidden; background:#ffffff; }}
   #app {{ position:fixed; inset:0; }}
@@ -108,7 +149,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
       bgCanvas: {bg_js}, // white by default
     }};
 
-    // ----- MP3 click (no oscillator; overlapping allowed) -----
+    // ----- MP3 click (overlapping allowed) -----
     let audioCtx = null, clickBuf = null, clickURL = {click_js};
     async function ensureClickBuffer(){{
       if (!clickURL) return;
@@ -139,10 +180,12 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
     }}
 
     const scene = new THREE.Scene();
-    if (THEME.bgCanvas !== null) scene.background = new THREE.Color(THEME.bgCanvas); // pure white
+    if (THEME.bgCanvas !== null) scene.background = new THREE.Color(THEME.bgCanvas);
 
     const aspect = Math.max(1e-6, (container.clientWidth||window.innerWidth)/(container.clientHeight||window.innerHeight));
-    const persp = new THREE.PerspectiveCamera(75, aspect, 0.01, 10000);
+
+    // Slightly narrower FOV for nicer fit + less distortion
+    const persp = new THREE.PerspectiveCamera(50, aspect, 0.01, 10000);
     persp.position.set(0,0,3);
 
     const orthoSize = 2.5;
@@ -151,29 +194,29 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
 
     let camera = persp;
 
+    // Start with NO SHADOWS (what you asked)
     const renderer = new THREE.WebGLRenderer({{ antialias: true, preserveDrawingBuffer: true }});
     renderer.setPixelRatio(window.devicePixelRatio||1);
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.enabled = false; // OFF on start
     container.appendChild(renderer.domElement);
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true; controls.dampingFactor = 0.08;
 
     // Lights
-    const hemi = new THREE.HemisphereLight(0xffffff, 0xeeeeee, 0.7);
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.05);
-    dirLight.position.set(3,4,2); dirLight.castShadow = true;
-    dirLight.shadow.mapSize.set(1024,1024);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0xeeeeee, 0.8);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.1);
+    dirLight.position.set(3,4,2);
+    dirLight.castShadow = false; // OFF on start
     scene.add(hemi); scene.add(dirLight);
 
-    // Ground + grid (grid OFF by default)
+    // Ground + grid (OFF on start)
     const groundGroup = new THREE.Group(); scene.add(groundGroup);
     const grid = new THREE.GridHelper(10, 20, 0xbbbbbb, 0xeeeeee); grid.visible = false; groundGroup.add(grid);
     const groundMat = new THREE.ShadowMaterial({{ opacity: 0.22 }});
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200), groundMat);
-    ground.rotation.x = -Math.PI/2; ground.position.y = -0.0001; ground.receiveShadow = true; ground.visible = true;
+    ground.rotation.x = -Math.PI/2; ground.position.y = -0.0001; ground.receiveShadow = true; ground.visible = false; // OFF
     groundGroup.add(ground);
 
     // Axes helper (OFF by default)
@@ -183,7 +226,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
       axesHelper.position.copy(center || new THREE.Vector3());
     }}
 
-    // ----- Load model (embedded) -----
+    // ----- Load model (embedded GLB) -----
     function base64ToArrayBuffer(b64) {{
       const bin = atob(b64); const len = bin.length; const bytes = new Uint8Array(len);
       for (let i=0;i<len;i++) bytes[i]=bin.charCodeAt(i); return bytes.buffer;
@@ -199,38 +242,60 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
         if (n.isMesh && n.material) {{
           const mats = Array.isArray(n.material)? n.material : [n.material];
           for (const m of mats) m.side = THREE.DoubleSide;
-          n.castShadow = n.receiveShadow = true;
-          n.geometry && n.geometry.computeVertexNormals && n.geometry.computeVertexNormals();
+          n.castShadow = false; // meshes won't cast until you toggle shadows on
+          n.receiveShadow = false;
+          if (n.geometry && n.geometry.computeVertexNormals) n.geometry.computeVertexNormals();
         }}
       }});
       scene.add(model);
-      centerAndFrame();
+      centerAndFramePrecise(1.08); // tighter margin; shows the whole object
     }}, function(err) {{ console.error('Error loading GLB:', err); }});
 
-    function centerAndFrame(pad=1.08){{
+    // --- Precise "fit to view" using FOV + aspect (more zoomed to object but fully visible)
+    function centerAndFramePrecise(margin=1.15){{
       if (!model) return;
       const box = new THREE.Box3().setFromObject(model);
       if (box.isEmpty()) return;
-      const center = box.getCenter(new THREE.Vector3());
-      const size = box.getSize(new THREE.Vector3()).multiplyScalar(pad);
-      const maxDim = Math.max(size.x,size.y,size.z) || 1;
 
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      // Center model at origin for stable sectioning & controls
       model.position.sub(center);
 
-      if (camera.isPerspectiveCamera){{
-        const dist = maxDim * 1.9;
-        camera.near = Math.max(maxDim/1000,0.001);
-        camera.far  = Math.max(maxDim*1500,1500);
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+
+      if (camera.isPerspectiveCamera) {{
+        const fov = camera.fov * Math.PI / 180.0;
+        const w = size.x * margin;
+        const h = size.y * margin;
+        const asp = Math.max(1e-6, (container.clientWidth||1)/(container.clientHeight||1));
+
+        // Distances needed to fit width/height in view
+        const fitHeight = h / (2 * Math.tan(fov / 2));
+        const fitWidth  = w / (2 * Math.tan(Math.atan(Math.tan(fov/2) * asp)));
+        const dist = Math.max(fitWidth, fitHeight);
+
+        camera.near = Math.max(maxDim/1000, 0.001);
+        camera.far  = Math.max(maxDim*1500, 1500);
         camera.updateProjectionMatrix();
-        camera.position.set(dist, dist*0.9, dist);
+
+        // Place camera on an isometric-ish diagonal vector
+        const dir = new THREE.Vector3(1, 0.8, 1).normalize().multiplyScalar(dist);
+        camera.position.copy(dir);
       }} else {{
-        camera.left = -maxDim; camera.right = maxDim; camera.top = maxDim; camera.bottom = -maxDim;
-        camera.near = Math.max(maxDim/1000,0.001);
-        camera.far  = Math.max(maxDim*1500,1500);
+        const asp = Math.max(1e-6, (container.clientWidth||1)/(container.clientHeight||1));
+        const halfH = (size.y * margin) / 2;
+        const halfW = (size.x * margin) / 2;
+        const half = Math.max(halfH, halfW / asp);
+        camera.left = -half*asp; camera.right = half*asp;
+        camera.top = half; camera.bottom = -half;
+        camera.near = Math.max(maxDim/1000, 0.001);
+        camera.far  = Math.max(maxDim*1500, 1500);
         camera.updateProjectionMatrix();
-        camera.position.set(maxDim, maxDim*0.9, maxDim);
+        camera.position.set(half, half*0.8, half);
       }}
-      controls.target.set(0,0,0); controls.update();
+      controls.target.set(0, 0, 0);
+      controls.update();
       sizeAxesHelper(maxDim, new THREE.Vector3(0,0,0));
     }}
 
@@ -270,7 +335,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
       const size = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x,size.y,size.z)||1;
       const dist = distNorm * maxDim * 0.5;
-      const plane = new THREE.Plane(n, -dist);  // model centered at origin
+      const plane = new THREE.Plane(n, -dist);
       renderer.localClippingEnabled = true;
       renderer.clippingPlanes = [plane];
 
@@ -310,24 +375,24 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
     function viewIso(){{
       if (!model) return;
       const box=new THREE.Box3().setFromObject(model); if (box.isEmpty()) return;
-      const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*0.9; // closer than before
       const az=Math.PI*0.25, el=Math.PI*0.2;
       const dir=new THREE.Vector3(Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)).multiplyScalar(d);
       camera.position.copy(dir); controls.target.set(0,0,0); controls.update();
     }}
     function viewTop(){{
       if (!model) return;
-      const box=new THREE.Box3().setFromObject(model); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      const box=new THREE.Box3().setFromObject(model); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*0.9;
       camera.position.set(0, d, 0); controls.target.set(0,0,0); controls.update();
     }}
     function viewFront(){{
       if (!model) return;
-      const box=new THREE.Box3().setFromObject(model); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      const box=new THREE.Box3().setFromObject(model); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*0.9;
       camera.position.set(0, 0, d); controls.target.set(0,0,0); controls.update();
     }}
     function viewRight(){{
       if (!model) return;
-      const box=new THREE.Box3().setFromObject(model); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
+      const box=new THREE.Box3().setFromObject(model); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*0.9;
       camera.position.set(d, 0, 0); controls.target.set(0,0,0); controls.update();
     }}
 
@@ -377,7 +442,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
 
     const projSel = mkSelect(['Perspective','Orthographic'],'Perspective');
     const togGrid = mkToggle('Grid', false);
-    const togGround = mkToggle('Ground & shadows', true);
+    const togGround = mkToggle('Ground & shadows', false); // OFF by default now
     const togAxes = mkToggle('XYZ axes', false);
 
     body.appendChild(row('Render mode', renderMode));
@@ -401,7 +466,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
     }}
     toolsToggle.addEventListener('click', ()=>{{ playClick(); setDock(dock.style.display==='none'); }});
 
-    fitBtn.addEventListener('click', ()=>{{ playClick(); centerAndFrame(1.06); }});
+    fitBtn.addEventListener('click', ()=>{{ playClick(); centerAndFramePrecise(1.08); }});
     renderMode.addEventListener('change', ()=>{{ playClick(); setRenderMode(renderMode.value); }});
     axisSel.addEventListener('change', ()=>{{ playClick(); secAxis = axisSel.value; updateSectionPlane(parseFloat(secDist.value)||0); }});
     secDist.addEventListener('input', ()=>{{ updateSectionPlane(parseFloat(secDist.value)||0); }}); // continuous, no sound
@@ -430,7 +495,13 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
       }}
     }});
     togGrid.cb.addEventListener('change', ()=>{{ playClick(); grid.visible = !!togGrid.cb.checked; }});
-    togGround.cb.addEventListener('change', ()=>{{ playClick(); ground.visible = !!togGround.cb.checked; dirLight.castShadow = !!togGround.cb.checked; }});
+    togGround.cb.addEventListener('change', ()=>{{
+      playClick();
+      const on = !!togGround.cb.checked;
+      ground.visible = on;
+      dirLight.castShadow = on;
+      renderer.shadowMap.enabled = on;
+    }});
     togAxes.cb.addEventListener('change', ()=>{{
       playClick(); axesHelper.visible = !!togAxes.cb.checked;
       if (model) {{
