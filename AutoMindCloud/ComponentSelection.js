@@ -21,6 +21,7 @@
      - Pure white background
      - Selection "teal box" marker (persistent while rotating)
      - Deselect when clicking empty canvas (no robot hit)
+     - **No sound** on empty-canvas clicks (only UI + robot hits make sound)
      - No shadows on init
      - Precreate UI and prebuild Components list to avoid first-click lag
 */
@@ -670,7 +671,7 @@
       const maxDim = Math.max(size.x,size.y,size.z) || 1;
       const dist = maxDim * 2.0;
       off.camera.near = Math.max(maxDim/1000,0.001);
-      off.camera.far  = Math.max(maxDim*1000,1000);
+      off.camera.far = Math.max(maxDim*1000,1000);
       off.camera.updateProjectionMatrix();
 
       const az = Math.PI * 0.25, el = Math.PI * 0.18;
@@ -944,7 +945,7 @@
       scheduleHover();
     }
 
-    // === CLICK-TO-DESELECT when not clicking the robot ===
+    // === CLICK-TO-DESELECT + **NO SOUND** when not clicking the robot ===
     function onPointerDown(e){
       e.preventDefault();
       if (!api.robotModel || e.button!==0) return;
@@ -955,14 +956,13 @@
       const hits = raycaster.intersectObjects(pickables, true);
 
       if (!hits.length){
-        // Clicked empty space / non-robot: clear selection and play click
+        // Clicked empty space / non-robot: clear selection and **do not** play sound
         setSelectedMeshes([]);
-        playClick();
         return;
       }
 
       const meshHit = hits[0].object;
-      // Always set selection (persistent teal box)
+      // Hit the robot → select and play click sound
       selectFromHit(meshHit);
       playClick();
 
