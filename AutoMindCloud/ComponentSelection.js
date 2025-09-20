@@ -16,12 +16,6 @@
      - Joint drag (revolute/prismatic) with limits (+Shift fine)
      - Components panel (isolate & show all), thumbnails off-screen
      - Single buttonClicked() handler wiring
-
-   NEW in this build per your request:
-     - Pure white canvas background
-     - Initialize with NO SHADOWS (renderer.shadowMap disabled, ground hidden, light shadow casting off)
-     - Pre-build Components gallery (and thumbnails) at load so opening is instant (no lag)
-     - Persistent teal selection marker (Box3Helper) that stays visible while orbiting/rotating or dragging joints
 */
 (function (root) {
   'use strict';
@@ -37,7 +31,7 @@
     tealSoft: '#14b8b9',
     tealFaint: 'rgba(20,184,185,0.12)',
     bgPanel: '#ffffff',
-    bgCanvas: 0xffffff,   // << pure white canvas
+    bgCanvas: 0xf6fafb,
     stroke: '#d7e7e7',
     text: '#0b3b3c',
     textMuted: '#577e7f',
@@ -96,7 +90,7 @@
       if (n.isMesh && n.geometry){
         if (Array.isArray(n.material)) n.material.forEach(m=>m.side=THREE.DoubleSide);
         else if (n.material) n.material.side = THREE.DoubleSide;
-        n.castShadow = n.receiveShadow = false; // default no shadows
+        n.castShadow = n.receiveShadow = true;
         n.geometry.computeVertexNormals?.();
       }
     });
@@ -135,9 +129,6 @@
     // keep helpers in scale/position
     sizeAxesHelper(maxDim, center);
     refreshSectionVisual(maxDim, center);
-
-    // keep selection marker sized
-    refreshSelectionMarker();
   }
 
   function collectMeshesInLink(linkObj){
@@ -279,6 +270,7 @@
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
 
     const selectMode = (opts && opts.selectMode) || 'link';
+    const bg = (opts && opts.background!==undefined) ? opts.background : THEME.bgCanvas;
     const hoverCfg = Object.assign({enabled:true, color:0x0ea5a6, opacity:0.28, throttleMs:16}, (opts && opts.hover)||{});
 
     // Optional click audio via WebAudio (overlapping playback)
@@ -320,7 +312,7 @@
     }
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(THEME.bgCanvas); // white
+    if (bg!=null) scene.background = new THREE.Color(bg);
 
     // === Cameras: Perspective + Ortho (toggle) ===
     const aspect = Math.max(1e-6, (container.clientWidth||1)/(container.clientHeight||1));
@@ -339,28 +331,25 @@
     renderer.domElement.style.touchAction = 'none';
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.position = 'relative';
-
-    // === NO SHADOWS on init ===
-    renderer.shadowMap.enabled = false; // off
+    renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
     container.appendChild(renderer.domElement);
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
 
-    // Lights (no shadow casting by default)
+    // Lights
     const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.7);
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.05);
     dirLight.position.set(3,4,2);
-    dirLight.castShadow = false; // off initially
+    dirLight.castShadow = true;
     dirLight.shadow.mapSize.set(1024,1024);
     dirLight.shadow.camera.near = 0.1;
     dirLight.shadow.camera.far = 1000;
     scene.add(hemi); scene.add(dirLight);
 
-    // Ground + grid (both hidden by default; grid toggle OFF, ground toggle OFF)
+    // Ground + grid (toggled)
     const groundGroup = new THREE.Group(); scene.add(groundGroup);
     const grid = new THREE.GridHelper(10, 20, 0x84d4d4, 0xdef3f3);
     grid.visible = false; // disabled by default
@@ -368,8 +357,7 @@
     const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200), groundMat);
     ground.rotation.x = -Math.PI/2; ground.position.y = -0.0001;
-    ground.receiveShadow = false; ground.visible = false; // hidden by default
-    groundGroup.add(ground);
+    ground.receiveShadow = true; ground.visible = true; groundGroup.add(ground);
 
     // XYZ Axes helper (toggle)
     const axesHelper = new THREE.AxesHelper(1);
@@ -430,7 +418,7 @@
         obj.traverse(o=>{
           if (o.isMesh && o.geometry){
             o.userData.__assetKey = bestKey;
-            o.castShadow = false; o.receiveShadow = false; // no shadows init
+            o.castShadow = true; o.receiveShadow = true;
             const arr = assetToMeshes.get(bestKey) || [];
             arr.push(o);
             assetToMeshes.set(bestKey, arr);
@@ -498,7 +486,7 @@
     // Pointer + hover + joint drag
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    const hover = buildHoverAPI({color:0x0ea5a6, opacity:Math.max(0, Math.min(1, hoverCfg.opacity ?? 0.28))});
+    const hover = buildHoverAPI({color:0x0ea5a6, opacity:hoverCfg.opacity});
 
     let dragState=null;
     const ROT_PER_PIXEL=0.01, PRISM_PER_PIXEL=0.003;
@@ -546,7 +534,7 @@
         } else {
           delta = -(dY * PRISM_PER_PIXEL);
         }
-        ds.value += delta * fine; setJointValue(api.robotModel, ds.joint, ds.value); refreshSelectionMarker(); return;
+        ds.value += delta * fine; setJointValue(api.robotModel, ds.joint, ds.value); return;
       }
 
       let applied=false; const hit=new THREE.Vector3();
@@ -559,12 +547,12 @@
           const sign = Math.sign(ds.axisW.dot(cross)) || 1;
           const delta = Math.atan2(cross.length(), dot) * sign;
           ds.value += (delta * fine); ds.r0 = r1;
-          setJointValue(api.robotModel, ds.joint, ds.value); applied=true; refreshSelectionMarker();
+          setJointValue(api.robotModel, ds.joint, ds.value); applied=true;
         }
       }
       if (!applied){
         const delta = (dX * ROT_PER_PIXEL) * fine;
-        ds.value += delta; setJointValue(api.robotModel, ds.joint, ds.value); refreshSelectionMarker();
+        ds.value += delta; setJointValue(api.robotModel, ds.joint, ds.value);
       }
     }
 
@@ -650,56 +638,6 @@
     }
 
     // =========
-    //  Selection marker (persistent)
-    // =========
-    let selectedMeshes = [];
-    let selectionHelper = null;
-
-    function ensureSelectionHelper(){
-      if (!selectionHelper){
-        const box = new THREE.Box3(new THREE.Vector3(-0.5,-0.5,-0.5), new THREE.Vector3(0.5,0.5,0.5));
-        selectionHelper = new THREE.Box3Helper(box, new THREE.Color(THEME.teal));
-        selectionHelper.visible = false;
-        selectionHelper.renderOrder = 10001;
-        scene.add(selectionHelper);
-      }
-      return selectionHelper;
-    }
-
-    function setSelectedMeshes(meshes){
-      selectedMeshes = meshes.filter(Boolean);
-      refreshSelectionMarker();
-    }
-
-    function refreshSelectionMarker(){
-      ensureSelectionHelper();
-      if (!api.robotModel || !selectedMeshes.length){
-        selectionHelper.visible = false;
-        return;
-      }
-      const box = computeUnionBox(selectedMeshes);
-      if (!box){
-        selectionHelper.visible = false;
-        return;
-      }
-      // Update helper box and visibility
-      selectionHelper.box.copy(box);
-      selectionHelper.updateMatrixWorld(true);
-      selectionHelper.visible = true;
-    }
-
-    function selectFromHit(meshHit){
-      if (!meshHit) { setSelectedMeshes([]); return; }
-      if (selectMode==='link'){
-        const link = findAncestorLink(meshHit, api.linkSet);
-        const meshes = link ? collectMeshesInLink(link) : [meshHit];
-        setSelectedMeshes(meshes);
-      } else {
-        setSelectedMeshes([meshHit]);
-      }
-    }
-
-    // =========
     //   UI
     // =========
     function mkTealButton(label){
@@ -715,6 +653,7 @@
         cursor: 'pointer',
         pointerEvents: 'auto'
       });
+      // IMPORTANT: no onpointerdown here (prevents double sound)
       return b;
     }
     function mkTealToggle(label){
@@ -731,6 +670,7 @@
       const s = document.createElement('input');
       s.type='range'; s.min=min; s.max=max; s.step=step; s.value=value;
       s.style.width='100%'; s.style.accentColor = THEME.teal;
+      // no pointerdown hook
       return s;
     }
     function mkRow(label, child){
@@ -748,6 +688,7 @@
       });
       sel.value = value;
       Object.assign(sel.style,{padding:'8px',border:`1px solid ${THEME.stroke}`,borderRadius:'10px',pointerEvents:'auto'});
+      // no pointerdown hook
       return sel;
     }
 
@@ -762,7 +703,7 @@
         fontFamily: 'Computer Modern, CMU Serif, Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
       });
 
-      // === Components Panel (pre-built later, but UI is ready)
+      // === Components Panel
       const compBtn = mkTealButton('Components');
       Object.assign(compBtn.style, { position:'absolute', left:'14px', bottom:'14px', boxShadow: THEME.shadow });
       const compPanel = document.createElement('div');
@@ -825,8 +766,7 @@
       // Projection + helpers
       const projSel = mkSelect(['Perspective','Orthographic'], 'Perspective');
       const togGrid = mkTealToggle('Grid');       // OFF by default
-      const togGround = mkTealToggle('Ground & shadows'); // start OFF (no shadows)
-      togGround.cb.checked = false;
+      const togGround = mkTealToggle('Ground & shadows'); togGround.cb.checked = true;
       const togAxes = mkTealToggle('XYZ axes');   // axes toggle
       togAxes.cb.checked = false;
       dockBody.appendChild(mkRow('Projection', projSel));
@@ -846,6 +786,7 @@
         background: THEME.bgPanel, color: THEME.text, fontWeight:'700',
         boxShadow: THEME.shadow, pointerEvents:'auto', zIndex: '10000'
       });
+      // no pointerdown hook
 
       // Root assembly
       root.appendChild(compPanel);
@@ -856,7 +797,6 @@
 
       // Initial defaults
       togGrid.cb.checked = false; // grid disabled initially
-      // ground & shadows off initially (already applied at renderer level)
 
       return {
         root,
@@ -961,12 +901,6 @@
           api.linkSet = markLinksAndJoints(api.robotModel);
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
           state.off = buildOffscreenFromRobot();
-
-          // PRE-BUILD COMPONENTS GALLERY RIGHT AWAY (so opening button is instant)
-          if (state?.ui?.list){
-            buildGallery(state.ui.list).catch(()=>{});
-          }
-
           prepareExplodeVectors();
         }
       } catch(_e){}
@@ -1006,7 +940,6 @@
           o.position.copy( base.clone().add( dir.clone().multiplyScalar(f * 0.6) ) );
         }
       });
-      refreshSelectionMarker();
     }
 
     // ===========
@@ -1131,22 +1064,21 @@
       const az = Math.PI * 0.25, el = Math.PI * 0.2;
       const dir = new THREE.Vector3(Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)).multiplyScalar(d);
       camera.position.copy(c.clone().add(dir)); controls.target.copy(c); controls.update();
-      refreshSelectionMarker();
     }
     function viewTop(){
       if (!api.robotModel) return;
       const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
-      camera.position.set(c.x, c.y + d, c.z); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+      camera.position.set(c.x, c.y + d, c.z); controls.target.copy(c); controls.update();
     }
     function viewFront(){
       if (!api.robotModel) return;
       const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
-      camera.position.set(c.x, c.y, c.z + d); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+      camera.position.set(c.x, c.y, c.z + d); controls.target.copy(c); controls.update();
     }
     function viewRight(){
       if (!api.robotModel) return;
       const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
-      camera.position.set(c.x + d, c.y, c.z); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+      camera.position.set(c.x + d, c.y, c.z); controls.target.copy(c); controls.update();
     }
 
     // ===========
@@ -1158,7 +1090,6 @@
         if (o.isMesh && o.geometry) o.visible = true;
       });
       fitAndCenter(camera, controls, api.robotModel, 1.05);
-      setSelectedMeshes([]); // clear selection on show-all
     }
 
     function isolateAssetOnScreen(assetKey){
@@ -1194,9 +1125,6 @@
         controls.target.copy(center); controls.update();
         sizeAxesHelper(maxDim, center);
       }
-
-      // Make selection persistent on isolation
-      setSelectedMeshes(meshes);
     }
 
     // Single handler: GUI press + click sound (exactly once per user action)
@@ -1275,7 +1203,12 @@
 
     function onPointerMove(e){
       lastMoveEvt = e;
-      scheduleHover();
+      const now = performance.now();
+      if (now - lastHoverTs >= (hoverCfg.throttleMs|0)){
+        scheduleHover();
+      } else {
+        scheduleHover();
+      }
     }
 
     function onPointerDown(e){
@@ -1286,11 +1219,7 @@
       const pickables=[]; api.robotModel.traverse(o=>{ if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
       const hits = raycaster.intersectObjects(pickables, true);
       if (!hits.length) return;
-      const meshHit = hits[0].object;
-
-      // If joint found, start drag; but still set selection marker
-      const joint = findAncestorJoint(meshHit);
-      selectFromHit(meshHit);
+      const joint = findAncestorJoint(hits[0].object);
       if (joint && isMovable(joint)) startJointDrag(joint, e);
     }
 
@@ -1313,7 +1242,7 @@
               bIso, bTop, bFront, bRight, bSnap, projSel, togGrid, togGround, togAxes,
               dock, toolsToggleBtn } = state.ui;
 
-      let galleryBuilt = false;
+      let builtOnce = false;
 
       // Tools open/close toggle button (single click handler)
       function setDock(open){
@@ -1323,13 +1252,12 @@
       toolsToggleBtn.addEventListener('click', ()=>{ buttonClicked(); setDock(dock.style.display==='none'); });
       setDock(false); // start CLOSED
 
-      // Components panel
+      // Components panel (single click handler)
       btn.addEventListener('click', async ()=>{
         buttonClicked();
         if (panel.style.display === 'none'){
           panel.style.display = 'block';
-          // If not yet built (e.g., URDF arrived late), build now
-          if (!galleryBuilt){ await buildGallery(list); galleryBuilt = true; }
+          if (!builtOnce){ await buildGallery(list); builtOnce = true; }
         } else {
           panel.style.display = 'none';
         }
@@ -1346,13 +1274,6 @@
         const key = el.dataset.assetKey;
         if (key) isolateAssetOnScreen(key);
       });
-
-      // PRE-BUILD gallery contents ASAP once robot loads
-      const maybePrebuildGallery = ()=>{
-        if (state.off && !galleryBuilt && state.ui?.list){
-          buildGallery(state.ui.list).then(()=>{ galleryBuilt = true; }).catch(()=>{});
-        }
-      };
 
       // Fit
       fitBtn.addEventListener('click', ()=>{ buttonClicked(); if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.06); });
@@ -1404,28 +1325,11 @@
           controls.object = persp; camera = persp;
           controls.update();
         }
-        refreshSelectionMarker();
       });
 
       // Helpers
       togGrid.cb.addEventListener('change', ()=>{ buttonClicked(); grid.visible = !!togGrid.cb.checked; });
-
-      // Ground & shadows: toggling ON enables shadows; OFF disables everything shadowy
-      togGround.cb.addEventListener('change', ()=>{
-        buttonClicked();
-        const on = !!togGround.cb.checked;
-        ground.visible = on;
-        dirLight.castShadow = on;
-        renderer.shadowMap.enabled = on;
-        // meshes already have cast/receive false from init; if turning on, enable them
-        api.robotModel?.traverse(o=>{
-          if (o.isMesh && o.geometry){
-            o.castShadow = on;
-            o.receiveShadow = on;
-          }
-        });
-      });
-
+      togGround.cb.addEventListener('change', ()=>{ buttonClicked(); ground.visible = !!togGround.cb.checked; dirLight.castShadow = !!togGround.cb.checked; });
       togAxes.cb.addEventListener('change', ()=>{
         buttonClicked();
         axesHelper.visible = !!togAxes.cb.checked;
@@ -1439,8 +1343,6 @@
         }
       });
 
-      // Kick a prebuild if robot already loaded late
-      maybePrebuildGallery();
     })();
 
     // Animate
@@ -1463,3 +1365,6 @@
 
   root.URDFViewer = URDFViewer;
 })(typeof window!=='undefined' ? window : this);
+
+
+
