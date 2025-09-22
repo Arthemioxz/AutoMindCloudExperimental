@@ -4,7 +4,7 @@ from IPython.display import HTML
 import gdown
 
 # -------------------------------
-# Descarga y extracción de ZIP con /urdf y /meshes
+# Download and extract ZIP with /urdf and /meshes
 # -------------------------------
 def Download_URDF(Drive_Link, Output_Name="Model"):
     root_dir = "/content"
@@ -28,12 +28,13 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
         shutil.move(os.path.join(tmp_extract, top[0]), final_dir)
     else:
         os.makedirs(final_dir, exist_ok=True)
-        for n in top: shutil.move(os.path.join(tmp_extract, n), os.path.join(final_dir, n))
+        for n in top:
+            shutil.move(os.path.join(tmp_extract, n), os.path.join(final_dir, n))
     shutil.rmtree(tmp_extract, ignore_errors=True)
     return final_dir
 
 # -------------------------------
-# Genera HTML y carga el viewer (último commit) + audio opcional
+# Render URDF (full-viewport, ISO start/reset, no double-camera jump)
 # -------------------------------
 def URDF_Render(folder_path="Model",
                 select_mode="link", background=0xf0f0f0,
@@ -42,18 +43,11 @@ def URDF_Render(folder_path="Model",
                 compFile="AutoMindCloud/ComponentSelection.js",
                 ensure_three=True,
                 click_sound_path="click_sound.mp3",
-                # --- NUEVO: vista inicial por defecto ---
-                init_az_deg=40,      # azimuth (°) 0=+X, 90=+Z
-                init_el_deg=18,      # elevación (°) desde el plano XZ
-                init_zoom_out=1.90   # >1 = más margen (más lejos)
+                # Exact ISO configuration (used at start AND on "Fit/Reset")
+                init_az_deg=45,     # azimuth degrees (0=+X, 90=+Z)
+                init_el_deg=25,     # elevation degrees from XZ plane
+                init_pad=1.90       # fit padding factor (same everywhere)
                 ):
-    """
-    - Carga el viewer del último commit (fallback a branch).
-    - Asegura THREE si hace falta.
-    - Empaqueta /urdf y /meshes en base64 e inyecta el URDF.
-    - Ajuste automático: centra y encuadra (sin recortes) usando todo el viewport.
-    - Vista inicial configurable (azimuth/elevación/zoom_out).
-    """
 
     # ---- Find urdf + meshes and build meshDB ----
     def find_dirs(root):
@@ -167,14 +161,7 @@ def URDF_Render(folder_path="Model",
       const needThree = {str(bool(ensure_three)).lower()};
       const haveURDF = {json.dumps(bool(urdf_raw))};
 
-      // --- Initial view config (from Python args) ---
-      const INIT = {{
-        az: ({float(init_az_deg)}) * Math.PI / 180,
-        el: ({float(init_el_deg)}) * Math.PI / 180,
-        zoomOut: Math.max(1.0, {float(init_zoom_out)})
-      }};
-
-      // --- Make Colab output iframe match the visible window ---
+      // --- Make Colab output iframe fill visible area (avoid hidden top/bottom) ---
       function fitIframeOnce(){{
         try {{
           const h = window.innerHeight || document.documentElement.clientHeight || 600;
@@ -183,13 +170,8 @@ def URDF_Render(folder_path="Model",
           }}
         }} catch(_) {{}}
       }}
-      function fitIframeLoop(n=10, delay=120) {{
-        fitIframeOnce();
-        if (n>1) setTimeout(() => fitIframeLoop(n-1, delay), delay);
-      }}
-      fitIframeLoop();
-      window.addEventListener('resize', fitIframeOnce);
-      window.addEventListener('orientationchange', () => setTimeout(fitIframeOnce, 100));
+      fitIframeOnce();
+      window.addEventListener('orientationchange', ()=>setTimeout(fitIframeOnce,100));
 
       function loadScript(url){{
         return new Promise((res, rej) => {{
@@ -238,10 +220,11 @@ def URDF_Render(folder_path="Model",
         }} catch (e) {{}}
       }}
 
-      // 3) Render + aspect-aware auto-fit; initial az/el + zoomOut
+      // 3) Render + ISO start + hijack "Fit/Reset" to ISO (no flicker)
       if (haveTHREE && haveViewer && haveURDF) {{
         const container = document.getElementById('app');
 
+        // Keep canvas sized, but DO NOT auto-fit on resize (prevents camera jump)
         function sizeContainer(){{
           const w = window.innerWidth  || document.documentElement.clientWidth  || 1;
           const h = window.innerHeight || document.documentElement.clientHeight || 1;
@@ -250,7 +233,6 @@ def URDF_Render(folder_path="Model",
         }}
         sizeContainer();
         window.addEventListener('resize', sizeContainer);
-        window.addEventListener('orientationchange', sizeContainer);
 
         const opts = {{
           container,
@@ -261,39 +243,32 @@ def URDF_Render(folder_path="Model",
           clickAudioDataURL: {click_js}
         }};
 
-        function enforceFit(app, pad=1.10, angles=null){{
+        // Compute exact ISO distance from bounding sphere, aspect and FOV (uses tan).
+        function applyISO(app) {{
           try {{
-            const robot = app && app.robot;
-            const cam   = app && app.camera;
-            const ctrls = app && app.controls;
-            const rend  = app && app.renderer;
-            if (!robot || !cam || !ctrls || !rend) return false;
+            const robot = app?.robot, cam = app?.camera, ctrl = app?.controls, rndr = app?.renderer;
+            if (!robot || !cam || !ctrl || !rndr) return false;
 
             const box = new THREE.Box3().setFromObject(robot);
             if (box.isEmpty()) return false;
-            const c = box.getCenter(new THREE.Vector3());
-            const s = box.getSize(new THREE.Vector3());
 
-            const r = Math.max(1e-9, Math.sqrt(s.x*s.x + s.y*s.y + s.z*s.z) * 0.5) * pad;
+            const c = box.getCenter(new THREE.Vector3());
+            const sz = box.getSize(new THREE.Vector3());
+            const r = Math.max(1e-9, Math.sqrt(sz.x*sz.x + sz.y*sz.y + sz.z*sz.z) * 0.5) * {init_pad};
 
             const w = Math.max(1, container.clientWidth  || window.innerWidth  || 1);
             const h = Math.max(1, container.clientHeight || window.innerHeight || 1);
-            rend.setSize(w, h, false);
+            rndr.setSize(w, h, false);
 
-            // direction from az/el if provided
-            let dir;
-            if (angles && isFinite(angles.az) && isFinite(angles.el)) {{
-              const az = angles.az, el = angles.el;
-              dir = new THREE.Vector3(
-                Math.cos(el)*Math.cos(az),
-                Math.sin(el),
-                Math.cos(el)*Math.sin(az)
-              ).normalize();
-            }} else {{
-              dir = new THREE.Vector3(1, 0.9, 1).normalize();
-            }}
+            const az = {init_az_deg} * Math.PI/180;
+            const el = {init_el_deg} * Math.PI/180;
+            const dir = new THREE.Vector3(
+              Math.cos(el)*Math.cos(az),
+              Math.sin(el),
+              Math.cos(el)*Math.sin(az)
+            ).normalize();
 
-            if (cam.isPerspectiveCamera){{
+            if (cam.isPerspectiveCamera) {{
               const fovY = (cam.fov || 60) * Math.PI/180;
               const aspect = w / h;
               const fovX = 2 * Math.atan(Math.tan(fovY/2) * aspect);
@@ -303,8 +278,8 @@ def URDF_Render(folder_path="Model",
               const dist  = Math.max(distX, distY);
 
               cam.aspect = aspect;
-              cam.near = Math.max(0.001, dist - r * 2.0);
-              cam.far  = Math.max(1000, dist + r * 12.0);
+              cam.near   = Math.max(0.001, dist - r*1.5);
+              cam.far    = Math.max(1000, dist + r*12.0);
               cam.updateProjectionMatrix();
 
               cam.position.copy(c).add(dir.multiplyScalar(dist));
@@ -317,29 +292,50 @@ def URDF_Render(folder_path="Model",
               cam.near = Math.max(0.001, r * 0.02);
               cam.far  = Math.max(1000, r * 50);
               cam.updateProjectionMatrix();
-
               cam.position.copy(c).add(dir.multiplyScalar(r * 3.0));
             }}
 
-            ctrls.target.copy(c);
-            ctrls.update();
+            ctrl.target.copy(c); ctrl.update();
             return true;
           }} catch(e) {{
             return false;
           }}
         }}
 
+        function hijackButtonsToISO(app){{
+          // Intercept the viewer's own Fit/Reset handler so ONLY our ISO runs (no double pose).
+          // We attach a *capturing* listener that stops the original one.
+          const labelIs = (el, txt) => el && el.tagName==='BUTTON' && el.textContent && el.textContent.trim().toLowerCase()===txt;
+          function bind(){{
+            const btns = Array.from(document.querySelectorAll('button'));
+            const targets = btns.filter(b => labelIs(b,'fit') || labelIs(b,'reset'));
+            targets.forEach(b => {{
+              // Avoid adding twice
+              if (b.__amc_iso_bound) return;
+              b.__amc_iso_bound = true;
+              b.addEventListener('click', (ev) => {{
+                ev.stopImmediatePropagation();
+                ev.preventDefault();
+                requestAnimationFrame(() => applyISO(app));
+              }}, true); // capture!
+            }});
+          }}
+          bind();
+          // In case UI rebuilds later:
+          const mo = new MutationObserver(() => bind());
+          mo.observe(document.body, {{ childList:true, subtree:true }});
+        }}
+
         try {{
           const app = (window.__URDF_APP__ = window.URDFViewer.render(opts));
 
-          // Initial fit with requested angle/zoom
-          const PAD = INIT.zoomOut;
-          const kicks = [80, 200, 400, 800, 1200];
-          kicks.forEach(ms => setTimeout(() => enforceFit(app, PAD, INIT), ms));
+          // Wait for robot to exist, then apply ISO ONCE (no intermediate fit).
+          const tries = [80, 180, 320, 600, 1000, 1600];
+          let done=false;
+          tries.forEach(ms => setTimeout(() => {{ if (!done) done = applyISO(app); }}, ms));
 
-          // Keep that framing on viewport changes
-          window.addEventListener('resize', () => enforceFit(app, PAD, INIT));
-          window.addEventListener('orientationchange', () => setTimeout(() => enforceFit(app, PAD, INIT), 120));
+          // Make the "Fit/Reset" button do ISO directly
+          hijackButtonsToISO(app);
         }} catch (err) {{
           console.warn("URDFViewer.render failed:", err);
         }}
