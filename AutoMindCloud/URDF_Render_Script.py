@@ -43,11 +43,11 @@ def URDF_Render(folder_path="Model",
                 ensure_three=True,
                 click_sound_path="click_sound.mp3"):
     """
-    - Loads ComponentSelection.js from the repo's latest commit (fallback to @branch).
-    - Auto-loads THREE stack if needed (ensure_three=True).
-    - Scans folder_path for /urdf + /meshes, builds base64 meshDB, and inlines URDF.
-    - If click_sound_path exists, embeds it as data URL and passes to URDFViewer as clickAudioDataURL.
-    - Uses full viewport and auto-fits model to the visible area (centered), with a robust fallback.
+    - Carga el viewer del último commit (con fallback a branch).
+    - Asegura la pila THREE si es necesario.
+    - Empaqueta /urdf y /meshes a base64 e inyecta el URDF.
+    - Si existe click_sound_path, se embebe como data URL.
+    - Ocupa todo el viewport y auto-encuadra (centrado, sin recorte).
     """
 
     # ---- Find urdf + meshes and build meshDB ----
@@ -129,17 +129,17 @@ def URDF_Render(folder_path="Model",
 <meta charset="utf-8"/>
 <title>URDF Viewer + Audio</title>
 <style>
-  /* Fill the entire visible area without scrollbars */
+  /* Full-viewport canvas, no inner scrollbars */
   html, body {{
     margin: 0;
     padding: 0;
-    height: 100vh;           /* important for Colab/iframes */
+    height: 100vh;
     overflow: hidden;
     background: #f0f0f0;
   }}
   #app {{
-    position: fixed;          /* pin to viewport */
-    inset: 0;
+    position: fixed;
+    inset: 0;           /* top/right/bottom/left: 0 */
     width: 100vw;
     height: 100vh;
   }}
@@ -161,8 +161,8 @@ def URDF_Render(folder_path="Model",
       const needThree = {str(bool(ensure_three)).lower()};
       const haveURDF = {json.dumps(bool(urdf_raw))};
 
-      // Ask Colab (if present) to expand the output frame to viewport height
-      function colabFitIframe() {{
+      // Ask Colab (if present) to stretch the output frame to viewport height
+      function colabFitIframe(){{
         try {{
           const h = window.innerHeight || document.documentElement.clientHeight || 600;
           if (window.google && google.colab && google.colab.output && google.colab.output.setIframeHeight) {{
@@ -221,14 +221,15 @@ def URDF_Render(folder_path="Model",
         }} catch (e) {{}}
       }}
 
-      // 3) Render + strong auto-fit fallback
+      // 3) Render + strong, aspect-aware auto-fit
       if (haveTHREE && haveViewer && haveURDF) {{
         const container = document.getElementById('app');
 
-        // keep container exactly the viewport size
         function sizeContainer(){{
-          container.style.width  = (window.innerWidth  || document.documentElement.clientWidth  || 1) + 'px';
-          container.style.height = (window.innerHeight || document.documentElement.clientHeight || 1) + 'px';
+          const w = window.innerWidth  || document.documentElement.clientWidth  || 1;
+          const h = window.innerHeight || document.documentElement.clientHeight || 1;
+          container.style.width  = w + 'px';
+          container.style.height = h + 'px';
         }}
         sizeContainer();
         window.addEventListener('resize', sizeContainer);
@@ -243,73 +244,83 @@ def URDF_Render(folder_path="Model",
           clickAudioDataURL: {click_js}
         }};
 
-        // Fallback fit that works even if the viewer script wasn't updated
-        function enforceFit(app, pad=1.06){{
+        // Aspect-correct fit using the bounding sphere (works for any orientation)
+        function enforceFit(app, pad=1.12){{
           try {{
             const robot = app && app.robot;
             const cam   = app && app.camera;
             const ctrls = app && app.controls;
             const rend  = app && app.renderer;
-            if (!robot || !cam || !ctrls) return false;
+            if (!robot || !cam || !ctrls || !rend) return false;
 
             const box = new THREE.Box3().setFromObject(robot);
             if (box.isEmpty()) return false;
             const c = box.getCenter(new THREE.Vector3());
             const s = box.getSize(new THREE.Vector3());
-            const maxDim = Math.max(s.x, s.y, s.z) || 1;
 
-            const w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
-            const h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+            // Bounding sphere radius
+            const r = Math.max(1e-9, Math.sqrt(s.x*s.x + s.y*s.y + s.z*s.z) * 0.5) * pad;
+
+            // Use the real rendered size (container fills viewport)
+            const w = Math.max(1, container.clientWidth  || window.innerWidth  || 1);
+            const h = Math.max(1, container.clientHeight || window.innerHeight || 1);
             rend.setSize(w, h, false);
 
             if (cam.isPerspectiveCamera){{
-              const fov = (cam.fov || 60) * Math.PI/180;
+              const fovY = (cam.fov || 60) * Math.PI/180;
               const aspect = w / h;
-              const fitHeight = (s.y * pad) / (2 * Math.tan(fov/2));
-              const fitWidth  = ((s.x * pad) / (2 * Math.tan(fov/2))) / aspect;
-              const dist = Math.max(fitHeight, fitWidth, s.z * pad);
-              cam.near = Math.max(maxDim/1000, 0.001);
-              cam.far  = Math.max(dist*50, maxDim*10, 1000);
+              const fovX = 2 * Math.atan(Math.tan(fovY/2) * aspect);
+
+              // Distance to fit the bounding sphere in both axes
+              const distY = r / Math.sin(Math.max(1e-6, fovY/2));
+              const distX = r / Math.sin(Math.max(1e-6, fovX/2));
+              const dist  = Math.max(distX, distY);
+
               cam.aspect = aspect;
+              cam.near = Math.max(0.001, dist - r * 1.5);
+              cam.far  = Math.max(1000, dist + r * 8.0);
               cam.updateProjectionMatrix();
+
               const dir = new THREE.Vector3(1, 0.9, 1).normalize();
-              cam.position.copy(c).add(dir.multiplyScalar(dist));
+              cam.position.copy(c).add(dir.multiplyScalar(dist * 1.02));
             }} else {{
               const aspect = w / h;
-              const side = Math.max(s.x, s.y/aspect) * 0.5 * pad;
-              cam.left = -side*aspect; cam.right = side*aspect;
-              cam.top = side; cam.bottom = -side;
-              cam.near = Math.max(maxDim/1000, 0.001);
-              cam.far  = Math.max(maxDim*50, 1000);
+              const halfH  = r;         // sphere radius as half-height
+              const halfW  = r * aspect;
+              cam.left = -halfW; cam.right = halfW;
+              cam.top  =  halfH; cam.bottom = -halfH;
+              cam.near = Math.max(0.001, r * 0.02);
+              cam.far  = Math.max(1000, r * 50);
               cam.updateProjectionMatrix();
+
               const dir = new THREE.Vector3(1, 0.9, 1).normalize();
-              cam.position.copy(c).add(dir.multiplyScalar(Math.max(s.x,s.y,s.z) * 2.0));
+              cam.position.copy(c).add(dir.multiplyScalar(r * 3.0));
             }}
-            ctrls.target.copy(c); ctrls.update();
+
+            ctrls.target.copy(c);
+            ctrls.update();
             return true;
-          }} catch(e) {{ return false; }}
+          }} catch(e) {{
+            return false;
+          }}
         }}
 
         try {{
           const app = (window.__URDF_APP__ = window.URDFViewer.render(opts));
 
-          // Try hard-fit shortly after render, and again once the robot is actually there
-          function tryHardFit(){{
-            if (!window.__URDF_APP__) return;
-            enforceFit(window.__URDF_APP__, 1.06);
-          }}
-          // First tick
-          setTimeout(tryHardFit, 120);
-          // Poll briefly until the model is present
+          // First fit (soon after render)
+          setTimeout(() => enforceFit(app, 1.12), 120);
+
+          // Poll briefly until the model is fully present, then stop
           const t0 = Date.now();
           const poll = setInterval(() => {{
-            const ok = enforceFit(window.__URDF_APP__, 1.06);
-            if (ok || (Date.now() - t0) > 6000) clearInterval(poll);
-          }}, 180);
+            const done = enforceFit(app, 1.12);
+            if (done || (Date.now() - t0) > 6000) clearInterval(poll);
+          }}, 160);
 
           // Refit on viewport changes
-          window.addEventListener('resize', () => enforceFit(window.__URDF_APP__, 1.04));
-          window.addEventListener('orientationchange', () => setTimeout(()=>enforceFit(window.__URDF_APP__, 1.04), 100));
+          window.addEventListener('resize', () => enforceFit(app, 1.10));
+          window.addEventListener('orientationchange', () => setTimeout(() => enforceFit(app, 1.10), 100));
         }} catch (err) {{
           console.warn("URDFViewer.render failed:", err);
         }}
