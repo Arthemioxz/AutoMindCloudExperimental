@@ -41,12 +41,18 @@ def URDF_Render(folder_path="Model",
                 branch="main",
                 compFile="AutoMindCloud/ComponentSelection.js",
                 ensure_three=True,
-                click_sound_path="click_sound.mp3"):
+                click_sound_path="click_sound.mp3",
+                # --- NUEVO: vista inicial por defecto ---
+                init_az_deg=40,      # azimuth (°) 0=+X, 90=+Z
+                init_el_deg=18,      # elevación (°) desde el plano XZ
+                init_zoom_out=1.90   # >1 = más margen (más lejos)
+                ):
     """
     - Carga el viewer del último commit (fallback a branch).
     - Asegura THREE si hace falta.
     - Empaqueta /urdf y /meshes en base64 e inyecta el URDF.
     - Ajuste automático: centra y encuadra (sin recortes) usando todo el viewport.
+    - Vista inicial configurable (azimuth/elevación/zoom_out).
     """
 
     # ---- Find urdf + meshes and build meshDB ----
@@ -161,7 +167,14 @@ def URDF_Render(folder_path="Model",
       const needThree = {str(bool(ensure_three)).lower()};
       const haveURDF = {json.dumps(bool(urdf_raw))};
 
-      // --- Make Colab's output iframe match the visible window (no hidden top/bottom) ---
+      // --- Initial view config (from Python args) ---
+      const INIT = {{
+        az: ({float(init_az_deg)}) * Math.PI / 180,
+        el: ({float(init_el_deg)}) * Math.PI / 180,
+        zoomOut: Math.max(1.0, {float(init_zoom_out)})
+      }};
+
+      // --- Make Colab output iframe match the visible window ---
       function fitIframeOnce(){{
         try {{
           const h = window.innerHeight || document.documentElement.clientHeight || 600;
@@ -225,7 +238,7 @@ def URDF_Render(folder_path="Model",
         }} catch (e) {{}}
       }}
 
-      // 3) Render + strong, aspect-aware auto-fit (uses tan, not sin)
+      // 3) Render + aspect-aware auto-fit; initial az/el + zoomOut
       if (haveTHREE && haveViewer && haveURDF) {{
         const container = document.getElementById('app');
 
@@ -248,8 +261,7 @@ def URDF_Render(folder_path="Model",
           clickAudioDataURL: {click_js}
         }};
 
-        // Aspect-correct fit using bounding sphere; always center on the model.
-        function enforceFit(app, pad=1.10){{
+        function enforceFit(app, pad=1.10, angles=null){{
           try {{
             const robot = app && app.robot;
             const cam   = app && app.camera;
@@ -262,20 +274,30 @@ def URDF_Render(folder_path="Model",
             const c = box.getCenter(new THREE.Vector3());
             const s = box.getSize(new THREE.Vector3());
 
-            // Bounding sphere radius
             const r = Math.max(1e-9, Math.sqrt(s.x*s.x + s.y*s.y + s.z*s.z) * 0.5) * pad;
 
-            // Real rendered size
             const w = Math.max(1, container.clientWidth  || window.innerWidth  || 1);
             const h = Math.max(1, container.clientHeight || window.innerHeight || 1);
             rend.setSize(w, h, false);
+
+            // direction from az/el if provided
+            let dir;
+            if (angles && isFinite(angles.az) && isFinite(angles.el)) {{
+              const az = angles.az, el = angles.el;
+              dir = new THREE.Vector3(
+                Math.cos(el)*Math.cos(az),
+                Math.sin(el),
+                Math.cos(el)*Math.sin(az)
+              ).normalize();
+            }} else {{
+              dir = new THREE.Vector3(1, 0.9, 1).normalize();
+            }}
 
             if (cam.isPerspectiveCamera){{
               const fovY = (cam.fov || 60) * Math.PI/180;
               const aspect = w / h;
               const fovX = 2 * Math.atan(Math.tan(fovY/2) * aspect);
 
-              // Distance to fit the sphere vertically & horizontally (tan!)
               const distY = r / Math.tan(Math.max(1e-6, fovY/2));
               const distX = r / Math.tan(Math.max(1e-6, fovX/2));
               const dist  = Math.max(distX, distY);
@@ -285,11 +307,10 @@ def URDF_Render(folder_path="Model",
               cam.far  = Math.max(1000, dist + r * 12.0);
               cam.updateProjectionMatrix();
 
-              const dir = new THREE.Vector3(1, 0.9, 1).normalize();
-              cam.position.copy(c).add(dir.multiplyScalar(dist * 1.02));
+              cam.position.copy(c).add(dir.multiplyScalar(dist));
             }} else {{
               const aspect = w / h;
-              const halfH  = r;         // sphere radius as half-height
+              const halfH  = r;
               const halfW  = r * aspect;
               cam.left = -halfW; cam.right = halfW;
               cam.top  =  halfH; cam.bottom = -halfH;
@@ -297,7 +318,6 @@ def URDF_Render(folder_path="Model",
               cam.far  = Math.max(1000, r * 50);
               cam.updateProjectionMatrix();
 
-              const dir = new THREE.Vector3(1, 0.9, 1).normalize();
               cam.position.copy(c).add(dir.multiplyScalar(r * 3.0));
             }}
 
@@ -312,14 +332,14 @@ def URDF_Render(folder_path="Model",
         try {{
           const app = (window.__URDF_APP__ = window.URDFViewer.render(opts));
 
-          // First fit and a brief retry loop until everything is present
-          const PAD = 1.10;
+          // Initial fit with requested angle/zoom
+          const PAD = INIT.zoomOut;
           const kicks = [80, 200, 400, 800, 1200];
-          kicks.forEach(ms => setTimeout(() => enforceFit(app, PAD), ms));
+          kicks.forEach(ms => setTimeout(() => enforceFit(app, PAD, INIT), ms));
 
-          // Refit on viewport changes
-          window.addEventListener('resize', () => enforceFit(app, PAD));
-          window.addEventListener('orientationchange', () => setTimeout(() => enforceFit(app, PAD), 120));
+          // Keep that framing on viewport changes
+          window.addEventListener('resize', () => enforceFit(app, PAD, INIT));
+          window.addEventListener('orientationchange', () => setTimeout(() => enforceFit(app, PAD, INIT), 120));
         }} catch (err) {{
           console.warn("URDFViewer.render failed:", err);
         }}
@@ -332,3 +352,4 @@ def URDF_Render(folder_path="Model",
 </html>
 """
     return HTML(html)
+
