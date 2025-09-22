@@ -10,26 +10,13 @@
      - XYZ Axes toggle (auto-sized)
      - Tools tab starts CLOSED + floating "Open/Close Tools" button
      - Optional click sound on every UI interaction (opts.clickAudioDataURL) with overlapping playback
-   Keeps:
-     - Hover aura (configurable)
-     - Stable, throttled hover
-     - Joint drag (revolute/prismatic) with limits (+Shift fine)
-     - Components panel (isolate & show all), thumbnails off-screen
-     - Single buttonClicked() handler wiring
 
-   UPDATED per your requests:
-     - Pure white background
-     - Selection "teal box" marker (persistent while rotating)
-     - Deselect when clicking empty canvas (no robot hit)
-     - **No sound** on empty-canvas clicks (only UI + robot hits make sound)
-     - No shadows on init
-     - Precreate UI and prebuild Components list to avoid first-click lag
-
-   NEW (Auto-Fit):
-     - canvas uses true visible size (style + buffer)
-     - bounding-sphere fit using both vertical & horizontal FOV
-     - re-fit on any window/container resize
+   Updated for "auto fit to max visible area":
+     - Canvas fills the whole iframe viewport (no inner scroll).
+     - Robust fit that considers aspect ratio (fits width OR height).
+     - Re-fits automatically after resize/orientation changes and after the robot finishes loading.
 */
+
 (function (root) {
   'use strict';
 
@@ -166,7 +153,7 @@
     }
     function showLink(link){
       const arr = collectMeshesInLink(link);
-      for(const m of arr){
+      for (const m of arr){
         const ov = overlayFor(m);
         if (ov){ m.add(ov); overlays.push(ov); }
       }
@@ -238,6 +225,8 @@
   URDFViewer.destroy = function(){
     try{ cancelAnimationFrame(state?.raf); }catch(_){}
     try{ window.removeEventListener('resize', state?.onResize); }catch(_){}
+    try{ window.removeEventListener('orientationchange', state?.onResize); }catch(_){}
+    try{ state?.resizeObs?.disconnect?.(); }catch(_){}
     try{ const el = state?.renderer?.domElement; el && el.parentNode && el.parentNode.removeChild(el); }catch(_){}
     try{ state?.renderer?.dispose?.(); }catch(_){}
     try{ state?.ui?.root && state.ui.root.remove(); }catch(_){}
@@ -250,6 +239,30 @@
   // ============================
   URDFViewer.render = function(opts){
     if (state) URDFViewer.destroy();
+
+    // Fill the visible iframe completely (Colab/Jupyter friendly)
+    try {
+      document.documentElement.style.margin = '0';
+      document.documentElement.style.padding = '0';
+      document.documentElement.style.height = '100%';
+      document.documentElement.style.overflow = 'hidden';
+      document.body.style.margin = '0';
+      document.body.style.padding = '0';
+      document.body.style.height = '100vh';
+      document.body.style.overflow = 'hidden';
+      // Ask Colab (if present) to grow the output to the viewport height
+      function fitIframe(){
+        try{
+          const h = window.innerHeight || document.documentElement.clientHeight || 600;
+          if (window.google && google.colab && google.colab.output && google.colab.output.setIframeHeight) {
+            google.colab.output.setIframeHeight(h, true);
+          }
+        }catch(e){}
+      }
+      fitIframe();
+      window.addEventListener('resize', fitIframe);
+      window.addEventListener('orientationchange', fitIframe);
+    } catch(_e){}
 
     const container = opts?.container || document.body;
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
@@ -299,49 +312,28 @@
     scene.background = new THREE.Color(THEME.bgCanvas);
 
     // Cameras
-    const aspect = Math.max(1e-6, (container.clientWidth||1)/(container.clientHeight||1));
-    const persp = new THREE.PerspectiveCamera(75, aspect, 0.01, 10000);
+    const aspect0 = Math.max(1e-6, (container.clientWidth||window.innerWidth||1)/(container.clientHeight||window.innerHeight||1));
+    const persp = new THREE.PerspectiveCamera(60, aspect0, 0.01, 10000);
     persp.position.set(0,0,3);
     const orthoSize = 2.5;
-    const ortho = new THREE.OrthographicCamera(-orthoSize*aspect, orthoSize*aspect, orthoSize, -orthoSize, 0.01, 10000);
+    const ortho = new THREE.OrthographicCamera(-orthoSize*aspect0, orthoSize*aspect0, orthoSize, -orthoSize, 0.01, 10000);
     ortho.position.set(0,0,3);
 
     let camera = persp; // default
     const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
     renderer.setPixelRatio(window.devicePixelRatio||1);
-    renderer.setSize(container.clientWidth||1, container.clientHeight||1);
-    renderer.domElement.style.width = "100%";
-    renderer.domElement.style.height = "100%";
+    renderer.setSize(window.innerWidth || container.clientWidth || 1, window.innerHeight || container.clientHeight || 1, false);
+    renderer.domElement.style.position = 'fixed';
+    renderer.domElement.style.inset = '0';
+    renderer.domElement.style.width = '100vw';
+    renderer.domElement.style.height = '100vh';
     renderer.domElement.style.touchAction = 'none';
     renderer.domElement.style.display = 'block';
-    renderer.domElement.style.position = 'relative';
+    container.appendChild(renderer.domElement);
 
     // Start with NO shadows
     renderer.shadowMap.enabled = false;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    container.appendChild(renderer.domElement);
-
-    // ---------- AUTO-FIT ADDITIONS ----------
-    let _lastMaxDim = 1;
-    function getViewportSize() {
-      const usingWindow = (container === document.body) || (container === document.documentElement);
-      const w = Math.max(1, usingWindow ? (window.innerWidth || 0) : (container.clientWidth || 0));
-      const h = Math.max(1, usingWindow ? (window.innerHeight || 0) : (container.clientHeight || 0));
-      return { w, h, asp: w / Math.max(1, h) };
-    }
-    function ensureSize() {
-      const { w, h, asp } = getViewportSize();
-      renderer.setSize(w, h, true); // update buffer size AND CSS size
-      if (camera.isPerspectiveCamera) {
-        camera.aspect = asp;
-      } else {
-        const s = _lastMaxDim || 1;
-        camera.left = -s * asp; camera.right = s * asp;
-        camera.top  =  s;       camera.bottom = -s;
-      }
-      camera.updateProjectionMatrix();
-    }
-    // ---------------------------------------
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -377,13 +369,43 @@
       axesHelper.position.copy(center || new THREE.Vector3());
     }
 
+    // ======== viewport sizing & auto-refit ========
+    function fitCanvasToViewport(){
+      const w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || container.clientWidth || 1);
+      const h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || container.clientHeight || 1);
+      renderer.setSize(w, h, false);
+      const asp = w / h;
+      if (camera.isPerspectiveCamera){
+        camera.aspect = asp;
+      } else {
+        const s = orthoSize;
+        camera.left = -s*asp; camera.right = s*asp;
+        camera.top = s; camera.bottom = -s;
+      }
+      camera.updateProjectionMatrix();
+      state.lastW = w; state.lastH = h;
+    }
+
+    function needRefitAfterResize(newW, newH){
+      if (!state.lastW || !state.lastH) return true;
+      const dw = Math.abs(newW - state.lastW) / state.lastW;
+      const dh = Math.abs(newH - state.lastH) / state.lastH;
+      return (dw > 0.05 || dh > 0.05); // 5% change → refit
+    }
+
     function onResize(){
-      ensureSize();
-      if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.08);
+      const w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || container.clientWidth || 1);
+      const h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || container.clientHeight || 1);
+      const shouldRefit = needRefitAfterResize(w,h);
+      fitCanvasToViewport();
+      if (shouldRefit && api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.04);
     }
     window.addEventListener('resize', onResize);
     window.addEventListener('orientationchange', onResize);
-    new ResizeObserver(onResize).observe(container);
+
+    // Also react if the host changes our layout without resize events
+    const resizeObs = new ResizeObserver(()=>onResize());
+    try { resizeObs.observe(document.body); } catch(_){}
 
     // Loaders + meshDB
     const urdfLoader = new URDFLoader();
@@ -405,55 +427,57 @@
       fitTimer = setTimeout(()=>{
         if (pendingMeshes===0 && api.robotModel){
           rectifyUpForward(api.robotModel);
-          fitAndCenter(camera, controls, api.robotModel);
+          fitAndCenter(camera, controls, api.robotModel, 1.06);
         }
       },80);
     }
 
-    // --------- NEW fit using bounding sphere + both FOVs ---------
-    function fitAndCenter(camera, controls, object, pad=1.08){
+    // Robust fit that respects aspect ratio (fits width OR height)
+    function fitAndCenter(camera, controls, object, pad=1.06){
       const box = new THREE.Box3().setFromObject(object);
       if (box.isEmpty()) return;
 
       const center = box.getCenter(new THREE.Vector3());
       const size   = box.getSize(new THREE.Vector3());
-      _lastMaxDim  = Math.max(size.x,size.y,size.z) * pad;
+      const maxDim = Math.max(size.x,size.y,size.z) || 1;
 
-      const sphere = box.getBoundingSphere(new THREE.Sphere());
-      const radius = Math.max(1e-6, sphere.radius) * pad;
-
-      const { asp } = getViewportSize();
+      // Always ensure canvas is the real size first
+      fitCanvasToViewport();
 
       if (camera.isPerspectiveCamera){
-        const vFOV = THREE.MathUtils.degToRad(camera.fov);
-        const hFOV = 2 * Math.atan(Math.tan(vFOV/2) * asp);
-        const distV = radius / Math.sin(vFOV/2);
-        const distH = radius / Math.sin(hFOV/2);
-        const dist  = Math.max(distV, distH) * 1.02;
+        const fov = (camera.fov || 60) * Math.PI/180; // vertical
+        const aspect = camera.aspect || 1;
+        const fitHeightDistance = (size.y * pad) / (2 * Math.tan(fov / 2));
+        const fitWidthDistance  = (size.x * pad) / (2 * Math.tan(fov / 2)) / aspect;
+        const dist = Math.max(fitHeightDistance, fitWidthDistance, size.z * pad);
 
-        camera.near = Math.max(radius/1000,0.001);
-        camera.far  = Math.max(radius*1500,1500);
+        camera.near = Math.max(maxDim/1000, 0.001);
+        camera.far  = Math.max(dist*50, maxDim*10, 1000);
         camera.updateProjectionMatrix();
 
-        const dir = new THREE.Vector3(1, 0.9, 1).normalize().multiplyScalar(dist);
-        camera.position.copy(center.clone().add(dir));
+        const dir = new THREE.Vector3(1, 0.9, 1).normalize();
+        camera.position.copy(center).add(dir.multiplyScalar(dist));
       } else {
-        camera.left   = -radius * asp;
-        camera.right  =  radius * asp;
-        camera.top    =  radius;
-        camera.bottom = -radius;
-        camera.near   = Math.max(radius/1000,0.001);
-        camera.far    = Math.max(radius*1500,1500);
+        const asp = camera.right - camera.left;
+        // Ortho frustum directly sized to object
+        const a = Math.max(1e-6, (renderer.domElement.width||state.lastW||1)/(renderer.domElement.height||state.lastH||1));
+        const s = Math.max(size.x, size.y/a) * 0.5 * pad;
+        camera.left = -s*a; camera.right = s*a;
+        camera.top = s; camera.bottom = -s;
+        camera.near = Math.max(maxDim/1000,0.001);
+        camera.far  = Math.max(maxDim*50, 1000);
         camera.updateProjectionMatrix();
-        camera.position.copy(center.clone().add(new THREE.Vector3(radius, radius*0.9, radius)));
+        const dir = new THREE.Vector3(1, 0.9, 1).normalize();
+        camera.position.copy(center).add(dir.multiplyScalar(Math.max(size.x,size.y,size.z) * 2.0));
       }
 
-      controls.target.copy(center); controls.update();
-      sizeAxesHelper(_lastMaxDim, center);
-      refreshSectionVisual(_lastMaxDim, center);
+      controls.target.copy(center);
+      controls.update();
+
+      sizeAxesHelper(maxDim, center);
+      refreshSectionVisual(maxDim, center);
       refreshSelectionMarker();
     }
-    // -------------------------------------------------------------
 
     urdfLoader.loadMeshCb = function(path, manager, onComplete){
       const bestKey = pickBestAsset(variantsFor(path), meshDB);
@@ -669,7 +693,7 @@
       const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(2.5,2.5,2.5);
       offScene.add(amb); offScene.add(d);
 
-      const offCamera = new THREE.PerspectiveCamera(60, OFF_W/ OFF_H, 0.01, 10000);
+      const offCamera = new THREE.PerspectiveCamera(60, OFF_W/OFF_H, 0.01, 10000);
 
       const robotClone = api.robotModel.clone(true);
       offScene.add(robotClone);
@@ -835,26 +859,28 @@
       if (box.isEmpty()) return;
       const c = box.getCenter(new THREE.Vector3());
       const s = box.getSize(new THREE.Vector3());
-      const d = Math.max(s.x,s.y,s.z) * 1.9;
-      const az = Math.PI * 0.25, el = Math.PI * 0.2;
-      const dir = new THREE.Vector3(Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)).multiplyScalar(d);
-      camera.position.copy(c.clone().add(dir)); controls.target.copy(c); controls.update();
+      const pad = 1.06;
+      fitAndCenter(camera, controls, api.robotModel, pad);
+      controls.target.copy(c); controls.update();
       refreshSelectionMarker();
     }
     function viewTop(){
       if (!api.robotModel) return;
-      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
-      camera.position.set(c.x, c.y + d, c.z); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3());
+      fitAndCenter(camera, controls, api.robotModel, 1.06);
+      camera.position.set(c.x, camera.position.y, c.z); controls.target.copy(c); controls.update(); refreshSelectionMarker();
     }
     function viewFront(){
       if (!api.robotModel) return;
-      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
-      camera.position.set(c.x, c.y, c.z + d); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3());
+      fitAndCenter(camera, controls, api.robotModel, 1.06);
+      camera.position.set(c.x, c.y, camera.position.z); controls.target.copy(c); controls.update(); refreshSelectionMarker();
     }
     function viewRight(){
       if (!api.robotModel) return;
-      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3()); const s=box.getSize(new THREE.Vector3()); const d=Math.max(s.x,s.y,s.z)*1.9;
-      camera.position.set(c.x + d, c.y, c.z); controls.target.copy(c); controls.update(); refreshSelectionMarker();
+      const box=new THREE.Box3().setFromObject(api.robotModel); const c=box.getCenter(new THREE.Vector3());
+      fitAndCenter(camera, controls, api.robotModel, 1.06);
+      camera.position.set(camera.position.x, c.y, c.z); controls.target.copy(c); controls.update(); refreshSelectionMarker();
     }
 
     // ===========
@@ -865,7 +891,7 @@
       api.robotModel.traverse(o=>{
         if (o.isMesh && o.geometry) o.visible = true;
       });
-      fitAndCenter(camera, controls, api.robotModel, 1.05);
+      fitAndCenter(camera, controls, api.robotModel, 1.04);
       setSelectedMeshes([]); // clear selection on show-all
     }
 
@@ -879,28 +905,11 @@
       const box = computeUnionBox(meshes);
       if (box){
         const center = box.getCenter(new THREE.Vector3());
-        const size   = box.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x,size.y,size.z)||1;
-        if (camera.isPerspectiveCamera){
-          const dist   = maxDim * 1.9;
-          camera.near = Math.max(maxDim/1000,0.001);
-          camera.far  = Math.max(maxDim*1000,1000);
-          camera.updateProjectionMatrix();
-          const az = Math.PI * 0.25, el = Math.PI * 0.18;
-          const dir = new THREE.Vector3(
-            Math.cos(el)*Math.cos(az),
-            Math.sin(el),
-            Math.cos(el)*Math.sin(az)
-          ).multiplyScalar(dist);
-          camera.position.copy(center.clone().add(dir));
-        } else {
-          camera.left = -maxDim; camera.right = maxDim; camera.top = maxDim; camera.bottom = -maxDim;
-          camera.near = Math.max(maxDim/1000,0.001); camera.far = Math.max(maxDim*1000,1000);
-          camera.updateProjectionMatrix();
-          camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
-        }
-        controls.target.copy(center); controls.update();
-        sizeAxesHelper(maxDim, center);
+        const s = box.getSize(new THREE.Vector3());
+        const fakeObj = new THREE.Object3D();
+        scene.add(fakeObj);
+        fakeObj.position.copy(center);
+        fitAndCenter(camera, controls, api.robotModel, 1.04);
       }
 
       // Persist selection on isolation
@@ -992,14 +1001,17 @@
       const hits = raycaster.intersectObjects(pickables, true);
 
       if (!hits.length){
+        // Clicked empty space / non-robot: clear selection and **do not** play sound
         setSelectedMeshes([]);
         return;
       }
 
       const meshHit = hits[0].object;
+      // Hit the robot → select and play click sound
       selectFromHit(meshHit);
       playClick();
 
+      // If a movable joint is under the hit, begin drag
       const joint = findAncestorJoint(meshHit);
       if (joint && isMovable(joint)) startJointDrag(joint, e);
     }
@@ -1011,7 +1023,7 @@
     renderer.domElement.addEventListener('pointercancel', endJointDrag);
 
     // Public state holder
-    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null };
+    state = { scene, camera, renderer, controls, api, onResize, raf:null, ui:null, off:null, lastW:0, lastH:0, resizeObs };
 
     // =========
     //   UI
@@ -1163,8 +1175,6 @@
       container.appendChild(root);
 
       // Defaults
-      togGrid.cb.checked = false;
-
       return {
         root,
         btn: compBtn, panel: compPanel, list: compList, showAllBtn,
@@ -1187,6 +1197,8 @@
       function setDock(open){
         dock.style.display = open ? 'block' : 'none';
         toolsToggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
+        // Dock visibility change doesn't change canvas size — but we still refit just in case
+        if (api.robotModel) setTimeout(()=>fitAndCenter(camera, controls, api.robotModel, 1.04), 0);
       }
       toolsToggleBtn.addEventListener('click', ()=>{ buttonClicked(); setDock(dock.style.display==='none'); });
       setDock(false);
@@ -1212,7 +1224,7 @@
         if (key) isolateAssetOnScreen(key);
       });
 
-      fitBtn.addEventListener('click', ()=>{ buttonClicked(); if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.08); });
+      fitBtn.addEventListener('click', ()=>{ buttonClicked(); if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.04); });
 
       renderMode.addEventListener('change', ()=>{ buttonClicked(); setRenderMode(renderMode.value); });
 
@@ -1238,25 +1250,20 @@
 
       projSel.addEventListener('change', ()=>{
         buttonClicked();
-        const { asp } = getViewportSize();
+        const w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || container.clientWidth || 1);
+        const h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || container.clientHeight || 1);
+        const asp = Math.max(1e-6, w/h);
         if (projSel.value==='Orthographic' && camera.isPerspectiveCamera){
-          const box = api.robotModel ? new THREE.Box3().setFromObject(api.robotModel) : null;
-          const c = box && !box.isEmpty() ? box.getCenter(new THREE.Vector3()) : controls.target.clone();
-          const size = box && !box.isEmpty() ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(2,2,2);
-          const maxDim = Math.max(size.x,size.y,size.z)||1;
-          ortho.left=-maxDim*asp; ortho.right=maxDim*asp; ortho.top=maxDim; ortho.bottom=-maxDim;
-          ortho.near=Math.max(maxDim/1000,0.001); ortho.far=Math.max(maxDim*1500,1500);
+          ortho.left=-orthoSize*asp; ortho.right=orthoSize*asp; ortho.top=orthoSize; ortho.bottom=-orthoSize;
+          ortho.near=camera.near; ortho.far=camera.far;
           ortho.position.copy(camera.position); ortho.updateProjectionMatrix();
           controls.object = ortho; camera = ortho;
-          controls.target.copy(c); controls.update();
         } else if (projSel.value==='Perspective' && camera.isOrthographicCamera){
-          persp.aspect = asp; persp.updateProjectionMatrix();
+          persp.aspect = asp; persp.near=camera.near; persp.far=camera.far; persp.updateProjectionMatrix();
           persp.position.copy(camera.position);
           controls.object = persp; camera = persp;
-          controls.update();
         }
-        // Refit after projection switch to fully use the viewport
-        if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.08);
+        if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.04);
       });
 
       togGrid.cb.addEventListener('change', ()=>{ buttonClicked(); grid.visible = !!togGrid.cb.checked; });
@@ -1377,9 +1384,10 @@
         if (robot?.isObject3D){
           api.robotModel=robot; scene.add(api.robotModel);
           rectifyUpForward(api.robotModel);
-          // ensure initial sizing is maxed to visible area
-          ensureSize();
-          setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
+          api.linkSet = markLinksAndJoints(api.robotModel);
+          // Initial full-viewport size + fit
+          fitCanvasToViewport();
+          setTimeout(()=>fitAndCenter(camera, controls, api.robotModel, 1.06), 50);
           state.off = buildOffscreenFromRobot();
 
           // Precreate UI and prebuild gallery for instant Components panel
