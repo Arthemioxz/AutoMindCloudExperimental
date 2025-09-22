@@ -24,6 +24,11 @@
      - **No sound** on empty-canvas clicks (only UI + robot hits make sound)
      - No shadows on init
      - Precreate UI and prebuild Components list to avoid first-click lag
+
+   NEW (Auto-Fit):
+     - canvas uses true visible size (style + buffer)
+     - bounding-sphere fit using both vertical & horizontal FOV
+     - re-fit on any window/container resize
 */
 (function (root) {
   'use strict';
@@ -316,6 +321,28 @@
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
 
+    // ---------- AUTO-FIT ADDITIONS ----------
+    let _lastMaxDim = 1;
+    function getViewportSize() {
+      const usingWindow = (container === document.body) || (container === document.documentElement);
+      const w = Math.max(1, usingWindow ? (window.innerWidth || 0) : (container.clientWidth || 0));
+      const h = Math.max(1, usingWindow ? (window.innerHeight || 0) : (container.clientHeight || 0));
+      return { w, h, asp: w / Math.max(1, h) };
+    }
+    function ensureSize() {
+      const { w, h, asp } = getViewportSize();
+      renderer.setSize(w, h, true); // update buffer size AND CSS size
+      if (camera.isPerspectiveCamera) {
+        camera.aspect = asp;
+      } else {
+        const s = _lastMaxDim || 1;
+        camera.left = -s * asp; camera.right = s * asp;
+        camera.top  =  s;       camera.bottom = -s;
+      }
+      camera.updateProjectionMatrix();
+    }
+    // ---------------------------------------
+
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
@@ -351,19 +378,12 @@
     }
 
     function onResize(){
-      const w = container.clientWidth||1, h = container.clientHeight||1;
-      const asp = Math.max(1e-6, w/h);
-      if (camera.isPerspectiveCamera){
-        camera.aspect = asp;
-      } else {
-        const size = orthoSize;
-        camera.left = -size*asp; camera.right = size*asp;
-        camera.top = size; camera.bottom = -size;
-      }
-      camera.updateProjectionMatrix();
-      renderer.setSize(w,h);
+      ensureSize();
+      if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.08);
     }
     window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    new ResizeObserver(onResize).observe(container);
 
     // Loaders + meshDB
     const urdfLoader = new URDFLoader();
@@ -390,34 +410,50 @@
       },80);
     }
 
+    // --------- NEW fit using bounding sphere + both FOVs ---------
     function fitAndCenter(camera, controls, object, pad=1.08){
       const box = new THREE.Box3().setFromObject(object);
       if (box.isEmpty()) return;
+
       const center = box.getCenter(new THREE.Vector3());
-      const size   = box.getSize(new THREE.Vector3()).multiplyScalar(pad);
-      const maxDim = Math.max(size.x,size.y,size.z)||1;
+      const size   = box.getSize(new THREE.Vector3());
+      _lastMaxDim  = Math.max(size.x,size.y,size.z) * pad;
+
+      const sphere = box.getBoundingSphere(new THREE.Sphere());
+      const radius = Math.max(1e-6, sphere.radius) * pad;
+
+      const { asp } = getViewportSize();
 
       if (camera.isPerspectiveCamera){
-        const dist   = maxDim * 1.9;
-        camera.near = Math.max(maxDim/1000,0.001);
-        camera.far  = Math.max(maxDim*1500,1500);
-        camera.updateProjectionMatrix();
-        camera.position.copy(center.clone().add(new THREE.Vector3(dist, dist*0.9, dist)));
-      } else {
-        camera.left = -maxDim; camera.right = maxDim;
-        camera.top  =  maxDim; camera.bottom= -maxDim;
-        camera.near = Math.max(maxDim/1000,0.001);
-        camera.far  = Math.max(maxDim*1500,1500);
-        camera.updateProjectionMatrix();
-        camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim*0.9, maxDim)));
-      }
-      controls.target.copy(center); controls.update();
+        const vFOV = THREE.MathUtils.degToRad(camera.fov);
+        const hFOV = 2 * Math.atan(Math.tan(vFOV/2) * asp);
+        const distV = radius / Math.sin(vFOV/2);
+        const distH = radius / Math.sin(hFOV/2);
+        const dist  = Math.max(distV, distH) * 1.02;
 
-      // keep helpers in scale/position
-      sizeAxesHelper(maxDim, center);
-      refreshSectionVisual(maxDim, center);
+        camera.near = Math.max(radius/1000,0.001);
+        camera.far  = Math.max(radius*1500,1500);
+        camera.updateProjectionMatrix();
+
+        const dir = new THREE.Vector3(1, 0.9, 1).normalize().multiplyScalar(dist);
+        camera.position.copy(center.clone().add(dir));
+      } else {
+        camera.left   = -radius * asp;
+        camera.right  =  radius * asp;
+        camera.top    =  radius;
+        camera.bottom = -radius;
+        camera.near   = Math.max(radius/1000,0.001);
+        camera.far    = Math.max(radius*1500,1500);
+        camera.updateProjectionMatrix();
+        camera.position.copy(center.clone().add(new THREE.Vector3(radius, radius*0.9, radius)));
+      }
+
+      controls.target.copy(center); controls.update();
+      sizeAxesHelper(_lastMaxDim, center);
+      refreshSectionVisual(_lastMaxDim, center);
       refreshSelectionMarker();
     }
+    // -------------------------------------------------------------
 
     urdfLoader.loadMeshCb = function(path, manager, onComplete){
       const bestKey = pickBestAsset(variantsFor(path), meshDB);
@@ -633,7 +669,7 @@
       const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(2.5,2.5,2.5);
       offScene.add(amb); offScene.add(d);
 
-      const offCamera = new THREE.PerspectiveCamera(60, OFF_W/OFF_H, 0.01, 10000);
+      const offCamera = new THREE.PerspectiveCamera(60, OFF_W/ OFF_H, 0.01, 10000);
 
       const robotClone = api.robotModel.clone(true);
       offScene.add(robotClone);
@@ -956,17 +992,14 @@
       const hits = raycaster.intersectObjects(pickables, true);
 
       if (!hits.length){
-        // Clicked empty space / non-robot: clear selection and **do not** play sound
         setSelectedMeshes([]);
         return;
       }
 
       const meshHit = hits[0].object;
-      // Hit the robot → select and play click sound
       selectFromHit(meshHit);
       playClick();
 
-      // If a movable joint is under the hit, begin drag
       const joint = findAncestorJoint(meshHit);
       if (joint && isMovable(joint)) startJointDrag(joint, e);
     }
@@ -1179,7 +1212,7 @@
         if (key) isolateAssetOnScreen(key);
       });
 
-      fitBtn.addEventListener('click', ()=>{ buttonClicked(); if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.06); });
+      fitBtn.addEventListener('click', ()=>{ buttonClicked(); if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.08); });
 
       renderMode.addEventListener('change', ()=>{ buttonClicked(); setRenderMode(renderMode.value); });
 
@@ -1205,7 +1238,7 @@
 
       projSel.addEventListener('change', ()=>{
         buttonClicked();
-        const w = container.clientWidth||1, h=container.clientHeight||1, asp = Math.max(1e-6, w/h);
+        const { asp } = getViewportSize();
         if (projSel.value==='Orthographic' && camera.isPerspectiveCamera){
           const box = api.robotModel ? new THREE.Box3().setFromObject(api.robotModel) : null;
           const c = box && !box.isEmpty() ? box.getCenter(new THREE.Vector3()) : controls.target.clone();
@@ -1222,7 +1255,8 @@
           controls.object = persp; camera = persp;
           controls.update();
         }
-        refreshSelectionMarker();
+        // Refit after projection switch to fully use the viewport
+        if (api.robotModel) fitAndCenter(camera, controls, api.robotModel, 1.08);
       });
 
       togGrid.cb.addEventListener('change', ()=>{ buttonClicked(); grid.visible = !!togGrid.cb.checked; });
@@ -1343,7 +1377,8 @@
         if (robot?.isObject3D){
           api.robotModel=robot; scene.add(api.robotModel);
           rectifyUpForward(api.robotModel);
-          api.linkSet = markLinksAndJoints(api.robotModel);
+          // ensure initial sizing is maxed to visible area
+          ensureSize();
           setTimeout(()=>fitAndCenter(camera, controls, api.robotModel), 50);
           state.off = buildOffscreenFromRobot();
 
