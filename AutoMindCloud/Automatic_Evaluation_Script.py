@@ -268,54 +268,51 @@ def show_latex_paragraph(s: str):
 import re, html
 from IPython.display import display, HTML
 
-# --- Detecta "1. ..." o "1) ..." al inicio de líneas ---
+# ---------- utilidades ----------
+
 _num_pat = re.compile(r'^\s*(\d+)[\.\)]\s+(.*)')
 
 def _escape_keep_math(s: str) -> str:
-    """
-    Escapa HTML pero conserva segmentos $...$ y $$...$$ para que MathJax los procese.
-    """
-    parts = re.split(r'(\$\$.*?\$\$|\$.*?\$)', s, flags=re.S)
+    """Escapa HTML, pero conserva $...$, $$...$$ y \(...\) intactos para MathJax."""
+    parts = re.split(r'(\$\$.*?\$\$|\$.*?\$|\\\(.*?\\\))', s, flags=re.S)
     out = []
     for p in parts:
-        if p.startswith('$'):
-            out.append(p)   # mantener math intacto
+        if p.startswith('$') or p.startswith('\\('):
+            out.append(p)  # mantener math intacto
         else:
             out.append(html.escape(p))
     return ''.join(out)
 
 def auto_wrap_latex(text: str) -> str:
     """
-    Rodea expresiones LaTeX típicas (\frac, \sin, \alpha, etc.) con $...$
-    si no estaban ya dentro de $...$ o $$...$$.
+    Envuelve comandos LaTeX sueltos (\frac, \sin, \alpha, etc.) con \(...\)
+    SOLO en segmentos que no estén ya dentro de $...$, $$...$$ o \(...\).
     """
-    # separar regiones matemáticas y no matemáticas
-    chunks = re.split(r'(\$\$.*?\$\$|\$.*?\$)', text, flags=re.S)
-    def wrap_in_non_math(segment: str) -> str:
-        # En segmentos no-math, envolver patrones LaTeX simples
+    # separar regiones matemáticas y no-matemáticas
+    chunks = re.split(r'(\$\$.*?\$\$|\$.*?\$|\\\(.*?\\\))', text, flags=re.S)
+
+    # patrón de comandos LaTeX comunes
+    latex_cmd = re.compile(r'\\[a-zA-Z]+(?:\s*\{.*?\})*')
+
+    def wrap_non_math(seg: str) -> str:
+        # sustituye cada comando latex por la versión envuelta \(...\)
         def repl(m):
             expr = m.group(0)
-            return f"${expr}$"
-        # Evitar rutas tipo \Users\... (muy raro en tus textos, pero por si acaso):
-        return re.sub(r'\\[a-zA-Z]+(?:\{.*?\})*', repl, segment)
+            return r'\(' + expr + r'\)'
+        return latex_cmd.sub(repl, seg)
+
     out = []
     for part in chunks:
-        if part.startswith('$'):
-            out.append(part)      # ya es math
+        if part.startswith('$') or part.startswith('\\('):
+            out.append(part)  # ya es math
         else:
-            out.append(wrap_in_non_math(part))
+            out.append(wrap_non_math(part))
     return ''.join(out)
 
 def _split_summary_and_steps(text: str):
-    """
-    Separa el primer bloque (resumen) de los pasos numerados.
-    Soporta pasos en múltiples líneas.
-    """
     lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
     summary_lines, steps, current = [], [], None
-
     for line in lines:
-        # Ignorar encabezados tipo "Pasos:", "Pasos generales:", etc.
         if line.lower().startswith('pasos'):
             continue
         m = _num_pat.match(line)
@@ -330,55 +327,58 @@ def _split_summary_and_steps(text: str):
                 current += ' ' + line
     if current is not None:
         steps.append(current.strip())
-
-    summary = ' '.join(summary_lines).strip()
-    return summary, steps
+    return ' '.join(summary_lines).strip(), steps
 
 def _render_html(summary: str, steps: list):
     """
-    HTML con títulos en Anton (teal) y cuerpo en Computer Modern.
+    HTML: títulos Anton (teal), cuerpo Computer Modern.
+    Incluye y configura MathJax v3 explícitamente.
     """
-    css = """
+    html_doc = """
+<!-- Fuentes -->
 <link href="https://fonts.googleapis.com/css2?family=Anton&display=swap" rel="stylesheet">
-<link href="https://fonts.cdnfonts.com/css/computer-modern" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts.css" rel="stylesheet">
+
 <style>
   .calc-wrap { max-width: 980px; margin: 6px auto; padding: 4px 2px; }
   .title     { font-family: 'Anton', sans-serif; font-weight: 700; color: teal;
                font-size: 22px; margin: 6px 0 10px; letter-spacing: 0.3px; }
-  .cm        { font-family: 'Computer Modern', 'CMU Serif', 'Latin Modern Roman',
-               'Times New Roman', serif; color: #222; }
+  .cm        { font-family: "Computer Modern Serif", "CMU Serif", "Latin Modern Roman",
+               "Times New Roman", serif; color: #222; }
   .p         { font-size: 18px; line-height: 1.6; margin: 8px 0; }
   .step      { margin: 10px 0; }
   .idx       { margin-right: 8px; font-weight: 700; }
 </style>
-"""
-    s_sum = _escape_keep_math(summary)
-    step_html = []
-    for i, s in enumerate(steps, 1):
-        step_html.append(
-            '<p class="p cm step"><span class="idx">%d.</span>%s</p>' %
-            (i, _escape_keep_math(s))
-        )
 
-    html_doc = css + """
+<!-- Configuración MathJax v3 -->
+<script>
+window.MathJax = {
+  tex: {
+    inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+    displayMath: [['$$', '$$']],
+    processEscapes: true
+  },
+  options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
+
 <div class="calc-wrap">
   <div class="title">Resumen general</div>
-  <p class="p cm">""" + s_sum + """</p>
+  <p class="p cm">""" + _escape_keep_math(summary) + """</p>
   <div class="title">Pasos</div>
-  """ + "\n".join(step_html) + """
+  """ + "\n".join(
+        '<p class="p cm step"><span class="idx">%d.</span>%s</p>' %
+        (i, _escape_keep_math(s)) for i, s in enumerate(steps, 1)
+      ) + """
 </div>
-<script>
-  // Re-tipografiar con MathJax si está disponible (Colab suele cargarlo)
-  if (window.MathJax && window.MathJax.typeset) { window.MathJax.typeset(); }
-</script>
 """
     return html_doc
 
-# -----------------------------
-# Tu función principal
-# -----------------------------
+# ---------- función principal ----------
+
 def CalculusSummary(numero):
-    global documento  # definido por ti en otro lado
+    global documento
 
     if numero == 1:
         prompt = ("(RECUERDA usar $$ para renderizar el latex en markdown si es que vas a usar) "
@@ -401,16 +401,16 @@ def CalculusSummary(numero):
     else:
         prompt = ""
 
-    # 1) Obtener texto desde tu pipeline
+    # 1) Texto desde tu pipeline
     raw_text = polli_text(prompt + documento)
 
-    # 2) Auto-envolver LaTeX suelto (\frac, \sin, etc.)
+    # 2) Envolver comandos LaTeX sueltos
     raw_text = auto_wrap_latex(raw_text)
 
     # 3) Separar resumen y pasos
     summary, steps = _split_summary_and_steps(raw_text)
 
-    # 4) Renderizar en HTML (Computer Modern en cuerpo, títulos Anton teal)
-    html_out = _render_html(summary, steps)
-    display(HTML(html_out))
+    # 4) Renderizar (Computer Modern + MathJax)
+    display(HTML(_render_html(summary, steps)))
+
 
