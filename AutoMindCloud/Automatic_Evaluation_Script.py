@@ -413,7 +413,7 @@ def CalculusSummary(numero, font_type="Latin Modern Roman"):
         detalle = (
             " Redacta un resumen extremadamente preciso con el máximo nivel de especificidad "
             "(incluye notación y ecuaciones LaTeX cuando corresponda). "
-            "Tras el resumen, da una enumeración extremadamente precisa y larga paso por paso (un paso por línea). "
+            "Tras el resumen, da una enumeración extremadamente precisa paso por paso (un paso por línea y no menos de 20 pasos). "
         )
     else:
         detalle = " Redacta un resumen formal y una enumeración paso por paso."
