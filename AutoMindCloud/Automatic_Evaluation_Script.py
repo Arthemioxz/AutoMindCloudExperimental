@@ -265,25 +265,10 @@ def show_latex_paragraph(s: str):
 #  elif numero ==3:
 #    IPython.display.display(show_latex_paragraph(polli_text("(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración extremadamente precisa explicando paso por paso (y pon un espacio entre cada enumeración). (v): "+ documento)))
 
-# =========================
-#  Render de Resumen + Pasos
-#  Títulos: Anton teal bold (sans-serif)
-#  Cuerpo: Computer Modern (CMU Serif) negro
-#  LaTeX: MathJax (negro) + auto-wrap
-# =========================
-
-# =========================
-#  Render de Resumen + Pasos
-#  Títulos: Anton teal bold (sans-serif)
-#  Cuerpo: Computer Modern (CMU Serif) negro
-#  LaTeX: MathJax (negro) + auto-wrap
-# =========================
-
 import re, html
 from IPython.display import display, HTML
 
 # ---------- Utils ----------
-
 _num_pat = re.compile(r'^\s*(\d+)[\.\)]\s+(.*)')
 
 def _escape_keep_math(s: str) -> str:
@@ -292,16 +277,13 @@ def _escape_keep_math(s: str) -> str:
     out = []
     for p in parts:
         if p.startswith('$') or p.startswith('\\('):
-            out.append(p)  # mantener math intacto
+            out.append(p)
         else:
             out.append(html.escape(p))
     return ''.join(out)
 
 def auto_wrap_latex(text: str) -> str:
-    """
-    Envuelve comandos LaTeX sueltos (\frac, \sin, \alpha, etc.) con \(...\)
-    SOLO fuera de $...$, $$...$$ o \(...\).
-    """
+    """Envuelve comandos LaTeX sueltos (\frac, \sin, etc.) con \(...\) fuera de delimitadores."""
     chunks = re.split(r'(\$\$.*?\$\$|\$.*?\$|\\\(.*?\\\))', text, flags=re.S)
     latex_cmd = re.compile(r'\\[a-zA-Z]+(?:\s*\{.*?\})*')
 
@@ -334,78 +316,49 @@ def _split_summary_and_steps(text: str):
         steps.append(current.strip())
     return ' '.join(summary_lines).strip(), steps
 
-def _render_html(summary: str, steps: list):
-    """
-    HTML final: títulos Anton (teal), cuerpo CMU Serif (negro), MathJax v3.
-    Cuerpo = Computer Modern; Ecuaciones = negro; Títulos = sans-serif teal bold.
-    """
-    head = """
-<!-- Anton para los títulos -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+# ---------- Render con fuente seleccionada ----------
+def _render_html(summary: str, steps: list, font_type: str):
+    css = f"""
+<!-- Anton para títulos -->
 <link href="https://fonts.googleapis.com/css2?family=Anton&display=swap" rel="stylesheet">
 
-<style>
-  /* Computer Modern (CMU Serif) incrustada explícitamente */
-  @font-face {
-    font-family: 'CMU Serif';
-    font-style: normal;
-    font-weight: 400;
-    font-display: swap;
-    src: url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts/serif/cmunrm.woff2') format('woff2');
-  }
-  @font-face {
-    font-family: 'CMU Serif';
-    font-style: italic;
-    font-weight: 400;
-    font-display: swap;
-    src: url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts/serif/cmunti.woff2') format('woff2');
-  }
-  @font-face {
-    font-family: 'CMU Serif';
-    font-style: normal;
-    font-weight: 700;
-    font-display: swap;
-    src: url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts/serif/cmunbx.woff2') format('woff2');
-  }
+<!-- Algunas fuentes comunes -->
+<link href="https://fonts.googleapis.com/css2?family=Fira+Sans&family=Fira+Mono&family=Inconsolata&family=Roboto+Slab&family=Roboto+Mono&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=STIX+Two+Text&display=swap" rel="stylesheet">
+<link href="https://fonts.cdnfonts.com/css/latin-modern-roman" rel="stylesheet">
 
-  .calc-wrap {
-    max-width: 980px;
-    margin: 6px auto;
-    padding: 4px 2px;
-    /* Cuerpo en Computer Modern */
-    font-family: 'CMU Serif', 'Computer Modern Serif', 'Latin Modern Roman', serif;
+<style>
+  .calc-wrap {{
+    max-width: 980px; margin: 6px auto; padding: 4px 2px;
+    font-family: '{font_type}', serif;
     color: #000;
     -webkit-font-smoothing: antialiased;
     font-synthesis: none;
-  }
-  .title {
-    /* Títulos sans-serif teal bold */
-    font-family: 'Anton', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+  }}
+  .title {{
+    font-family: 'Anton', sans-serif;
     font-weight: 700;
     color: teal;
     font-size: 22px;
     margin: 6px 0 10px;
     letter-spacing: .3px;
-  }
-  .p   { font-size: 18px; line-height: 1.6; margin: 8px 0; }
-  .step{ margin: 10px 0; }
-  .idx { margin-right: 8px; font-weight: 700; }
-
-  /* Asegurar ecuaciones en negro */
-  .calc-wrap .mjx-container { color: #000 !important; }
+  }}
+  .p   {{ font-size: 18px; line-height: 1.6; margin: 8px 0; }}
+  .step{{ margin: 10px 0; }}
+  .idx {{ margin-right: 8px; font-weight: 700; }}
+  .calc-wrap .mjx-container {{ color: #000 !important; }}
 </style>
 
 <!-- MathJax v3 -->
 <script>
-  window.MathJax = {
-    tex: {
+  window.MathJax = {{
+    tex: {{
       inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
       displayMath: [['$$', '$$']],
       processEscapes: true
-    },
-    options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
-  };
+    }},
+    options: {{ skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }}
+  }};
 </script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
 """
@@ -420,13 +373,14 @@ def _render_html(summary: str, steps: list):
     )}
 </div>
 """
-    return head + body
+    return css + body
 
 # ---------- Función principal ----------
-def CalculusSummary(numero):
+def CalculusSummary(numero, font_type="Latin Modern Roman"):
     """
     Usa tu variable global `documento` y tu función `polli_text(...)`.
-    Render: títulos teal (Anton); cuerpo Computer Modern (negro); ecuaciones LaTeX en negro.
+    Render: títulos teal (Anton); cuerpo con fuente configurable; ecuaciones LaTeX en negro.
+    Ejemplo: CalculusSummary(1, "Fira Sans")
     """
     global documento
 
@@ -445,16 +399,9 @@ def CalculusSummary(numero):
     else:
         prompt = ""
 
-    # 1) Obtener texto desde tu pipeline
     raw_text = polli_text(prompt + documento)
-
-    # 2) Envolver comandos LaTeX sueltos para asegurar render
     raw_text = auto_wrap_latex(raw_text)
-
-    # 3) Separar resumen y pasos
     summary, steps = _split_summary_and_steps(raw_text)
-
-    # 4) Render final
-    display(HTML(_render_html(summary, steps)))
+    display(HTML(_render_html(summary, steps, font_type)))
 
 
