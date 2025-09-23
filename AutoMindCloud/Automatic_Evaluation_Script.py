@@ -268,38 +268,62 @@ def show_latex_paragraph(s: str):
 import re, html
 from IPython.display import display, HTML
 
-# --- helpers ---
-
-_num_pat = re.compile(r'^\s*(\d+)[\.\)]\s+(.*)')  # "1. ..." o "1) ..."
+# --- Detecta "1. ..." o "1) ..." al inicio de líneas ---
+_num_pat = re.compile(r'^\s*(\d+)[\.\)]\s+(.*)')
 
 def _escape_keep_math(s: str) -> str:
-    """Escapa HTML pero conserva segmentos $...$ y $$...$$ para MathJax."""
-    parts = re.split(r'(\$\$.*?\$\$|\$.*?\$)', s)
+    """
+    Escapa HTML pero conserva segmentos $...$ y $$...$$ para que MathJax los procese.
+    """
+    parts = re.split(r'(\$\$.*?\$\$|\$.*?\$)', s, flags=re.S)
     out = []
     for p in parts:
         if p.startswith('$'):
-            out.append(p)        # mantener LaTeX intacto
+            out.append(p)   # mantener math intacto
         else:
             out.append(html.escape(p))
     return ''.join(out)
 
+def auto_wrap_latex(text: str) -> str:
+    """
+    Rodea expresiones LaTeX típicas (\frac, \sin, \alpha, etc.) con $...$
+    si no estaban ya dentro de $...$ o $$...$$.
+    """
+    # separar regiones matemáticas y no matemáticas
+    chunks = re.split(r'(\$\$.*?\$\$|\$.*?\$)', text, flags=re.S)
+    def wrap_in_non_math(segment: str) -> str:
+        # En segmentos no-math, envolver patrones LaTeX simples
+        def repl(m):
+            expr = m.group(0)
+            return f"${expr}$"
+        # Evitar rutas tipo \Users\... (muy raro en tus textos, pero por si acaso):
+        return re.sub(r'\\[a-zA-Z]+(?:\{.*?\})*', repl, segment)
+    out = []
+    for part in chunks:
+        if part.startswith('$'):
+            out.append(part)      # ya es math
+        else:
+            out.append(wrap_in_non_math(part))
+    return ''.join(out)
+
 def _split_summary_and_steps(text: str):
-    """Separa el primer bloque (resumen) de los pasos numerados."""
+    """
+    Separa el primer bloque (resumen) de los pasos numerados.
+    Soporta pasos en múltiples líneas.
+    """
     lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
     summary_lines, steps, current = [], [], None
 
     for line in lines:
+        # Ignorar encabezados tipo "Pasos:", "Pasos generales:", etc.
         if line.lower().startswith('pasos'):
-            # Ignorar encabezado tipo "Pasos generales del proceso:"
             continue
         m = _num_pat.match(line)
         if m:
-            # Nuevo paso
             if current is not None:
                 steps.append(current.strip())
             current = m.group(2)
         else:
-            # Continuación del paso actual o parte del resumen
             if current is None:
                 summary_lines.append(line)
             else:
@@ -310,65 +334,83 @@ def _split_summary_and_steps(text: str):
     summary = ' '.join(summary_lines).strip()
     return summary, steps
 
-def _render_anton_html(summary: str, steps: list):
-    """Construye el HTML estilizado con Anton + MathJax."""
-    # CSS + fuente Anton
+def _render_html(summary: str, steps: list):
+    """
+    HTML con títulos en Anton (teal) y cuerpo en Computer Modern.
+    """
     css = """
 <link href="https://fonts.googleapis.com/css2?family=Anton&display=swap" rel="stylesheet">
+<link href="https://fonts.cdnfonts.com/css/computer-modern" rel="stylesheet">
 <style>
-  .calc-wrap { max-width: 960px; margin: 6px auto; padding: 4px 2px; }
-  .anton     { font-family: 'Anton', sans-serif; font-weight: 700; letter-spacing: 0.3px; color: #222; }
-  .title     { font-size: 22px; margin: 4px 0 8px; }
+  .calc-wrap { max-width: 980px; margin: 6px auto; padding: 4px 2px; }
+  .title     { font-family: 'Anton', sans-serif; font-weight: 700; color: teal;
+               font-size: 22px; margin: 6px 0 10px; letter-spacing: 0.3px; }
+  .cm        { font-family: 'Computer Modern', 'CMU Serif', 'Latin Modern Roman',
+               'Times New Roman', serif; color: #222; }
   .p         { font-size: 18px; line-height: 1.6; margin: 8px 0; }
   .step      { margin: 10px 0; }
-  .idx       { margin-right: 8px; }
+  .idx       { margin-right: 8px; font-weight: 700; }
 </style>
 """
-    # HTML seguro (con LaTeX intacto)
     s_sum = _escape_keep_math(summary)
     step_html = []
     for i, s in enumerate(steps, 1):
         step_html.append(
-            '<p class="p anton step"><span class="idx">%d.</span>%s</p>' %
+            '<p class="p cm step"><span class="idx">%d.</span>%s</p>' %
             (i, _escape_keep_math(s))
         )
 
     html_doc = css + """
 <div class="calc-wrap">
-  <div class="anton title">Resumen general</div>
-  <p class="p anton">""" + s_sum + """</p>
-  <div class="anton title">Pasos</div>
+  <div class="title">Resumen general</div>
+  <p class="p cm">""" + s_sum + """</p>
+  <div class="title">Pasos</div>
   """ + "\n".join(step_html) + """
 </div>
 <script>
-  // Pide a MathJax re-tipografiar si está presente (Colab suele cargarlo).
+  // Re-tipografiar con MathJax si está disponible (Colab suele cargarlo)
   if (window.MathJax && window.MathJax.typeset) { window.MathJax.typeset(); }
 </script>
 """
     return html_doc
 
-# --- tu función editada ---
-
+# -----------------------------
+# Tu función principal
+# -----------------------------
 def CalculusSummary(numero):
-    global documento  # se asume definida por ti
+    global documento  # definido por ti en otro lado
 
     if numero == 1:
-        prompt = "(RECUERDA usar $$ para renderizar el latex en markdown si es que vas a usar) Primero haz un resumen general formalmente de lo que crees que hacen los calculos sin entrar al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración explicando paso por paso de forma general sin entrar al detalle (y pon un espacio entre cada enumeración): "
+        prompt = ("(RECUERDA usar $$ para renderizar el latex en markdown si es que vas a usar) "
+                  "Primero haz un resumen general formalmente de lo que crees que hacen los calculos sin entrar al detalle, "
+                  "no digas palabras como probablemente, di que son las funciones concretamente. "
+                  "Después haz una enumeración explicando paso por paso de forma general sin entrar al detalle "
+                  "(y pon un espacio entre cada enumeración): ")
     elif numero == 2:
-        prompt = "(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración más precisa explicando paso por paso (y pon un espacio entre cada enumeración): "
+        prompt = ("(RECUERDA usar $$ para renderizar el latex en markdown) "
+                  "Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, "
+                  "no digas palabras como probablemente, di que son las funciones concretamente. "
+                  "Después haz una enumeración más precisa explicando paso por paso "
+                  "(y pon un espacio entre cada enumeración): ")
     elif numero == 3:
-        prompt = "(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración extremadamente precisa explicando paso por paso (y pon un espacio entre cada enumeración). (v): "
+        prompt = ("(RECUERDA usar $$ para renderizar el latex en markdown) "
+                  "Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, "
+                  "no digas palabras como probablemente, di que son las funciones concretamente. "
+                  "Después haz una enumeración extremadamente precisa explicando paso por paso "
+                  "(y pon un espacio entre cada enumeración). (v): ")
     else:
         prompt = ""
 
-    # 1) Obtener el texto (tu función existente)
+    # 1) Obtener texto desde tu pipeline
     raw_text = polli_text(prompt + documento)
 
-    # 2) Separar resumen y pasos numerados
+    # 2) Auto-envolver LaTeX suelto (\frac, \sin, etc.)
+    raw_text = auto_wrap_latex(raw_text)
+
+    # 3) Separar resumen y pasos
     summary, steps = _split_summary_and_steps(raw_text)
 
-    # 3) Renderizar en HTML con Anton
-    html_out = _render_anton_html(summary, steps)
+    # 4) Renderizar en HTML (Computer Modern en cuerpo, títulos Anton teal)
+    html_out = _render_html(summary, steps)
     display(HTML(html_out))
-
 
