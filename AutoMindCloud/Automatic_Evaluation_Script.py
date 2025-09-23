@@ -378,30 +378,73 @@ def _render_html(summary: str, steps: list, font_type: str):
 # ---------- Función principal ----------
 def CalculusSummary(numero, font_type="Latin Modern Roman"):
     """
-    Usa tu variable global `documento` y tu función `polli_text(...)`.
+    Usa la variable global `documento` y la función `polli_text(...)`.
     Render: títulos teal (Anton); cuerpo con fuente configurable; ecuaciones LaTeX en negro.
     Ejemplo: CalculusSummary(1, "Fira Sans")
     """
+    import re
     global documento
 
-    if numero == 1:
-        prompt = ("Primero haz un resumen general formal y preciso de lo que hacen los cálculos sin entrar al detalle. "
-                  "No uses 'probablemente'; di qué funciones son. "
-                  "Luego da una enumeración general paso por paso (un paso por línea, numerado 1., 2., ...): ")
-    elif numero == 2:
-        prompt = ("Primero haz un resumen muy preciso de lo que hacen los cálculos entrando al detalle. "
-                  "No uses 'probablemente'; di qué funciones son. "
-                  "Luego da una enumeración precisa paso por paso (un paso por línea, numerado 1., 2., ...): ")
-    elif numero == 3:
-        prompt = ("Primero haz un resumen extremadamente preciso de lo que hacen los cálculos. "
-                  "No uses 'probablemente'; di qué funciones son. "
-                  "Luego da una enumeración extremadamente precisa paso por paso (un paso por línea, numerado 1., 2., ...): ")
-    else:
-        prompt = ""
+    # --- Plantilla común para forzar estilo formal e impersonal ---
+    base = (
+        "Escribe en español, tono académico e impersonal (tercera persona). "
+        "No uses saludos ni frases introductorias o metadiscursivas como "
+        "'aquí tienes', 'claro', 'a continuación', 'este documento', 'este resumen', "
+        "'en este texto', 'se presenta', 'vamos a', ni te dirijas al lector. "
+        "Empieza directamente con el contenido. "
+        "No uses 'probablemente' ni expresiones especulativas. "
+        "Estructura la salida en dos partes: "
+        "(1) un párrafo de resumen; "
+        "(2) luego una enumeración con pasos numerados 1., 2., 3., etc. "
+        "No incluyas viñetas adicionales ni conclusiones."
+    )
 
+    if numero == 1:
+        detalle = (
+            " Redacta un resumen general, formal y preciso sin entrar al detalle técnico fino. "
+            "Tras el resumen, da una enumeración general paso por paso (un paso por línea). "
+        )
+    elif numero == 2:
+        detalle = (
+            " Redacta un resumen muy preciso entrando en detalles relevantes (fórmulas o símbolos clave cuando aporte claridad). "
+            "Tras el resumen, da una enumeración precisa paso por paso (un paso por línea). "
+        )
+    elif numero == 3:
+        detalle = (
+            " Redacta un resumen extremadamente preciso con el máximo nivel de especificidad razonable "
+            "(incluye notación y ecuaciones LaTeX cuando corresponda). "
+            "Tras el resumen, da una enumeración extremadamente precisa paso por paso (un paso por línea). "
+        )
+    else:
+        detalle = " Redacta un resumen formal y una enumeración paso por paso."
+
+    prompt = base + detalle + " Contenido a resumir:\n\n"
+
+    # --- Llamada al modelo ---
     raw_text = polli_text(prompt + documento)
+
+    # --- Limpieza de muletillas si aparecieran por error ---
+    def _dechat(s: str) -> str:
+        # Elimina frases introductorias comunes al inicio
+        s = s.lstrip()
+        patrones_inicio = [
+            r"^(claro[,:\s]|por supuesto[,:\s]|aquí tienes[,:\s]|a continuación[,:\s]).*?\n+",
+            r"^(este (documento|resumen|texto)[^.\n]*\.)\s+",
+            r"^(en (este|el) (documento|resumen|texto)[^.\n]*\.)\s+",
+        ]
+        for pat in patrones_inicio:
+            s = re.sub(pat, "", s, flags=re.IGNORECASE | re.MULTILINE)
+        # Quita espacios extra
+        return s.strip()
+
+    raw_text = _dechat(raw_text)
+
+    # --- Ajuste de LaTeX si corresponde ---
     raw_text = auto_wrap_latex(raw_text)
+
+    # --- Separación y render ---
     summary, steps = _split_summary_and_steps(raw_text)
     display(HTML(_render_html(summary, steps, font_type)))
+
 
 
