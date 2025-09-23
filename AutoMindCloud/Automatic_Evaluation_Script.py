@@ -267,9 +267,9 @@ def show_latex_paragraph(s: str):
 
 # =========================
 #  Render de Resumen + Pasos
-#  Títulos: sans-serif teal bold
-#  Cuerpo: Computer Modern (negro)
-#  LaTeX: MathJax (negro)
+#  Títulos: Anton teal bold (sans-serif)
+#  Cuerpo: Computer Modern (CMU Serif) negro
+#  LaTeX: MathJax (negro) + auto-wrap
 # =========================
 
 import re, html
@@ -329,20 +329,19 @@ def _split_summary_and_steps(text: str):
 
 def _render_html(summary: str, steps: list):
     """
-    HTML: Títulos sans-serif teal bold; cuerpo Computer Modern negro.
-    Incluye MathJax v3 y @font-face explícito (woff2).
+    HTML final: títulos Anton (teal), cuerpo CMU Serif (negro), MathJax v3.
+    Títulos vuelven a Google Fonts (fiable); cuerpo usa CMU Serif web.
     """
-    css_fonts = r"""
+    head_fonts = """
+<!-- Anton desde Google Fonts (fiable para títulos) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton:wght@400;700&display=swap" rel="stylesheet">
+
+<!-- Computer Modern (CMU) para el cuerpo -->
+<link href="https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts.css" rel="stylesheet">
 <style>
-  /* Sans-serif para títulos (Anton como ejemplo robusto) */
-  @font-face {
-    font-family: 'Anton';
-    font-style: normal;
-    font-weight: 700;
-    font-display: swap;
-    src: url('https://fonts.gstatic.com/s/anton/v25/1Ptgg87LROyAm0K08i4gS7lu.woff2') format('woff2');
-  }
-  /* Computer Modern (CMU Serif) para el cuerpo */
+  /* Fallback explícitos por si el CSS anterior tarda: */
   @font-face {
     font-family: 'CMU Serif';
     font-style: normal;
@@ -365,21 +364,22 @@ def _render_html(summary: str, steps: list):
     src: url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts/serif/cmunbx.woff2') format('woff2');
   }
 
-  .calc-wrap { max-width: 980px; margin: 6px auto; padding: 4px 2px; }
+  /* Layout + tipografías */
+  .calc-wrap { max-width: 980px; margin: 6px auto; padding: 4px 2px;
+               font-family: 'CMU Serif', 'Computer Modern Serif', 'Latin Modern Roman', serif;
+               color: #000; -webkit-font-smoothing: antialiased; font-synthesis: none; }
   .title     { font-family: 'Anton', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
                font-weight: 700; color: teal; font-size: 22px;
                margin: 6px 0 10px; letter-spacing: .3px; }
-  .cm        { font-family: 'CMU Serif', 'Times New Roman', serif; color: #000;
-               -webkit-font-smoothing: antialiased; font-synthesis: none; }
   .p         { font-size: 18px; line-height: 1.6; margin: 8px 0; }
   .step      { margin: 10px 0; }
   .idx       { margin-right: 8px; font-weight: 700; }
 
-  /* Garantiza que MathJax herede color negro del cuerpo */
+  /* Ecuaciones en negro (MathJax) */
   .calc-wrap .mjx-container { color: #000 !important; }
 </style>
-"""
-    mathjax = """
+
+<!-- MathJax v3 -->
 <script>
   window.MathJax = {
     tex: {
@@ -395,21 +395,21 @@ def _render_html(summary: str, steps: list):
     body = f"""
 <div class="calc-wrap">
   <div class="title">Resumen general</div>
-  <p class="p cm">{_escape_keep_math(summary)}</p>
+  <p class="p">{_escape_keep_math(summary)}</p>
   <div class="title">Pasos</div>
   {''.join(
-      f'<p class="p cm step"><span class="idx">{i}.</span>{_escape_keep_math(s)}</p>'
+      f'<p class="p step"><span class="idx">{i}.</span>{_escape_keep_math(s)}</p>'
       for i, s in enumerate(steps, 1)
     )}
 </div>
 """
-    return css_fonts + mathjax + body
+    return head_fonts + body
 
-# ---------- Función principal que puedes llamar ----------
+# ---------- Función principal ----------
 def CalculusSummary(numero):
     """
     Usa tu variable global `documento` y tu función `polli_text(...)`.
-    Renderiza: títulos teal sans-serif bold; cuerpo Computer Modern negro; LaTeX con MathJax.
+    Renderiza: títulos teal sans-serif bold (Anton); cuerpo Computer Modern negro; LaTeX con MathJax.
     """
     global documento  # <- se asume definida por ti
 
