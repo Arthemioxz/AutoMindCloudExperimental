@@ -407,13 +407,13 @@ def CalculusSummary(numero, font_type="Latin Modern Roman"):
     elif numero == 2:
         detalle = (
             " Redacta un resumen muy preciso entrando en detalles relevantes (fórmulas o símbolos clave cuando aporte claridad). "
-            "Tras el resumen, da una enumeración precisa paso por paso (un paso por línea). "
+            "Tras el resumen, da una enumeración precisa paso por paso (un paso por línea y no menos de 15 pasos). "
         )
     elif numero == 3:
         detalle = (
             " Redacta un resumen extremadamente preciso con el máximo nivel de especificidad "
             "(incluye notación y ecuaciones LaTeX cuando corresponda). "
-            "Tras el resumen, da una enumeración extremadamente precisa paso por paso (un paso por línea y no menos de 20 pasos). "
+            "Tras el resumen, da una enumeración extremadamente precisa paso por paso (un paso por línea y no menos de 30 pasos). "
         )
     else:
         detalle = " Redacta un resumen formal y una enumeración paso por paso."
