@@ -265,15 +265,22 @@ def show_latex_paragraph(s: str):
 #  elif numero ==3:
 #    IPython.display.display(show_latex_paragraph(polli_text("(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración extremadamente precisa explicando paso por paso (y pon un espacio entre cada enumeración). (v): "+ documento)))
 
+# =========================
+#  Render de Resumen + Pasos
+#  Títulos: sans-serif teal bold
+#  Cuerpo: Computer Modern (negro)
+#  LaTeX: MathJax (negro)
+# =========================
+
 import re, html
 from IPython.display import display, HTML
 
-# ---------- utilidades ----------
+# ---------- Utils ----------
 
 _num_pat = re.compile(r'^\s*(\d+)[\.\)]\s+(.*)')
 
 def _escape_keep_math(s: str) -> str:
-    """Escapa HTML, pero conserva $...$, $$...$$ y \(...\) intactos para MathJax."""
+    """Escapa HTML pero conserva $...$, $$...$$ y \(...\) para que MathJax los procese."""
     parts = re.split(r'(\$\$.*?\$\$|\$.*?\$|\\\(.*?\\\))', s, flags=re.S)
     out = []
     for p in parts:
@@ -286,30 +293,21 @@ def _escape_keep_math(s: str) -> str:
 def auto_wrap_latex(text: str) -> str:
     """
     Envuelve comandos LaTeX sueltos (\frac, \sin, \alpha, etc.) con \(...\)
-    SOLO en segmentos que no estén ya dentro de $...$, $$...$$ o \(...\).
+    SOLO fuera de $...$, $$...$$ o \(...\).
     """
-    # separar regiones matemáticas y no-matemáticas
     chunks = re.split(r'(\$\$.*?\$\$|\$.*?\$|\\\(.*?\\\))', text, flags=re.S)
-
-    # patrón de comandos LaTeX comunes
     latex_cmd = re.compile(r'\\[a-zA-Z]+(?:\s*\{.*?\})*')
 
-    def wrap_non_math(seg: str) -> str:
-        # sustituye cada comando latex por la versión envuelta \(...\)
+    def wrap(seg: str) -> str:
         def repl(m):
-            expr = m.group(0)
-            return r'\(' + expr + r'\)'
+            return r'\(' + m.group(0) + r'\)'
         return latex_cmd.sub(repl, seg)
 
-    out = []
-    for part in chunks:
-        if part.startswith('$') or part.startswith('\\('):
-            out.append(part)  # ya es math
-        else:
-            out.append(wrap_non_math(part))
-    return ''.join(out)
+    return ''.join(part if (part.startswith('$') or part.startswith('\\(')) else wrap(part)
+                   for part in chunks)
 
 def _split_summary_and_steps(text: str):
+    """Separa el primer bloque (resumen) de los pasos numerados."""
     lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
     summary_lines, steps, current = [], [], None
     for line in lines:
@@ -331,86 +329,113 @@ def _split_summary_and_steps(text: str):
 
 def _render_html(summary: str, steps: list):
     """
-    HTML: títulos Anton (teal), cuerpo Computer Modern.
-    Incluye y configura MathJax v3 explícitamente.
+    HTML: Títulos sans-serif teal bold; cuerpo Computer Modern negro.
+    Incluye MathJax v3 y @font-face explícito (woff2).
     """
-    html_doc = """
-<!-- Fuentes -->
-<link href="https://fonts.googleapis.com/css2?family=Anton&display=swap" rel="stylesheet">
-<link href="https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts.css" rel="stylesheet">
-
+    css_fonts = r"""
 <style>
+  /* Sans-serif para títulos (Anton como ejemplo robusto) */
+  @font-face {
+    font-family: 'Anton';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('https://fonts.gstatic.com/s/anton/v25/1Ptgg87LROyAm0K08i4gS7lu.woff2') format('woff2');
+  }
+  /* Computer Modern (CMU Serif) para el cuerpo */
+  @font-face {
+    font-family: 'CMU Serif';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts/serif/cmunrm.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'CMU Serif';
+    font-style: italic;
+    font-weight: 400;
+    font-display: swap;
+    src: url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts/serif/cmunti.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'CMU Serif';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts/serif/cmunbx.woff2') format('woff2');
+  }
+
   .calc-wrap { max-width: 980px; margin: 6px auto; padding: 4px 2px; }
-  .title     { font-family: 'Anton', sans-serif; font-weight: 700; color: teal;
-               font-size: 22px; margin: 6px 0 10px; letter-spacing: 0.3px; }
-  .cm        { font-family: "Computer Modern Serif", "CMU Serif", "Latin Modern Roman",
-               "Times New Roman", serif; color: #222; }
+  .title     { font-family: 'Anton', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+               font-weight: 700; color: teal; font-size: 22px;
+               margin: 6px 0 10px; letter-spacing: .3px; }
+  .cm        { font-family: 'CMU Serif', 'Times New Roman', serif; color: #000;
+               -webkit-font-smoothing: antialiased; font-synthesis: none; }
   .p         { font-size: 18px; line-height: 1.6; margin: 8px 0; }
   .step      { margin: 10px 0; }
   .idx       { margin-right: 8px; font-weight: 700; }
-</style>
 
-<!-- Configuración MathJax v3 -->
+  /* Garantiza que MathJax herede color negro del cuerpo */
+  .calc-wrap .mjx-container { color: #000 !important; }
+</style>
+"""
+    mathjax = """
 <script>
-window.MathJax = {
-  tex: {
-    inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
-    displayMath: [['$$', '$$']],
-    processEscapes: true
-  },
-  options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
-};
+  window.MathJax = {
+    tex: {
+      inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+      displayMath: [['$$', '$$']],
+      processEscapes: true
+    },
+    options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
+  };
 </script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
-
+"""
+    body = f"""
 <div class="calc-wrap">
   <div class="title">Resumen general</div>
-  <p class="p cm">""" + _escape_keep_math(summary) + """</p>
+  <p class="p cm">{_escape_keep_math(summary)}</p>
   <div class="title">Pasos</div>
-  """ + "\n".join(
-        '<p class="p cm step"><span class="idx">%d.</span>%s</p>' %
-        (i, _escape_keep_math(s)) for i, s in enumerate(steps, 1)
-      ) + """
+  {''.join(
+      f'<p class="p cm step"><span class="idx">{i}.</span>{_escape_keep_math(s)}</p>'
+      for i, s in enumerate(steps, 1)
+    )}
 </div>
 """
-    return html_doc
+    return css_fonts + mathjax + body
 
-# ---------- función principal ----------
-
+# ---------- Función principal que puedes llamar ----------
 def CalculusSummary(numero):
-    global documento
+    """
+    Usa tu variable global `documento` y tu función `polli_text(...)`.
+    Renderiza: títulos teal sans-serif bold; cuerpo Computer Modern negro; LaTeX con MathJax.
+    """
+    global documento  # <- se asume definida por ti
 
     if numero == 1:
-        prompt = ("(RECUERDA usar $$ para renderizar el latex en markdown si es que vas a usar) "
-                  "Primero haz un resumen general formalmente de lo que crees que hacen los calculos sin entrar al detalle, "
-                  "no digas palabras como probablemente, di que son las funciones concretamente. "
-                  "Después haz una enumeración explicando paso por paso de forma general sin entrar al detalle "
-                  "(y pon un espacio entre cada enumeración): ")
+        prompt = ("Primero haz un resumen general formal y preciso de lo que hacen los cálculos sin entrar al detalle. "
+                  "No uses palabras como 'probablemente'; di qué funciones son. "
+                  "Luego da una enumeración general paso por paso (un paso por línea, numerado 1., 2., ...): ")
     elif numero == 2:
-        prompt = ("(RECUERDA usar $$ para renderizar el latex en markdown) "
-                  "Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, "
-                  "no digas palabras como probablemente, di que son las funciones concretamente. "
-                  "Después haz una enumeración más precisa explicando paso por paso "
-                  "(y pon un espacio entre cada enumeración): ")
+        prompt = ("Primero haz un resumen muy preciso de lo que hacen los cálculos entrando al detalle. "
+                  "No uses 'probablemente'; di qué funciones son. "
+                  "Luego da una enumeración precisa paso por paso (un paso por línea, numerado 1., 2., ...): ")
     elif numero == 3:
-        prompt = ("(RECUERDA usar $$ para renderizar el latex en markdown) "
-                  "Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, "
-                  "no digas palabras como probablemente, di que son las funciones concretamente. "
-                  "Después haz una enumeración extremadamente precisa explicando paso por paso "
-                  "(y pon un espacio entre cada enumeración). (v): ")
+        prompt = ("Primero haz un resumen extremadamente preciso de lo que hacen los cálculos. "
+                  "No uses 'probablemente'; di qué funciones son. "
+                  "Luego da una enumeración extremadamente precisa paso por paso (un paso por línea, numerado 1., 2., ...): ")
     else:
         prompt = ""
 
-    # 1) Texto desde tu pipeline
+    # 1) Obtener texto desde tu pipeline LLM
     raw_text = polli_text(prompt + documento)
 
-    # 2) Envolver comandos LaTeX sueltos
+    # 2) Envolver comandos LaTeX sueltos para asegurar render
     raw_text = auto_wrap_latex(raw_text)
 
-    # 3) Separar resumen y pasos
+    # 3) Separar resumen y pasos numerados
     summary, steps = _split_summary_and_steps(raw_text)
 
-    # 4) Renderizar (Computer Modern + MathJax)
+    # 4) Render final
     display(HTML(_render_html(summary, steps)))
-
-
