@@ -254,13 +254,121 @@ def show_latex_paragraph(s: str):
     # 4) Mostrar como párrafo Markdown (MathJax renderiza \( ... \), \[ ... \], $$ ... $$)
     return IPython.display.Markdown(s)
 
-def CalculusSummary(numero):
-  global documento
+#def CalculusSummary(numero):
+#  global documento
+#
+#  if numero == 1:
+    
+#    IPython.display.display(show_latex_paragraph(polli_text("(RECUERDA usar $$ para renderizar el latex en markdown si es que vas a usar) Primero haz un resumen general formalmente de lo que crees que hacen los calculos sin entrar al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración explicando paso por paso de forma general sin entrar al detalle (y pon un espacio entre cada enumeración): "+ documento)))
+#  elif numero ==2:
+#    IPython.display.display(show_latex_paragraph(polli_text("(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración más precisa explicando paso por paso (y pon un espacio entre cada enumeración): "+ documento)))
+#  elif numero ==3:
+#    IPython.display.display(show_latex_paragraph(polli_text("(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración extremadamente precisa explicando paso por paso (y pon un espacio entre cada enumeración). (v): "+ documento)))
 
-  if numero == 1:
-    IPython.display.display(show_latex_paragraph(polli_text("(RECUERDA usar $$ para renderizar el latex en markdown si es que vas a usar) Primero haz un resumen general formalmente de lo que crees que hacen los calculos sin entrar al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración explicando paso por paso de forma general sin entrar al detalle (y pon un espacio entre cada enumeración): "+ documento)))
-  elif numero ==2:
-    IPython.display.display(show_latex_paragraph(polli_text("(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración más precisa explicando paso por paso (y pon un espacio entre cada enumeración): "+ documento)))
-  elif numero ==3:
-    IPython.display.display(show_latex_paragraph(polli_text("(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración extremadamente precisa explicando paso por paso (y pon un espacio entre cada enumeración). (v): "+ documento)))
-  
+import re, html
+from IPython.display import display, HTML
+
+# --- helpers ---
+
+_num_pat = re.compile(r'^\s*(\d+)[\.\)]\s+(.*)')  # "1. ..." o "1) ..."
+
+def _escape_keep_math(s: str) -> str:
+    """Escapa HTML pero conserva segmentos $...$ y $$...$$ para MathJax."""
+    parts = re.split(r'(\$\$.*?\$\$|\$.*?\$)', s)
+    out = []
+    for p in parts:
+        if p.startswith('$'):
+            out.append(p)        # mantener LaTeX intacto
+        else:
+            out.append(html.escape(p))
+    return ''.join(out)
+
+def _split_summary_and_steps(text: str):
+    """Separa el primer bloque (resumen) de los pasos numerados."""
+    lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+    summary_lines, steps, current = [], [], None
+
+    for line in lines:
+        if line.lower().startswith('pasos'):
+            # Ignorar encabezado tipo "Pasos generales del proceso:"
+            continue
+        m = _num_pat.match(line)
+        if m:
+            # Nuevo paso
+            if current is not None:
+                steps.append(current.strip())
+            current = m.group(2)
+        else:
+            # Continuación del paso actual o parte del resumen
+            if current is None:
+                summary_lines.append(line)
+            else:
+                current += ' ' + line
+    if current is not None:
+        steps.append(current.strip())
+
+    summary = ' '.join(summary_lines).strip()
+    return summary, steps
+
+def _render_anton_html(summary: str, steps: list):
+    """Construye el HTML estilizado con Anton + MathJax."""
+    # CSS + fuente Anton
+    css = """
+<link href="https://fonts.googleapis.com/css2?family=Anton&display=swap" rel="stylesheet">
+<style>
+  .calc-wrap { max-width: 960px; margin: 6px auto; padding: 4px 2px; }
+  .anton     { font-family: 'Anton', sans-serif; font-weight: 700; letter-spacing: 0.3px; color: #222; }
+  .title     { font-size: 22px; margin: 4px 0 8px; }
+  .p         { font-size: 18px; line-height: 1.6; margin: 8px 0; }
+  .step      { margin: 10px 0; }
+  .idx       { margin-right: 8px; }
+</style>
+"""
+    # HTML seguro (con LaTeX intacto)
+    s_sum = _escape_keep_math(summary)
+    step_html = []
+    for i, s in enumerate(steps, 1):
+        step_html.append(
+            '<p class="p anton step"><span class="idx">%d.</span>%s</p>' %
+            (i, _escape_keep_math(s))
+        )
+
+    html_doc = css + """
+<div class="calc-wrap">
+  <div class="anton title">Resumen general</div>
+  <p class="p anton">""" + s_sum + """</p>
+  <div class="anton title">Pasos</div>
+  """ + "\n".join(step_html) + """
+</div>
+<script>
+  // Pide a MathJax re-tipografiar si está presente (Colab suele cargarlo).
+  if (window.MathJax && window.MathJax.typeset) { window.MathJax.typeset(); }
+</script>
+"""
+    return html_doc
+
+# --- tu función editada ---
+
+def CalculusSummary(numero):
+    global documento  # se asume definida por ti
+
+    if numero == 1:
+        prompt = "(RECUERDA usar $$ para renderizar el latex en markdown si es que vas a usar) Primero haz un resumen general formalmente de lo que crees que hacen los calculos sin entrar al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración explicando paso por paso de forma general sin entrar al detalle (y pon un espacio entre cada enumeración): "
+    elif numero == 2:
+        prompt = "(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración más precisa explicando paso por paso (y pon un espacio entre cada enumeración): "
+    elif numero == 3:
+        prompt = "(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración extremadamente precisa explicando paso por paso (y pon un espacio entre cada enumeración). (v): "
+    else:
+        prompt = ""
+
+    # 1) Obtener el texto (tu función existente)
+    raw_text = polli_text(prompt + documento)
+
+    # 2) Separar resumen y pasos numerados
+    summary, steps = _split_summary_and_steps(raw_text)
+
+    # 3) Renderizar en HTML con Anton
+    html_out = _render_anton_html(summary, steps)
+    display(HTML(html_out))
+
+
