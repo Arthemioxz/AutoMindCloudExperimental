@@ -337,18 +337,16 @@ def _split_summary_and_steps(text: str):
 def _render_html(summary: str, steps: list):
     """
     HTML final: títulos Anton (teal), cuerpo CMU Serif (negro), MathJax v3.
-    Títulos vuelven a Google Fonts (fiable); cuerpo usa CMU Serif web.
+    Cuerpo = Computer Modern; Ecuaciones = negro; Títulos = sans-serif teal bold.
     """
-    head_fonts = """
-<!-- Anton desde Google Fonts (fiable para títulos) -->
+    head = """
+<!-- Anton para los títulos -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Anton:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Anton&display=swap" rel="stylesheet">
 
-<!-- Computer Modern (CMU) para el cuerpo -->
-<link href="https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts.css" rel="stylesheet">
 <style>
-  /* Fallback explícitos por si el CSS anterior tarda: */
+  /* Computer Modern (CMU Serif) incrustada explícitamente */
   @font-face {
     font-family: 'CMU Serif';
     font-style: normal;
@@ -371,18 +369,30 @@ def _render_html(summary: str, steps: list):
     src: url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts/serif/cmunbx.woff2') format('woff2');
   }
 
-  /* Layout + tipografías */
-  .calc-wrap { max-width: 980px; margin: 6px auto; padding: 4px 2px;
-               font-family: 'CMU Serif', 'Computer Modern Serif', 'Latin Modern Roman', serif;
-               color: #000; -webkit-font-smoothing: antialiased; font-synthesis: none; }
-  .title     { font-family: 'Anton', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
-               font-weight: 700; color: teal; font-size: 22px;
-               margin: 6px 0 10px; letter-spacing: .3px; }
-  .p         { font-size: 18px; line-height: 1.6; margin: 8px 0; }
-  .step      { margin: 10px 0; }
-  .idx       { margin-right: 8px; font-weight: 700; }
+  .calc-wrap {
+    max-width: 980px;
+    margin: 6px auto;
+    padding: 4px 2px;
+    /* Cuerpo en Computer Modern */
+    font-family: 'CMU Serif', 'Computer Modern Serif', 'Latin Modern Roman', serif;
+    color: #000;
+    -webkit-font-smoothing: antialiased;
+    font-synthesis: none;
+  }
+  .title {
+    /* Títulos sans-serif teal bold */
+    font-family: 'Anton', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+    font-weight: 700;
+    color: teal;
+    font-size: 22px;
+    margin: 6px 0 10px;
+    letter-spacing: .3px;
+  }
+  .p   { font-size: 18px; line-height: 1.6; margin: 8px 0; }
+  .step{ margin: 10px 0; }
+  .idx { margin-right: 8px; font-weight: 700; }
 
-  /* Ecuaciones en negro (MathJax) */
+  /* Asegurar ecuaciones en negro */
   .calc-wrap .mjx-container { color: #000 !important; }
 </style>
 
@@ -410,19 +420,19 @@ def _render_html(summary: str, steps: list):
     )}
 </div>
 """
-    return head_fonts + body
+    return head + body
 
 # ---------- Función principal ----------
 def CalculusSummary(numero):
     """
     Usa tu variable global `documento` y tu función `polli_text(...)`.
-    Renderiza: títulos teal sans-serif bold (Anton); cuerpo Computer Modern negro; LaTeX con MathJax.
+    Render: títulos teal (Anton); cuerpo Computer Modern (negro); ecuaciones LaTeX en negro.
     """
-    global documento  # <- se asume definida por ti
+    global documento
 
     if numero == 1:
         prompt = ("Primero haz un resumen general formal y preciso de lo que hacen los cálculos sin entrar al detalle. "
-                  "No uses palabras como 'probablemente'; di qué funciones son. "
+                  "No uses 'probablemente'; di qué funciones son. "
                   "Luego da una enumeración general paso por paso (un paso por línea, numerado 1., 2., ...): ")
     elif numero == 2:
         prompt = ("Primero haz un resumen muy preciso de lo que hacen los cálculos entrando al detalle. "
@@ -435,15 +445,16 @@ def CalculusSummary(numero):
     else:
         prompt = ""
 
-    # 1) Obtener texto desde tu pipeline LLM
+    # 1) Obtener texto desde tu pipeline
     raw_text = polli_text(prompt + documento)
 
     # 2) Envolver comandos LaTeX sueltos para asegurar render
     raw_text = auto_wrap_latex(raw_text)
 
-    # 3) Separar resumen y pasos numerados
+    # 3) Separar resumen y pasos
     summary, steps = _split_summary_and_steps(raw_text)
 
     # 4) Render final
     display(HTML(_render_html(summary, steps)))
+
 
