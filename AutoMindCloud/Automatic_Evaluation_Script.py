@@ -411,7 +411,7 @@ def CalculusSummary(numero, font_type="Latin Modern Roman"):
         )
     elif numero == 3:
         detalle = (
-            " Redacta un resumen extremadamente preciso con el máximo nivel de especificidad razonable "
+            " Redacta un resumen extremadamente preciso con el máximo nivel de especificidad "
             "(incluye notación y ecuaciones LaTeX cuando corresponda). "
             "Tras el resumen, da una enumeración extremadamente precisa paso por paso (un paso por línea). "
         )
