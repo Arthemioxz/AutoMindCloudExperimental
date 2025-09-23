@@ -330,76 +330,104 @@ def _split_summary_and_steps(text: str):
 def _render_html(summary: str, steps: list):
     """
     HTML final: títulos Anton (teal), cuerpo CMU Serif (negro), MathJax v3.
-    Títulos vuelven a Google Fonts (fiable); cuerpo usa CMU Serif web.
+    Versión mejorada para mejor compatibilidad.
     """
     head_fonts = """
-<!-- Anton desde Google Fonts (fiable para títulos) -->
+<!-- Anton desde Google Fonts -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Anton:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Anton&display=swap" rel="stylesheet">
 
-<!-- Computer Modern (CMU) para el cuerpo -->
-<link href="https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts.css" rel="stylesheet">
+<!-- Computer Modern Web Fonts -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/computer-modern-web-fonts@latest/fonts.css">
 <style>
-  /* Fallback explícitos por si el CSS anterior tarda: */
-  @font-face {
-    font-family: 'CMU Serif';
-    font-style: normal;
-    font-weight: 400;
-    font-display: swap;
-    src: url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts/serif/cmunrm.woff2') format('woff2');
+  .calc-wrap { 
+    max-width: 980px; 
+    margin: 6px auto; 
+    padding: 4px 2px;
+    font-family: 'Computer Modern Serif', 'CMU Serif', 'Latin Modern Roman', serif;
+    color: #000; 
+    line-height: 1.6;
   }
-  @font-face {
-    font-family: 'CMU Serif';
-    font-style: italic;
-    font-weight: 400;
-    font-display: swap;
-    src: url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts/serif/cmunti.woff2') format('woff2');
+  
+  .title { 
+    font-family: 'Anton', sans-serif;
+    font-weight: 400; 
+    color: #008080; 
+    font-size: 22px;
+    margin: 6px 0 10px; 
+    letter-spacing: .3px;
+    border-bottom: 2px solid #008080;
+    padding-bottom: 4px;
   }
-  @font-face {
-    font-family: 'CMU Serif';
-    font-style: normal;
+  
+  .p { 
+    font-size: 18px; 
+    line-height: 1.6; 
+    margin: 12px 0;
+    font-family: 'Computer Modern Serif', 'CMU Serif', serif;
+  }
+  
+  .step { 
+    margin: 12px 0; 
+    padding-left: 8px;
+  }
+  
+  .idx { 
+    display: inline-block;
+    margin-right: 12px; 
     font-weight: 700;
-    font-display: swap;
-    src: url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-fonts@master/fonts/serif/cmunbx.woff2') format('woff2');
+    min-width: 24px;
   }
 
-  /* Layout + tipografías */
-  .calc-wrap { max-width: 980px; margin: 6px auto; padding: 4px 2px;
-               font-family: 'CMU Serif', 'Computer Modern Serif', 'Latin Modern Roman', serif;
-               color: #000; -webkit-font-smoothing: antialiased; font-synthesis: none; }
-  .title     { font-family: 'Anton', system-ui, -apple-system, Segoe UI, Arial, sans-serif;
-               font-weight: 700; color: teal; font-size: 22px;
-               margin: 6px 0 10px; letter-spacing: .3px; }
-  .p         { font-size: 18px; line-height: 1.6; margin: 8px 0; }
-  .step      { margin: 10px 0; }
-  .idx       { margin-right: 8px; font-weight: 700; }
-
-  /* Ecuaciones en negro (MathJax) */
-  .calc-wrap .mjx-container { color: #000 !important; }
+  /* Mejorar renderizado de ecuaciones */
+  .mjx-container { 
+    color: #000 !important; 
+  }
+  
+  /* Asegurar que el contenido se renderice correctamente */
+  body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
 </style>
 
-<!-- MathJax v3 -->
+<!-- MathJax v3 con configuración mejorada -->
 <script>
   window.MathJax = {
     tex: {
-      inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+      inlineMath: [['$', '$'], ['\\(', '\\)']],
       displayMath: [['$$', '$$']],
-      processEscapes: true
+      processEscapes: true,
+      tags: 'ams'
     },
-    options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
+    chtml: {
+      displayAlign: 'left',
+      displayIndent: '2em'
+    },
+    options: {
+      skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+      renderActions: {
+        addMenu: [0, '', '']
+      }
+    }
   };
 </script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
 """
+    
+    # Procesar el contenido matemático
+    processed_summary = _escape_keep_math(auto_wrap_latex(summary))
+    processed_steps = [_escape_keep_math(auto_wrap_latex(step)) for step in steps]
+    
     body = f"""
 <div class="calc-wrap">
   <div class="title">Resumen general</div>
-  <p class="p">{_escape_keep_math(summary)}</p>
+  <p class="p">{processed_summary}</p>
   <div class="title">Pasos</div>
   {''.join(
-      f'<p class="p step"><span class="idx">{i}.</span>{_escape_keep_math(s)}</p>'
-      for i, s in enumerate(steps, 1)
+      f'<p class="p step"><span class="idx">{i}.</span>{s}</p>'
+      for i, s in enumerate(processed_steps, 1)
     )}
 </div>
 """
