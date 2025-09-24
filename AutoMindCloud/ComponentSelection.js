@@ -332,7 +332,7 @@
 
     // Ground + grid (hidden by default)
     const groundGroup = new THREE.Group(); scene.add(groundGroup);
-    const grid = new THREE.GridHelper(10, 20, 0x84d4d4, 0xdef3f3);
+    const grid = new THREE.GridHelper(10, 20, 0x0ea5a6, 0x14b8b9);
     grid.visible = false;
     groundGroup.add(grid);
     const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
@@ -706,7 +706,7 @@
         const mat  = new THREE.MeshBasicMaterial({
           color: 0x0ea5a6,
           transparent: true,
-          opacity: 0.14,
+          opacity: 0.4,
           depthWrite: false,
           depthTest: false,
           toneMapped: false,
