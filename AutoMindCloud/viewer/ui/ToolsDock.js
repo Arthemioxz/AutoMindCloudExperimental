@@ -1,13 +1,15 @@
 // /viewer/ui/ToolsDock.js
-// Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
-// Adds global hotkey "H" to collapse/expand with tween + console log "h pressed".
 /* global THREE */
 
-export function createToolsDock(app, theme) {
-  if (!app || !app.camera || !app.controls || !app.renderer)
-    throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
+// Floating tools dock: render modes, explode (smoothed), section plane, views, projection, scene toggles, snapshot.
+// Incluye hotkey 'h' para mostrar/ocultar el dock, con log: "[ToolsDock] h pressed"
 
-  // --- Normalize theme to flat keys (works with your Theme.js nested shape) ---
+export function createToolsDock(app, theme) {
+  if (!app || !app.camera || !app.controls || !app.renderer) {
+    throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
+  }
+
+  // --- Normaliza theme (compat con Theme.js anidado) ---
   if (theme && theme.colors) {
     theme.teal       ??= theme.colors.teal;
     theme.tealSoft   ??= theme.colors.tealSoft;
@@ -21,26 +23,19 @@ export function createToolsDock(app, theme) {
   if (theme && theme.shadows) {
     theme.shadow ??= (theme.shadows.lg || theme.shadows.md || theme.shadows.sm);
   }
+  // Defaults por si faltan temas
+  theme = Object.assign({
+    teal: '#0ea5a6',
+    tealSoft: '#14b8a6',
+    tealFaint: 'rgba(20,184,166,0.10)',
+    bgPanel: '#ffffff',
+    stroke: '#dfe7ea',
+    text: '#0b3b3c',
+    textMuted: '#3b5b5c',
+    shadow: '0 6px 18px rgba(0,0,0,0.10)'
+  }, theme || {});
 
-  // ---------- Reuse existing dock if already mounted (idempotent) ----------
-  const existing = document.querySelector('.viewer-dock-fix');
-  if (existing && existing.__toolsDockAPI) {
-    ensureGlobalHotkey(existing, app);
-    return existing.__toolsDockAPI;
-  }
-
-  // ---------- DOM ----------
-  const ui = {
-    root: document.createElement('div'),
-    dock: document.createElement('div'),
-    header: document.createElement('div'),
-    title: document.createElement('div'),
-    fitBtn: document.createElement('button'),
-    body: document.createElement('div'),
-    toggleBtn: document.createElement('button')
-  };
-
-  // ---------- Helpers (with hover animations intact) ----------
+  // ---------- Helpers UI ----------
   const mkButton = (label) => {
     const b = document.createElement('button');
     b.textContent = label;
@@ -68,8 +63,12 @@ export function createToolsDock(app, theme) {
       b.style.background = theme.bgPanel;
       b.style.borderColor = theme.stroke;
     });
-    b.addEventListener('mousedown', () => { b.style.transform = 'translateY(0) scale(0.99)'; });
-    b.addEventListener('mouseup', () => { b.style.transform = 'translateY(-1px) scale(1.02)'; });
+    b.addEventListener('mousedown', () => {
+      b.style.transform = 'translateY(0) scale(0.99)';
+    });
+    b.addEventListener('mouseup', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+    });
     return b;
   };
 
@@ -122,6 +121,7 @@ export function createToolsDock(app, theme) {
     s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
     s.style.width = '100%';
     s.style.accentColor = theme.teal;
+    s.style.pointerEvents = 'auto';
     return s;
   };
 
@@ -136,6 +136,17 @@ export function createToolsDock(app, theme) {
     return { wrap, cb };
   };
 
+  // ---------- DOM ----------
+  const ui = {
+    root: document.createElement('div'),
+    dock: document.createElement('div'),
+    header: document.createElement('div'),
+    title: document.createElement('div'),
+    body: document.createElement('div'),
+    toggleBtn: document.createElement('button'),
+    headerSnapshotBtn: null
+  };
+
   // Root overlay
   Object.assign(ui.root.style, {
     position: 'absolute',
@@ -146,7 +157,7 @@ export function createToolsDock(app, theme) {
     fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
   });
 
-  // Dock
+  // Dock (panel)
   Object.assign(ui.dock.style, {
     position: 'absolute',
     right: '14px',
@@ -159,12 +170,14 @@ export function createToolsDock(app, theme) {
     pointerEvents: 'auto',
     overflow: 'hidden',
     display: 'none',
-    // Tween collapse/expand
-    transform: 'translateX(0)',
-    opacity: '1',
-    transition: 'transform 280ms ease, opacity 200ms ease'
+    opacity: '0',
+    transform: 'translateX(-110%)',
+    transition: 'transform 260ms ease, opacity 260ms ease'
   });
+  ui.dock.setAttribute('data-tools-dock', '1');     // para localizar desde hotkey
+  ui.dock.classList.add('viewer-dock-fix');         // compat con estilos existentes
 
+  // Header
   Object.assign(ui.header.style, {
     display: 'flex',
     alignItems: 'center',
@@ -173,13 +186,17 @@ export function createToolsDock(app, theme) {
     borderBottom: `1px solid ${theme.stroke}`,
     background: theme.tealFaint
   });
-
   ui.title.textContent = 'Viewer Tools';
   Object.assign(ui.title.style, { fontWeight: '800', color: theme.text });
 
+  // Header snapshot
+  ui.headerSnapshotBtn = mkButton('Snapshot');
+  Object.assign(ui.headerSnapshotBtn.style, { padding: '6px 10px', borderRadius: '10px' });
+
+  // Body
   Object.assign(ui.body.style, { padding: '10px 12px' });
 
-  // Floating toggle button
+  // Toggle button flotante
   ui.toggleBtn.textContent = 'Open Tools';
   Object.assign(ui.toggleBtn.style, {
     position: 'absolute',
@@ -207,24 +224,22 @@ export function createToolsDock(app, theme) {
     ui.toggleBtn.style.borderColor = theme.stroke;
   });
 
-  // Header button (Snapshot)
-  ui.fitBtn = mkButton('Snapshot');
-  Object.assign(ui.fitBtn.style, { padding: '6px 10px', borderRadius: '10px' });
-
+  // Compose
   ui.header.appendChild(ui.title);
-  ui.header.appendChild(ui.fitBtn);
+  ui.header.appendChild(ui.headerSnapshotBtn);
   ui.dock.appendChild(ui.header);
   ui.dock.appendChild(ui.body);
   ui.root.appendChild(ui.dock);
   ui.root.appendChild(ui.toggleBtn);
 
-  // Attach
+  // Attach al host del renderer
   const host = (app?.renderer?.domElement?.parentElement) || document.body;
   host.appendChild(ui.root);
 
-  // ---------- Controls ----------
+  // ---------- Controles del panel ----------
   const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
   const explodeSlider = mkSlider(0, 1, 0.01, 0);
+
   const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
   const secDist = mkSlider(-1, 1, 0.001, 0);
   const secEnable = mkToggle('Enable section');
@@ -232,14 +247,18 @@ export function createToolsDock(app, theme) {
 
   const rowCam = document.createElement('div');
   Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
-  const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
+  const bIso   = mkButton('Iso');
+  const bTop   = mkButton('Top');
+  const bFront = mkButton('Front');
+  const bRight = mkButton('Right');
   [bIso, bTop, bFront, bRight].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
 
   const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
-  const togGrid = mkToggle('Grid');
+  const togGrid   = mkToggle('Grid');
   const togGround = mkToggle('Ground & shadows');
-  const togAxes = mkToggle('XYZ axes');
+  const togAxes   = mkToggle('XYZ axes');
 
+  // Monta filas
   ui.body.appendChild(mkRow('Render mode', renderModeSel));
   ui.body.appendChild(mkRow('Explode', explodeSlider));
   ui.body.appendChild(mkRow('Section axis', axisSel));
@@ -253,13 +272,10 @@ export function createToolsDock(app, theme) {
   ui.body.appendChild(mkRow('', togGround.wrap));
   ui.body.appendChild(mkRow('', togAxes.wrap));
 
-  // ---------- Logic ----------
-  let isOpen = false;
+  // ---------- Lógica ----------
   function set(open) {
-    isOpen = !!open;
     if (open) {
       ui.dock.style.display = 'block';
-      styleDockLeft(ui.dock);
       requestAnimationFrame(() => {
         ui.dock.style.transform = 'translateX(0)';
         ui.dock.style.opacity = '1';
@@ -269,25 +285,28 @@ export function createToolsDock(app, theme) {
     } else {
       ui.dock.style.transform = 'translateX(-110%)';
       ui.dock.style.opacity = '0';
-      ui.toggleBtn.textContent = 'Open Tools';
       const onEnd = () => {
-        if (!isOpen) ui.dock.style.display = 'none';
+        if (ui.dock.style.transform.includes('-110%')) ui.dock.style.display = 'none';
         ui.dock.removeEventListener('transitionend', onEnd);
       };
       ui.dock.addEventListener('transitionend', onEnd);
+      ui.toggleBtn.textContent = 'Open Tools';
     }
   }
   function openDock() { set(true); }
   function closeDock() { set(false); }
+
   ui.toggleBtn.addEventListener('click', () => set(ui.dock.style.display === 'none'));
 
-  ui.fitBtn.addEventListener('click', () => {
+  // Snapshot (en header)
+  ui.headerSnapshotBtn.addEventListener('click', () => {
     try {
       const url = app.renderer.domElement.toDataURL('image/png');
       const a = document.createElement('a'); a.href = url; a.download = 'snapshot.png'; a.click();
     } catch (_) {}
   });
 
+  // Render mode
   renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
   function setRenderMode(mode) {
     const root = app.robot || app.scene;
@@ -372,7 +391,7 @@ export function createToolsDock(app, theme) {
     refreshSectionVisual(maxDim, center);
     secVisual.visible = !!secPlaneVisible;
 
-    // Orient visual
+    // Orientar el plano visual
     const look = new THREE.Vector3().copy(n);
     const up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
@@ -388,7 +407,7 @@ export function createToolsDock(app, theme) {
   secEnable.cb.addEventListener('change', () => { secEnabled = !!secEnable.cb.checked; updateSectionPlane(); });
   secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
 
-  // ---------- Views (animated) ----------
+  // ---------- Vistas (animadas) ----------
   const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
   const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
 
@@ -433,41 +452,35 @@ export function createToolsDock(app, theme) {
     return pos;
   }
 
-  const bIsoEl = bIso, bTopEl = bTop, bFrontEl = bFront, bRightEl = bRight;
-  bIsoEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
-  bTopEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('top'), null, 750); });
-  bFrontEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
-  bRightEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
+  bIso.addEventListener('click',   () => tweenOrbits(app.camera, app.controls, viewEndPosition('iso'),   null, 750));
+  bTop.addEventListener('click',   () => tweenOrbits(app.camera, app.controls, viewEndPosition('top'),   null, 750));
+  bFront.addEventListener('click', () => tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750));
+  bRight.addEventListener('click', () => tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750));
 
-  // ---------- Projection ----------
+  // ---------- Proyección ----------
   projSel.addEventListener('change', () => {
     const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
     try { app.setProjection?.(mode); } catch (_) {}
   });
 
-  // ---------- Scene toggles ----------
-  togGrid.cb.addEventListener('change', () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
+  // ---------- Toggles de escena ----------
+  togGrid.cb.addEventListener('change',   () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
   togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
-  togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
+  togAxes.cb.addEventListener('change',   () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
   // ============================================================
-  //                       EXPLODE MANAGER
+  //                  EXPLODE (tween con resorte suave)
   // ============================================================
   function makeExplodeManager() {
-    const registry = []; // { node, parent, baseLocal, dirLocal }
+    const registry = []; // { node, parent, baseLocal:Vector3, dirLocal:Vector3 }
     const marker = new WeakSet();
     let maxDim = 1;
     let prepared = false;
 
     // spring state
-    let current = 0;
-    let target = 0;
-    let vel = 0;
-    let raf = null;
-    let lastT = 0;
+    let current = 0, target = 0, vel = 0, raf = null, lastT = 0;
     const stiffness = 18;
     const damping   = 2 * Math.sqrt(stiffness);
-
     let zeroSince = null;
 
     function worldDirToParentLocal(parent, dirWorld) {
@@ -540,7 +553,6 @@ export function createToolsDock(app, theme) {
         const { node, baseLocal, dirLocal } = rec;
         node.position.copy(baseLocal).addScaledVector(dirLocal, f * maxOffset);
       }
-
       updateSectionPlane?.();
       try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch(_) {}
     }
@@ -574,11 +586,8 @@ export function createToolsDock(app, theme) {
         zeroSince = null;
       }
 
-      if (current !== target || vel !== 0) {
-        raf = requestAnimationFrame(tickSpring);
-      } else {
-        raf = null;
-      }
+      if (current !== target || vel !== 0) raf = requestAnimationFrame(tickSpring);
+      else raf = null;
     }
 
     function setTarget(a01) {
@@ -606,89 +615,61 @@ export function createToolsDock(app, theme) {
 
     return { prepare, setTarget, immediate, recalibrate, destroy };
   }
-
   const explode = makeExplodeManager();
   try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
+  explodeSlider.addEventListener('input', () => explode.setTarget(Number(explodeSlider.value) || 0));
 
-  explodeSlider.addEventListener('input', () => { explode.setTarget(Number(explodeSlider.value) || 0); });
-
-  // ---------- Utilities ----------
-  function styleDockLeft(dockEl) {
-    dockEl.classList.add('viewer-dock-fix');
-    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
-  }
-
-  // Defaults
+  // ---------- Defaults y estado inicial ----------
   togGrid.cb.checked = false;
   togGround.cb.checked = false;
   togAxes.cb.checked = false;
 
-  // Start closed
+  // Arranca cerrado
   set(false);
 
-  // ---------- Global hotkey “H” (robusto + log) ----------
-  ensureGlobalHotkey(ui.dock, app);
+  // ---------- Hotkey 'h' (mismo pipeline que 'i') ----------
+  const container = app?.container || document.getElementById('app') || app?.renderer?.domElement?.parentElement || document.body;
+  try { container?.setAttribute?.('tabindex', '0'); } catch {}
+  const canvas = app?.renderer?.domElement;
 
-  // ---------- Public API ----------
+  const onKeyH = (e) => {
+    const k = (e.key || e.code || '').toLowerCase();
+    if (k !== 'h' && e.code !== 'KeyH') return;
+    console.log('[ToolsDock] h pressed');
+
+    const isClosed = (ui.dock.style.display === 'none') || (ui.dock.style.opacity === '0');
+    set(isClosed);
+
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation?.();
+  };
+
+  // Usa la misma fase de captura (true) que suele usarse para 'i'
+  container?.addEventListener('keydown', onKeyH, true);
+  canvas?.addEventListener('keydown', onKeyH, true);
+
+  // ---------- API pública ----------
   function destroy() {
-    try { removeGlobalHotkey(ui.dock); } catch (_) {}
+    try { container?.removeEventListener('keydown', onKeyH, true); } catch(_) {}
+    try { canvas?.removeEventListener('keydown', onKeyH, true); } catch(_) {}
     try { ui.toggleBtn.remove(); } catch (_) {}
     try { ui.dock.remove(); } catch (_) {}
     try { ui.root.remove(); } catch (_) {}
     try {
       app.renderer.localClippingEnabled = false;
       app.renderer.clippingPlanes = [];
-      if (secVisual) app.scene.remove(secVisual);
+      // quitar visual del plano
+      const children = app.scene?.children || [];
+      for (let i = children.length - 1; i >= 0; i--) {
+        if (children[i] === secVisual) {
+          app.scene.remove(secVisual);
+          break;
+        }
+      }
     } catch (_) {}
     explode.destroy();
   }
 
-  const api = { open: openDock, close: closeDock, set, destroy };
-  ui.dock.__toolsDockAPI = api;
-  return api;
-
-  // ------------- helpers: hotkey binding -------------
-  function ensureGlobalHotkey(dockEl, appRef) {
-    if (!dockEl) return;
-    if (dockEl.__hotkeyBound) return;
-
-    const handler = (e) => {
-      const k = (e.key || '').toLowerCase();
-      if (k === 'h') {
-        console.log('[ToolsDock] h pressed'); // <<<<<< LOG VISUAL
-        e.preventDefault();
-        const wantOpen = (dockEl.style.display === 'none');
-        set(wantOpen);
-      }
-    };
-    dockEl.__hotkeyBound = true;
-    dockEl.__hotkeyHandler = handler;
-
-    const targets = new Set([
-      window,
-      document,
-      document.body,
-      appRef?.renderer?.domElement,
-      appRef?.container,
-      appRef?.canvas
-    ].filter(Boolean));
-
-    dockEl.__hotkeyTargets = [];
-    targets.forEach(t => {
-      try { t.addEventListener('keydown', handler, true); dockEl.__hotkeyTargets.push(t); } catch(_) {}
-    });
-
-    // Opcional: foco inicial al canvas si existe, para captar teclas
-    try { appRef?.renderer?.domElement?.setAttribute?.('tabindex', '0'); } catch(_) {}
-  }
-
-  function removeGlobalHotkey(dockEl) {
-    if (!dockEl || !dockEl.__hotkeyTargets || !dockEl.__hotkeyHandler) return;
-    for (const t of dockEl.__hotkeyTargets) {
-      try { t.removeEventListener('keydown', dockEl.__hotkeyHandler, true); } catch(_) {}
-    }
-    dockEl.__hotkeyTargets = [];
-    dockEl.__hotkeyHandler = null;
-    dockEl.__hotkeyBound = false;
-  }
+  return { open: openDock, close: closeDock, set, destroy };
 }
