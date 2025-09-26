@@ -334,86 +334,160 @@ export function attachInteraction({
     renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
   }
 
-  // Isolation (key 'i')
-  const ray = new THREE.Raycaster();
-  const centerPointer = new THREE.Vector2(0, 0);
-  let allMeshes = [];
-  function rebuildMeshCache() {
-    allMeshes.length = 0;
-    robotModel?.traverse(o => { if (o.isMesh && o.geometry) allMeshes.push(o); });
+  // ========== FIXED ISOLATION WITH ISO VIEW ==========
+  
+  // Smooth camera tweening function
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
   }
-  rebuildMeshCache();
 
-  let lastHoverMesh = null, isolating = false, isolatedRoot = null;
-  let savedPos = null, savedTarget = null;
+  function tweenCamera(toPos, toTarget, duration = 700) {
+    const startPos = camera.position.clone();
+    const startTarget = controls.target.clone();
+    const startTime = performance.now();
+    
+    controls.enabled = false;
+    
+    function animate(timestamp) {
+      const elapsed = timestamp - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = easeInOutCubic(progress);
+      
+      // Interpolate position and target
+      camera.position.lerpVectors(startPos, toPos, eased);
+      controls.target.lerpVectors(startTarget, toTarget, eased);
+      
+      controls.update();
+      renderer.render(scene, camera);
+      
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      } else {
+        controls.enabled = true;
+      }
+    }
+    
+    requestAnimationFrame(animate);
+  }
 
-  function centerPick() {
+  // Calculate default ISO view
+  function getIsoView() {
     if (!robotModel) return null;
-    ray.setFromCamera(centerPointer, camera);
-    const hits = ray.intersectObjects(allMeshes, true);
-    return hits.length ? hits[0].object : null;
+    
+    const box = new THREE.Box3().setFromObject(robotModel);
+    if (box.isEmpty()) return null;
+    
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    
+    // Fixed ISO view parameters (45° azimuth, 25° elevation)
+    const az = 45 * Math.PI / 180;
+    const el = 25 * Math.PI / 180;
+    const distance = maxDim * 1.9;
+    
+    const dir = new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az)
+    ).normalize();
+    
+    return {
+      position: center.clone().add(dir.multiplyScalar(distance)),
+      target: center.clone()
+    };
   }
+
+  // Isolation state
+  let isolating = false;
+  let isolatedRoot = null;
+
   function getLinkRoot(mesh) {
-    if (!mesh) return null; let n = mesh;
-    while (n && n !== robotModel) { if ((n.children || []).some(ch => ch.isMesh)) return n; n = n.parent; }
+    if (!mesh) return null; 
+    let n = mesh;
+    while (n && n !== robotModel) { 
+      if ((n.children || []).some(ch => ch.isMesh)) return n; 
+      n = n.parent; 
+    }
     return mesh || robotModel;
   }
+
   function bulkSetVisible(v) {
-    if (!allMeshes.length) rebuildMeshCache();
-    for (let i = 0; i < allMeshes.length; i++) allMeshes[i].visible = v;
+    robotModel?.traverse(o => { 
+      if (o.isMesh && o.geometry) o.visible = v; 
+    });
   }
+
   function setVisibleSubtree(root, v) {
     root?.traverse(o => { if (o.isMesh) o.visible = v; });
   }
 
   function isolateCurrent() {
-    const target = getLinkRoot(lastHoverMesh || centerPick());
-    if (!target) return false;
+    const target = getLinkRoot(lastHoverMesh);
+    if (!target || !robotModel) return false;
 
-    if (!isolating) {
-      savedPos = camera.position.clone();
-      savedTarget = controls.target.clone();
-    }
+    // Calculate target bounds
+    const box = new THREE.Box3().setFromObject(target);
+    if (box.isEmpty()) return false;
+    
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
 
+    // Calculate camera position to frame the target
+    const fov = (camera.fov || 60) * Math.PI / 180;
+    const distance = maxDim / Math.tan(Math.max(1e-6, fov / 2)) * 1.2;
+    
+    // Maintain current view direction but adjust distance
+    const currentDir = camera.position.clone().sub(controls.target).normalize();
+    const targetPos = center.clone().add(currentDir.multiplyScalar(distance));
+
+    // Hide all except target
     bulkSetVisible(false);
     setVisibleSubtree(target, true);
 
-    // Quick frame (no custom tween here; delegate to upper UI tween if needed)
-    const box = new THREE.Box3().setFromObject(target);
-    const c = box.getCenter(new THREE.Vector3());
-    const s = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(s.x, s.y, s.z) || 1;
-    if (camera.isPerspectiveCamera) {
-      const fov = (camera.fov || 60) * Math.PI / 180;
-      const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
-      camera.position.copy(c.clone().add(new THREE.Vector3(1, 0.7, 1).normalize().multiplyScalar(dist)));
-    } else {
-      camera.left = -maxDim; camera.right = maxDim; camera.top = maxDim; camera.bottom = -maxDim;
-      camera.near = Math.max(maxDim / 1000, 0.001); camera.far = Math.max(maxDim * 1500, 1500);
-      camera.updateProjectionMatrix();
-      camera.position.copy(c.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
-    }
-    controls.target.copy(c); controls.update();
+    // Smooth transition to target
+    tweenCamera(targetPos, center, 750);
 
-    isolating = true; isolatedRoot = target;
+    isolating = true;
+    isolatedRoot = target;
     return true;
   }
 
   function restoreAll() {
-    bulkSetVisible(true);
-    if (savedPos && savedTarget) {
-      camera.position.copy(savedPos);
-      controls.target.copy(savedTarget);
-      controls.update();
+    if (!robotModel) return;
+    
+    // Always return to ISO view (never save camera state)
+    const isoView = getIsoView();
+    if (isoView) {
+      // Show all meshes first
+      bulkSetVisible(true);
+      
+      // Smooth transition to ISO view
+      tweenCamera(isoView.position, isoView.target, 750);
     }
-    isolating = false; isolatedRoot = null;
+
+    isolating = false;
+    isolatedRoot = null;
+  }
+
+  // Keyboard 'i' to isolate/restore
+  function onKeyDown(e) {
+    const k = (e.key || '').toLowerCase();
+    if (k === 'i') {
+      e.preventDefault();
+      if (isolating) {
+        restoreAll();
+      } else {
+        isolateCurrent();
+      }
+    }
   }
 
   // Events
   function onPointerMove(e) {
     lastMoveEvt = e;
     // track last hover mesh for isolation
-    // (reuse raycaster path – separate quick pass for cursor pos)
     try {
       getPointerFromEvent(e);
       raycaster.setFromCamera(pointer, camera);
@@ -448,16 +522,6 @@ export function attachInteraction({
     if (joint && isMovable(joint)) startJointDrag(joint, e);
   }
 
-  // Keyboard 'i' to isolate/restore (listen on canvas + container owner)
-  function onKeyDown(e) {
-    const k = (e.key || '').toLowerCase();
-    if (k === 'i') {
-      e.preventDefault();
-      if (isolating) restoreAll();
-      else isolateCurrent();
-    }
-  }
-
   renderer.domElement.addEventListener('pointermove', onPointerMove, { passive: true });
   renderer.domElement.addEventListener('pointerdown', onPointerDown, { passive: false });
   renderer.domElement.addEventListener('pointerup', endJointDrag);
@@ -471,7 +535,9 @@ export function attachInteraction({
     robotModel = newRobot || null;
     linkSet = robotModel ? markLinksAndJoints(robotModel) : new Set();
     setSelectedMeshes([]);
-    rebuildMeshCache();
+    // Reset isolation state when robot changes
+    isolating = false;
+    isolatedRoot = null;
   }
   function setSelectMode(mode) {
     selectMode = (mode === 'mesh') ? 'mesh' : 'link';
@@ -505,4 +571,3 @@ export function attachInteraction({
     destroy
   };
 }
-
