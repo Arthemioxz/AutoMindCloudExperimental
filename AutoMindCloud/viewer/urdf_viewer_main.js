@@ -10,10 +10,12 @@ import * as ThemeMod from './Theme.js';
 
 // ---------- robust resolver ----------
 function resolveFactory(mod, names) {
+  // try named functions
   for (const n of names) {
     const v = mod && mod[n];
     if (typeof v === 'function') return v;
   }
+  // default export can be a function or an object with functions
   const d = mod && mod.default;
   if (typeof d === 'function') return d;
   if (d && typeof d === 'object') {
@@ -25,9 +27,17 @@ function resolveFactory(mod, names) {
   return null;
 }
 
-// IMPORTANT: ViewerCore in your repo exports createViewer(...)
+function moduleKeys(mod) {
+  try {
+    const named = Object.keys(mod || {});
+    const def = mod && mod.default && typeof mod.default === 'object' ? Object.keys(mod.default) : [];
+    return { named, def };
+  } catch { return { named: [], def: [] }; }
+}
+
+// IMPORTANT: your ViewerCore likely exports createViewer(...)
 const createViewerCore = resolveFactory(Core, [
-  'createViewer',          // ← your file exports this
+  'createViewer',          // ← most common in your repo
   'createViewerCore',
   'initCore',
   'createApp',
@@ -36,21 +46,49 @@ const createViewerCore = resolveFactory(Core, [
   'ViewerCore',            // constructor-style
 ]);
 
-const createAssetDB = resolveFactory(Assets, [
-  'createAssetDB', 'AssetDB', 'makeAssetDB', 'initAssetDB'
+let createAssetDB = resolveFactory(Assets, [
+  'createAssetDB',
+  'AssetDB',               // class or factory
+  'makeAssetDB',
+  'initAssetDB',
+  'buildAssetDB',
 ]);
 
-const attachSelection = resolveFactory(Interact, [
-  'attachSelection', 'initSelection', 'wireSelection', 'enableSelection'
-]);
+// Minimal shim if AssetDB isn’t found (keeps you running)
+function createAssetDBShim(meshDB) {
+  // meshDB: { key -> base64 }
+  // Return an object with loadMeshCb(url) => mapped data URL or original url
+  const lowerMap = {};
+  for (const k in meshDB) lowerMap[k.toLowerCase()] = meshDB[k];
 
-const createToolsDock = resolveFactory(Tools, [
-  'createToolsDock', 'initToolsDock', 'makeToolsDock'
-]);
+  function guessMime(ext) {
+    ext = (ext || '').toLowerCase();
+    if (ext.endsWith('.stl')) return 'model/stl';
+    if (ext.endsWith('.dae') || ext.endsWith('.xml')) return 'model/vnd.collada+xml';
+    if (ext.endsWith('.png')) return 'image/png';
+    if (ext.endsWith('.jpg') || ext.endsWith('.jpeg')) return 'image/jpeg';
+    return 'application/octet-stream';
+  }
 
-const createComponentsPanel = resolveFactory(Comp, [
-  'createComponentsPanel', 'createComponents', 'initComponentsPanel', 'makeComponentsPanel'
-]);
+  function toDataURL(key) {
+    const b64 = lowerMap[key.toLowerCase()];
+    if (!b64) return null;
+    const mime = guessMime(key);
+    return `data:${mime};base64,${b64}`;
+  }
+
+  // URDFLoader typically calls loadMeshCb(url)
+  // We’ll just map known keys to data: URLs; otherwise pass original url through.
+  return {
+    loadMeshCb(url) {
+      if (!url) return url;
+      // normalize common URDF forms
+      let k = String(url).replace(/^package:\/\//i, '').replace(/^\.\//, '').replace(/\\/g, '/');
+      const bUrl = toDataURL(k) || toDataURL(k.split('/').pop() || '');
+      return bUrl || url;
+    }
+  };
+}
 
 const theme =
   ThemeMod.theme || ThemeMod.default || {
@@ -94,22 +132,22 @@ function setupKeyHandlers(app, toolsDockRef, componentsRef, interactionsRef) {
     // 2) DOM fallback (adds/removes slide class for smoothness)
     const root = preferSel ? document.querySelector(preferSel) : (ref && ref.root);
     if (root) {
-      root.classList.add('am-slide'); // ensures CSS transition exists
+      root.classList.add('am-slide');
       root.classList.toggle(cls || 'collapsed');
     }
   }
 
   function onKey(e) {
     const k = (e.key || '').toLowerCase();
-    if (k === 'i') {
+    if (k === 'i') { // isolate via selection module
       try { interactionsRef?.toggleIsolateSelected?.(); } catch(_) {}
       e.preventDefault(); e.stopPropagation();
     }
-    if (k === 'h') { // tween/toggle Components panel
+    if (k === 'h') { // components panel toggle
       toggleByApiOrDom(componentsRef, '.components-panel', 'collapsed');
       e.preventDefault(); e.stopPropagation();
     }
-    if (k === 'u') { // tools dock toggle on separate key
+    if (k === 'u') { // tools dock toggle
       toggleByApiOrDom(toolsDockRef, '.viewer-dock-fix', 'collapsed');
       e.preventDefault(); e.stopPropagation();
     }
@@ -124,8 +162,17 @@ function setupKeyHandlers(app, toolsDockRef, componentsRef, interactionsRef) {
  * returns: app (augmented with .toolsDock, .components, .dispose())
  */
 export async function render(opts = {}) {
-  if (!createViewerCore) throw new Error('[urdf_viewer_main] ViewerCore not found');
-  if (!createAssetDB) throw new Error('[urdf_viewer_main] AssetDB not found');
+  if (!createViewerCore) {
+    const k = moduleKeys(Core);
+    console.error('[urdf_viewer_main] ViewerCore exports:', k);
+    throw new Error('[urdf_viewer_main] ViewerCore not found');
+  }
+
+  // Try resolve AssetDB; if missing, warn and fallback to shim
+  if (!createAssetDB) {
+    const k = moduleKeys(Assets);
+    console.warn('[urdf_viewer_main] AssetDB factory not found; module keys:', k);
+  }
 
   const {
     container = document.getElementById('app'),
@@ -138,36 +185,47 @@ export async function render(opts = {}) {
 
   if (!container) throw new Error('[urdf_viewer_main] Missing container');
 
-  // 1) Core app (your ViewerCore exports createViewer({...}))
+  // 1) Core app
   const maybeApp = createViewerCore({ container, background });
   const app = (maybeApp && typeof maybeApp.then === 'function') ? await maybeApp : maybeApp;
 
-  // If caller provided background override, re-apply
+  // background override
   try {
     if (background === null) { app.renderer.setClearAlpha(0); }
     else if (typeof background === 'number') { app.renderer.setClearColor(background); }
   } catch(_) {}
 
   // 2) Assets
-  const assetDB = createAssetDB(meshDB);
+  const assetDB = createAssetDB ? createAssetDB(meshDB) : createAssetDBShim(meshDB);
 
-  // 3) Load URDF (ViewerCore exposes loadURDF)
+  // 3) Load URDF
   const p = app.loadURDF?.(urdfContent, assetDB.loadMeshCb);
   if (p && typeof p.then === 'function') await p;
 
   // 4) Interactions
-  const interactionsRef = attachSelection
-    ? (attachSelection(app, theme, { selectMode, clickAudioDataURL }) || null)
+  const interactionsRef = resolveFactory(Interact, [
+    'attachSelection', 'initSelection', 'wireSelection', 'enableSelection'
+  ])
+    ? (resolveFactory(Interact, [
+        'attachSelection','initSelection','wireSelection','enableSelection'
+      ])(app, theme, { selectMode, clickAudioDataURL }) || null)
     : null;
 
   // 5) UI panels
-  const toolsDock = createToolsDock ? (createToolsDock(app, theme) || null) : null;
-  const componentsPanel = createComponentsPanel ? (createComponentsPanel(app, theme) || null) : null;
+  const toolsDockFactory = resolveFactory(Tools, [
+    'createToolsDock', 'initToolsDock', 'makeToolsDock'
+  ]);
+  const compsFactory = resolveFactory(Comp, [
+    'createComponentsPanel', 'createComponents', 'initComponentsPanel', 'makeComponentsPanel'
+  ]);
+
+  const toolsDock = toolsDockFactory ? (toolsDockFactory(app, theme) || null) : null;
+  const componentsPanel = compsFactory ? (compsFactory(app, theme) || null) : null;
 
   try { toolsDock?.open?.(); toolsDock && (toolsDock._open = true); } catch(_) {}
   try { componentsPanel?.open?.(); componentsPanel && (componentsPanel._open = true); } catch(_) {}
 
-  // 6) Initial view: prefer ToolsDock navigateToView('iso')
+  // 6) Initial ISO (prefer tools dock helper)
   try {
     if (toolsDock && typeof toolsDock.navigateToView === 'function') {
       toolsDock.navigateToView('iso', 650);
@@ -181,7 +239,7 @@ export async function render(opts = {}) {
       const targetPos = center.clone().add(dir.multiplyScalar(dist));
       const start = performance.now(), ms = 600;
       const step = (now) => {
-        const u = Math.max(0, Math.min(1, (now - start)/ms)); const e = ease(u);
+        const u = clamp((now - start)/ms, 0, 1); const e = ease(u);
         app.camera.position.set(
           p0.x + (targetPos.x - p0.x)*e,
           p0.y + (targetPos.y - p0.y)*e,
@@ -213,7 +271,7 @@ export async function render(opts = {}) {
   app.toolsDock = toolsDock;
   app.components = componentsPanel;
 
-  // Ensure slide animation css class exists (DOM fallback toggle)
+  // Ensure slide CSS (for DOM fallback)
   try {
     const css = `.am-slide{transition:transform .28s ease,opacity .28s ease}
     .am-slide.collapsed{transform:translateX(18px);opacity:.0;pointer-events:none}`;
