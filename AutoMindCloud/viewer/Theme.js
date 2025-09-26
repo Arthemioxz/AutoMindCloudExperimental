@@ -1,57 +1,26 @@
-// AutoMindCloud/viewer/Theme.js
-// -----------------------------
-// Paleta base (teal/white) y tokens de UI.
-// Exporta nombrado (THEME) y por defecto (default).
+// Theme.js — estilo global teal-white y helper para botones
 
-export const THEME = {
-  colors: {
-    teal: '#0ea5a6',
-    tealSoft: '#14b8b9',
-    tealFaint: 'rgba(20,184,185,0.12)',
-    panelBg: '#ffffff',
-    canvasBg: 0xffffff,       // number para THREE.Color
-    stroke: '#d7e7e7',
-    text: '#0b3b3c',
-    textMuted: '#577e7f',
-  },
-  shadows: {
-    sm: '0 4px 12px rgba(0,0,0,0.08)',
-    md: '0 8px 24px rgba(0,0,0,0.12)',
-    lg: '0 12px 36px rgba(0,0,0,0.14)',
-  },
-  fonts: {
-    ui: "Inter, 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif",
-  },
-  sizes: {
-    radiusSm: '8px',
-    radiusMd: '12px',
-    radiusLg: '18px',
-    paddingSm: '6px',
-    paddingMd: '8px',
-    paddingLg: '12px',
-  },
-};
-
-// Helper opcional: inyecta variables CSS globales para paneles HTML
-export function injectCssVars(theme = THEME) {
-  const { colors, shadows } = theme;
-  const css = `
-  :root {
-    --teal: ${colors.teal};
-    --teal-soft: ${colors.tealSoft};
-    --teal-faint: ${colors.tealFaint};
-    --text: ${colors.text};
-    --text-muted: ${colors.textMuted};
-    --panel-bg: ${colors.panelBg};
-    --stroke: ${colors.stroke};
-    --shadow: ${shadows.md};
-    --shadow-lg: ${shadows.lg};
-  }`;
-  const style = document.createElement('style');
-  style.setAttribute('data-amc-theme', 'true');
-  style.textContent = css;
-  document.head.appendChild(style);
+export function applyGlobalTheme(root = document) {
+  const id = '__am_theme__';
+  if (root.getElementById(id)) return;
+  const style = root.createElement('style'); style.id = id;
+  style.textContent = `
+  :root{
+    --teal:#0ea5a6; --dark-teal:#0b3b3c; --light-teal:#d7e7e7;
+    --white:#fff; --shadow:0 4px 12px rgba(0,0,0,.08); --shadow-hover:0 8px 24px rgba(0,0,0,.12);
+  }
+  .am-btn{
+    background:var(--white); color:#111; border:1px solid var(--light-teal); border-radius:10px;
+    padding:8px 12px; font-weight:700; font-size:13px; cursor:pointer; box-shadow:var(--shadow);
+    transition:transform .12s ease, box-shadow .12s ease, background .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .am-btn:hover{ background:var(--teal); color:#fff; border-color:var(--teal); transform:translateY(-1px); box-shadow:var(--shadow-hover); }
+  .am-btn:active{ transform:translateY(0); box-shadow:var(--shadow); }
+  `;
+  root.head.appendChild(style);
 }
 
-// Export por defecto también (para compatibilidad)
-export default THEME;
+export function enhanceButtons(root = document) {
+  const btns = root.querySelectorAll('button');
+  btns.forEach(b => b.classList.add('am-btn'));
+}
