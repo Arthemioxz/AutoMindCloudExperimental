@@ -1,316 +1,258 @@
-// /viewer/urdf_viewer_main.js
-// Entrypoint that composes ViewerCore + AssetDB + Selection & Drag + UI (Tools & Components)
+// AutoMindCloud/viewer/urdf_viewer_main.js
+// Entrypoint (ESM). Composes core viewer, asset DB, interaction, tools dock, and components panel.
+// Exports: render(opts) -> returns the app object from ViewerCore, with .toolsDock/.components/.dispose()
 
-import { THEME } from './Theme.js';
-import { createViewer } from './core/ViewerCore.js';
-import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
-import { attachInteraction } from './interaction/SelectionAndDrag.js';
-import { createToolsDock } from './ui/ToolsDock.js';
-import { createComponentsPanel } from './ui/ComponentsPanel.js';
+/* global THREE */ // Three is loaded UMD by Python shell before importing this module.
+
+///////////////////////////
+// 1) IMPORTS (defensive) //
+///////////////////////////
+import * as Core from './core/ViewerCore.js';
+import * as Assets from './core/AssetDB.js';
+import * as Interact from './interaction/SelectionAndDrag.js';
+import * as Tools from './ui/ToolsDock.js';
+import * as Comp from './ui/ComponentsPanel.js';
+import * as ThemeMod from './Theme.js';
+
+// Resolve export names defensively
+const createViewerCore =
+  Core.createViewerCore || Core.initCore || Core.default;
+
+const createAssetDB =
+  Assets.createAssetDB || Assets.AssetDB || Assets.default;
+
+const attachSelection =
+  Interact.attachSelection || Interact.initSelection || Interact.default;
+
+const createToolsDock =
+  Tools.createToolsDock || Tools.initToolsDock || Tools.default;
+
+const createComponentsPanel =
+  Comp.createComponentsPanel || Comp.createComponents || Comp.default;
+
+const theme =
+  ThemeMod.theme || ThemeMod.default || {
+    teal: '#0ea5a6',
+    tealSoft: '#2dd4bf',
+    tealFaint: '#ccfbf1',
+    bgPanel: 'rgba(255,255,255,0.95)',
+    bgCanvas: 0xffffff,
+    stroke: '#d7e7e7',
+    text: '#0b3b3c',
+    textMuted: '#6b7280',
+    shadow: '0 4px 12px rgba(0,0,0,0.08)',
+  };
+
+/////////////////////////////////
+// 2) SMALL INTERNAL UTILITIES //
+/////////////////////////////////
+
+function box3Of(obj) {
+  const box = new THREE.Box3();
+  try { box.setFromObject(obj); } catch (_) {}
+  return box;
+}
+
+function fixedDistance(camera, object, pad = 1.0) {
+  const size = box3Of(object).getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const fov = ((camera && camera.fov) ? camera.fov : 60) * Math.PI / 180;
+  return (maxDim * pad) / Math.tan(fov / 2);
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function setupKeyHandlers(app, toolsDockRef, interactionsRef) {
+  // Keep a single listener bound to the canvas root (or document as fallback)
+  const targetEl =
+    (app && app.renderer && app.renderer.domElement) ||
+    (app && app.container) ||
+    window;
+
+  function onKey(e) {
+    const k = (e.key || '').toLowerCase();
+    if (k === 'h') {
+      // Toggle tools dock (if present)
+      try {
+        if (toolsDockRef && typeof toolsDockRef.set === 'function') {
+          // If it has state, toggle by reading CSS class or flipping flag (best-effort)
+          const root = toolsDockRef.root || document.querySelector('.viewer-dock-fix');
+          const hidden = root && root.classList.contains('collapsed');
+          toolsDockRef.set(hidden); // set(open)
+        } else if (toolsDockRef && typeof toolsDockRef.open === 'function') {
+          // simple toggle using open/close
+          if (toolsDockRef._open) { toolsDockRef.close?.(); toolsDockRef._open = false; }
+          else { toolsDockRef.open?.(); toolsDockRef._open = true; }
+        }
+      } catch (_) {}
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (k === 'i') {
+      // Delegate to SelectionAndDrag isolate toggle if it exposed one
+      try {
+        if (interactionsRef && typeof interactionsRef.toggleIsolateSelected === 'function') {
+          interactionsRef.toggleIsolateSelected();
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      } catch (_) {}
+    }
+  }
+
+  targetEl.addEventListener('keydown', onKey, true);
+
+  // return disposer
+  return () => {
+    targetEl.removeEventListener('keydown', onKey, true);
+  };
+}
+
+/////////////////////////////////////
+// 3) THE ONLY PUBLIC API: render() //
+/////////////////////////////////////
 
 /**
- * Public entry: render the URDF viewer.
- * @param {Object} opts
- * @param {HTMLElement} opts.container
- * @param {string} opts.urdfContent              â€” URDF string
- * @param {Object.<string,string>} opts.meshDB   â€” key â†’ base64
- * @param {'link'|'mesh'} [opts.selectMode='link']
- * @param {number|null} [opts.background=THEME.bgCanvas]
- * @param {string|null} [opts.clickAudioDataURL] â€” optional UI SFX (not required)
+ * @typedef {Object} RenderOptions
+ * @property {HTMLElement} container
+ * @property {string}      urdfContent
+ * @property {Object}      meshDB                 // { key -> base64 data }
+ * @property {string}      selectMode             // "link" | "visual" | ...
+ * @property {number|null} background             // hex number, or null to keep default
+ * @property {string?}     clickAudioDataURL      // optional data:audio/... for click
+ *
+ * render(opts) bootstraps the viewer and returns the app object from ViewerCore, extended with:
+ *   - app.toolsDock
+ *   - app.components
+ *   - app.dispose()   // disposes key handlers + sub-uis (best effort)
  */
-export function render(opts = {}) {
+export async function render(opts = {}) {
+  if (!createViewerCore) throw new Error('[urdf_viewer_main] ViewerCore not found');
+  if (!createAssetDB) throw new Error('[urdf_viewer_main] AssetDB not found');
+
+  // Defaults
   const {
-    container,
+    container = document.getElementById('app'),
     urdfContent = '',
     meshDB = {},
     selectMode = 'link',
-    background = THEME.bgCanvas || 0xffffff,
-    clickAudioDataURL = null
+    background = 0xffffff,
+    clickAudioDataURL = null,
   } = opts;
 
-  // 1) Core viewer
-  const core = createViewer({ container, background });
+  if (!container) throw new Error('[urdf_viewer_main] Missing container');
 
-  // 2) Asset DB + loadMeshCb with onMeshTag hook to index meshes by assetKey
-  const assetDB = buildAssetDB(meshDB);
-  const assetToMeshes = new Map(); // assetKey -> Mesh[]
-  const loadMeshCb = createLoadMeshCb(assetDB, {
-    onMeshTag(obj, assetKey) {
-      // Collect every mesh produced under this assetKey
-      const list = assetToMeshes.get(assetKey) || [];
-      obj.traverse((o) => {
-        if (o && o.isMesh && o.geometry) list.push(o);
-      });
-      assetToMeshes.set(assetKey, list);
+  // 1) Core viewer (camera, controls, scene, renderer, helpers)
+  const app = await (async () => {
+    const maybe = createViewerCore(opts, theme);
+    // allow createViewerCore to be async or sync
+    return (maybe && typeof maybe.then === 'function') ? await maybe : maybe;
+  })();
+
+  // Optional background
+  try {
+    const bgOK = (background === null || typeof background === 'number');
+    if (bgOK && app && app.renderer) {
+      if (background === null) {
+        app.renderer.setClearColor(0x000000);
+        app.renderer.setClearAlpha(0.0);
+      } else {
+        app.renderer.setClearColor(background);
+      }
     }
-  });
+  } catch (_) {}
 
-  // 3) Load URDF (this triggers tagging via `onMeshTag`)
-  const robot = core.loadURDF(urdfContent, { loadMeshCb });
+  // 2) Assets (mesh/texture DB -> loader callback)
+  const assetDB = createAssetDB(meshDB);
 
-  // 4) Build an offscreen renderer for thumbnails (after robot exists)
-  const off = buildOffscreenForThumbnails(core, assetToMeshes);
+  // 3) Load URDF, then attach interaction + UI
+  //    Expect app.loadURDF(urdfContent, loadMeshCb) to resolve when robot is in scene.
+  const loadResult = app.loadURDF?.(urdfContent, assetDB.loadMeshCb);
+  if (loadResult && typeof loadResult.then === 'function') {
+    await loadResult;
+  }
 
-  // 5) Interaction (hover, select, drag joints, key 'i')
-  const inter = attachInteraction({
-    scene: core.scene,
-    camera: core.camera,
-    renderer: core.renderer,
-    controls: core.controls,
-    robot,
-    selectMode
-  });
+  // 3a) Interactions (hover, select, drag joints, 'i' isolate)
+  let interactionsRef = null;
+  if (attachSelection) {
+    interactionsRef = attachSelection(app, theme, {
+      selectMode,
+      clickAudioDataURL,
+    }) || null;
+  }
 
-  // 6) Facade â€œappâ€ that is passed to UI components
-  const app = {
-    // Expose core bits
-    ...core,
-    robot,
+  // 3b) Tools dock (views tween, section, explode, snapshot, etc.)
+  let toolsDock = null;
+  if (createToolsDock) {
+    toolsDock = createToolsDock(app, theme) || null;
+    // Open by default if possible; store open-state flag for simple toggle fallback
+    try { toolsDock?.open?.(); toolsDock && (toolsDock._open = true); } catch (_) {}
+  }
 
-    // --- Assets adapter for ComponentsPanel ---
-    assets: {
-      list: () => listAssets(assetToMeshes),
-      thumbnail: (assetKey) => off?.thumbnail(assetKey)
-    },
+  // 3c) Components panel (list of links; optional thumbnails; click to focus)
+  let componentsPanel = null;
+  if (createComponentsPanel) {
+    componentsPanel = createComponentsPanel(app, theme) || null;
+  }
 
-    // --- Isolate / restore ---
-    isolate: {
-      asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey),
-      clear: () => showAll(core)
-    },
+  // 4) Initial view fitting: prefer a stable ISO with fixed distance if tools expose it,
+  //    otherwise fall back to a generic fit on the whole robot.
+  try {
+    // If ToolsDock installed a navigation helper, use it
+    if (toolsDock && typeof toolsDock.navigateToView === 'function') {
+      toolsDock.navigateToView('iso', 650);
+    } else if (app.robot && app.camera && app.controls) {
+      // simple fit: keep current az/el, move along that ray to a fixed distance
+      const box = box3Of(app.robot);
+      const center = box.getCenter(new THREE.Vector3());
+      const dist = fixedDistance(app.camera, app.robot, 1.0);
+      const p = app.camera.position.clone();
+      const dir = p.clone().sub(app.controls.target || new THREE.Vector3()).normalize();
+      const targetPos = center.clone().add(dir.multiplyScalar(dist));
+      // tween (minimal)
+      const start = performance.now();
+      const p0 = app.camera.position.clone();
+      const t0 = (app.controls.target || new THREE.Vector3()).clone();
+      const ms = 600;
+      const ease = (t) => (t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2);
+      const animate = (now) => {
+        const u = clamp((now - start) / ms, 0, 1);
+        const e = ease(u);
+        app.camera.position.set(
+          p0.x + (targetPos.x - p0.x) * e,
+          p0.y + (targetPos.y - p0.y) * e,
+          p0.z + (targetPos.z - p0.z) * e
+        );
+        app.controls.target.set(
+          t0.x + (center.x - t0.x) * e,
+          t0.y + (center.y - t0.y) * e,
+          t0.z + (center.z - t0.z) * e
+        );
+        app.controls.update?.();
+        app.renderer.render(app.scene, app.camera);
+        if (u < 1) requestAnimationFrame(animate);
+      };
+      requestAnimationFrame(animate);
+    }
+  } catch (_) {}
 
-    // --- Show all ---
-    showAll: () => showAll(core),
+  // 5) Keyboard shortcuts: 'h' toggles tools dock; 'i' delegates to Selection module isolate
+  const disposeKeys = setupKeyHandlers(app, toolsDock, interactionsRef);
 
-    // Optional: open tools externally
-    openTools(open = true) { tools.set(!!open); }
+  ///////////////////////
+  // 6) DISPOSE HANDLE //
+  ///////////////////////
+  const originalDispose = app.dispose?.bind(app);
+  app.dispose = () => {
+    try { disposeKeys?.(); } catch (_) {}
+    try { toolsDock?.destroy?.(); } catch (_) {}
+    try { componentsPanel?.destroy?.(); } catch (_) {}
+    try { originalDispose?.(); } catch (_) {}
   };
 
-  // 7) UI modules
-  const tools = createToolsDock(app, THEME);
-  const comps = createComponentsPanel(app, THEME);
+  // Expose references for external scripts if needed
+  app.toolsDock = toolsDock;
+  app.components = componentsPanel;
 
-  // Optional click SFX for UI (kept minimal; UI modules do not depend on it)
-  if (clickAudioDataURL) {
-    try { installClickSound(clickAudioDataURL); } catch (_) {}
-  }
-
-  // Public destroy
-  const destroy = () => {
-    try { comps.destroy(); } catch (_) {}
-    try { tools.destroy(); } catch (_) {}
-    try { inter.destroy(); } catch (_) {}
-    try { off?.destroy?.(); } catch (_) {}
-    try { core.destroy(); } catch (_) {}
-  };
-
-  return { ...app, destroy };
-}
-
-/* ---------------------------- Helpers ---------------------------- */
-
-function listAssets(assetToMeshes) {
-  // Returns: [{ assetKey, base, ext, count }]
-  const items = [];
-  assetToMeshes.forEach((meshes, assetKey) => {
-    if (!meshes || meshes.length === 0) return;
-    const { base, ext } = splitName(assetKey);
-    items.push({ assetKey, base, ext, count: meshes.length });
-  });
-  // Sort by base name, naturally
-  items.sort((a, b) => a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }));
-  return items;
-}
-
-function splitName(key) {
-  const clean = String(key || '').split('?')[0].split('#')[0];
-  const base = clean.split('/').pop();
-  const dot = base.lastIndexOf('.');
-  return {
-    base: dot >= 0 ? base.slice(0, dot) : base,
-    ext: dot >= 0 ? base.slice(dot + 1).toLowerCase() : ''
-  };
-}
-
-function isolateAsset(core, assetToMeshes, assetKey) {
-  const meshes = assetToMeshes.get(assetKey) || [];
-  // Hide everything
-  if (core.robot) {
-    core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = false; });
-  }
-  // Show only these meshes
-  meshes.forEach(m => { m.visible = true; });
-
-  // Frame selection
-  frameMeshes(core, meshes);
-}
-
-function showAll(core) {
-  if (core.robot) {
-    core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = true; });
-    core.fitAndCenter(core.robot, 1.06);
-  }
-}
-
-function frameMeshes(core, meshes) {
-  if (!meshes || meshes.length === 0) return;
-  const box = new THREE.Box3();
-  const tmp = new THREE.Box3();
-  let has = false;
-  meshes.forEach(m => {
-    if (!m) return;
-    tmp.setFromObject(m);
-    if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
-  });
-  if (!has) return;
-  const center = box.getCenter(new THREE.Vector3());
-  const size   = box.getSize(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z) || 1;
-
-  const cam = core.camera, ctrl = core.controls;
-  if (cam.isPerspectiveCamera) {
-    const fov = (cam.fov || 60) * Math.PI / 180;
-    const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
-    cam.near = Math.max(maxDim / 1000, 0.001);
-    cam.far = Math.max(maxDim * 1500, 1500);
-    cam.updateProjectionMatrix();
-    const dir = new THREE.Vector3(1, 0.7, 1).normalize();
-    cam.position.copy(center.clone().add(dir.multiplyScalar(dist)));
-  } else {
-    cam.left = -maxDim; cam.right = maxDim; cam.top = maxDim; cam.bottom = -maxDim;
-    cam.near = Math.max(maxDim / 1000, 0.001); cam.far = Math.max(maxDim * 1500, 1500);
-    cam.updateProjectionMatrix();
-    cam.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
-  }
-  ctrl.target.copy(center);
-  ctrl.update();
-}
-
-/* --------------------- Offscreen thumbnails --------------------- */
-
-function buildOffscreenForThumbnails(core, assetToMeshes) {
-  if (!core.robot) return null;
-
-  // Offscreen renderer & scene
-  const OFF_W = 640, OFF_H = 480;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = OFF_W; canvas.height = OFF_H;
-
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(OFF_W, OFF_H, false);
-
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xffffff);
-
-  const amb = new THREE.AmbientLight(0xffffff, 0.95);
-  const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(2.5, 2.5, 2.5);
-  scene.add(amb); scene.add(d);
-
-  const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
-
-  // Clone the whole robot to isolate assets per snapshot
-  const robotClone = core.robot.clone(true);
-  scene.add(robotClone);
-
-  // Map assetKey â†’ meshes[] in the clone (using __assetKey tags copied by clone)
-  const cloneAssetToMeshes = new Map();
-  robotClone.traverse(o => {
-    const k = o?.userData?.__assetKey;
-    if (k && o.isMesh && o.geometry) {
-      const arr = cloneAssetToMeshes.get(k) || [];
-      arr.push(o); cloneAssetToMeshes.set(k, arr);
-    }
-  });
-
-  function snapshotAsset(assetKey) {
-    const meshes = cloneAssetToMeshes.get(assetKey) || [];
-    if (!meshes.length) return null;
-
-    // Toggle visibility: only keep target asset
-    const vis = [];
-    robotClone.traverse(o => {
-      if (o.isMesh && o.geometry) vis.push([o, o.visible]);
-    });
-    for (const [m] of vis) m.visible = false;
-    for (const m of meshes) m.visible = true;
-
-    // Fit camera to these meshes
-    const box = new THREE.Box3();
-    const tmp = new THREE.Box3();
-    let has = false;
-    for (const m of meshes) {
-      tmp.setFromObject(m);
-      if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
-    }
-    if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
-
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = maxDim * 2.0;
-
-    camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far = Math.max(maxDim * 1000, 1000);
-    camera.updateProjectionMatrix();
-
-    const az = Math.PI * 0.25, el = Math.PI * 0.18;
-    const dir = new THREE.Vector3(
-      Math.cos(el) * Math.cos(az),
-      Math.sin(el),
-      Math.cos(el) * Math.sin(az)
-    ).multiplyScalar(dist);
-    camera.position.copy(center.clone().add(dir));
-    camera.lookAt(center);
-
-    renderer.render(scene, camera);
-    const url = renderer.domElement.toDataURL('image/png');
-
-    // Restore visibility
-    for (const [o, v] of vis) o.visible = v;
-
-    return url;
-  }
-
-  return {
-    thumbnail: async (assetKey) => {
-      try { return snapshotAsset(assetKey); } catch (_) { return null; }
-    },
-    destroy: () => {
-      try { renderer.dispose(); } catch (_) {}
-      try { scene.clear(); } catch (_) {}
-    }
-  };
-}
-
-/* ------------------------- Click Sound ------------------------- */
-
-function installClickSound(dataURL) {
-  if (!dataURL || typeof dataURL !== 'string') return;
-  let ctx = null, buf = null;
-  async function ensure() {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (!buf) {
-      const resp = await fetch(dataURL);
-      const arr = await resp.arrayBuffer();
-      buf = await ctx.decodeAudioData(arr);
-    }
-  }
-  function play() {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') ctx.resume();
-    if (!buf) { ensure().then(play).catch(() => {}); return; }
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
-    try { src.start(); } catch (_) {}
-  }
-  // Minimal global hook you can call from UI buttons if you want SFX
-  window.__urdf_click__ = play;
-}
-
-/* --------------------- Global UMD-style hook -------------------- */
-
-if (typeof window !== 'undefined') {
-  window.URDFViewer = { render };
+  return app;
 }
