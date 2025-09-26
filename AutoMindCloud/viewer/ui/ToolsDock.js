@@ -6,6 +6,21 @@ export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer)
     throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
 
+  // --- Normalize theme to flat keys this file expects (works with Theme.js structure) ---
+  if (theme && theme.colors) {
+    theme.teal       ??= theme.colors.teal;
+    theme.tealSoft   ??= theme.colors.tealSoft;
+    theme.tealFaint  ??= theme.colors.tealFaint;
+    theme.bgPanel    ??= theme.colors.panelBg;
+    theme.bgCanvas   ??= theme.colors.canvasBg;
+    theme.stroke     ??= theme.colors.stroke;
+    theme.text       ??= theme.colors.text;
+    theme.textMuted  ??= theme.colors.textMuted;
+  }
+  if (theme && theme.shadows) {
+    theme.shadow ??= (theme.shadows.lg || theme.shadows.md || theme.shadows.sm);
+  }
+
   // ---------- DOM ----------
   const ui = {
     root: document.createElement('div'),
@@ -29,7 +44,8 @@ export function createToolsDock(app, theme) {
       color: theme.text,
       fontWeight: '700',
       cursor: 'pointer',
-      pointerEvents: 'auto'
+      pointerEvents: 'auto',
+      boxShadow: theme.shadow
     });
     return b;
   };
@@ -58,7 +74,7 @@ export function createToolsDock(app, theme) {
     sel.value = value;
     Object.assign(sel.style, {
       padding: '8px', border: `1px solid ${theme.stroke}`,
-      borderRadius: '10px', pointerEvents: 'auto'
+      borderRadius: '10px', pointerEvents: 'auto', background: theme.bgPanel, color: theme.text
     });
     return sel;
   };
@@ -353,11 +369,11 @@ export function createToolsDock(app, theme) {
     return pos;
   }
 
-  const bIso = rowCam.children[0], bTop = rowCam.children[1], bFront = rowCam.children[2], bRight = rowCam.children[3];
-  bIso.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
-  bTop.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('top'), null, 750); });
-  bFront.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
-  bRight.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
+  const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
+  bIsoEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
+  bTopEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('top'), null, 750); });
+  bFrontEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
+  bRightEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
 
   // Projection
   projSel.addEventListener('change', () => {
@@ -420,7 +436,7 @@ export function createToolsDock(app, theme) {
     if (!__explode.prepared) prepareExplodeVectors();
 
     const f = Math.max(0, Math.min(1, Number(amount01)||0));
-    const maxOffset = __explode.maxDim * 0.6; // distance scale (kept same)
+    const maxOffset = __explode.maxDim * 0.6; // distance scale
 
     app.robot.traverse((o) => {
       if (!__explode.baseByObj.has(o) || !__explode.dirByObj.has(o)) return;
@@ -434,14 +450,13 @@ export function createToolsDock(app, theme) {
 
   // Faster tween for "more velocity"
   let explodeTween = null, explodeCurrent = 0;
-  function tweenExplode(to, ms = 90) {             // was 160ms → now quicker
+  function tweenExplode(to, ms = 90) {  // quick, snappy
     const from = explodeCurrent;
     const t0 = performance.now();
     cancelAnimationFrame(explodeTween);
     function step(t) {
       const u = Math.min(1, (t - t0) / ms);
-      // snappier ease-out
-      const ease = 1 - Math.pow(1 - u, 3);
+      const ease = 1 - Math.pow(1 - u, 3); // ease-out cubic
       const v = from + (to - from) * ease;
       setExplode(v);
       explodeCurrent = v;
