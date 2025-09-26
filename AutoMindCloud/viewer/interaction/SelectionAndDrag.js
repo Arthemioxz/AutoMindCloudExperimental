@@ -453,6 +453,7 @@ export function attachInteraction({
     const k = (e.key || '').toLowerCase();
     if (k === 'i') {
       e.preventDefault();
+      console.log('"i" pressed');
       if (isolating) restoreAll();
       else isolateCurrent();
     }
