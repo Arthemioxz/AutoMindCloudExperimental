@@ -24,3 +24,4 @@ export function enhanceButtons(root = document) {
   const btns = root.querySelectorAll('button');
   btns.forEach(b => b.classList.add('am-btn'));
 }
+
