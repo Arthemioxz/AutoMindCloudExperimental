@@ -1,7 +1,7 @@
 // /viewer/ui/ToolsDock.js
 // Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
-// Adds global hotkey "H" to collapse/expand with tween.
-// /* global THREE */
+// Adds global hotkey "H" to collapse/expand with tween + console log "h pressed".
+/* global THREE */
 
 export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer)
@@ -25,8 +25,7 @@ export function createToolsDock(app, theme) {
   // ---------- Reuse existing dock if already mounted (idempotent) ----------
   const existing = document.querySelector('.viewer-dock-fix');
   if (existing && existing.__toolsDockAPI) {
-    // Ensure hotkey is wired
-    ensureGlobalHotkey(existing);
+    ensureGlobalHotkey(existing, app);
     return existing.__toolsDockAPI;
   }
 
@@ -57,7 +56,6 @@ export function createToolsDock(app, theme) {
       boxShadow: theme.shadow,
       transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
     });
-    // Hover/active animations (KEEP)
     b.addEventListener('mouseenter', () => {
       b.style.transform = 'translateY(-1px) scale(1.02)';
       b.style.boxShadow = theme.shadow;
@@ -70,12 +68,8 @@ export function createToolsDock(app, theme) {
       b.style.background = theme.bgPanel;
       b.style.borderColor = theme.stroke;
     });
-    b.addEventListener('mousedown', () => {
-      b.style.transform = 'translateY(0) scale(0.99)';
-    });
-    b.addEventListener('mouseup', () => {
-      b.style.transform = 'translateY(-1px) scale(1.02)';
-    });
+    b.addEventListener('mousedown', () => { b.style.transform = 'translateY(0) scale(0.99)'; });
+    b.addEventListener('mouseup', () => { b.style.transform = 'translateY(-1px) scale(1.02)'; });
     return b;
   };
 
@@ -185,7 +179,7 @@ export function createToolsDock(app, theme) {
 
   Object.assign(ui.body.style, { padding: '10px 12px' });
 
-  // Floating toggle button (with hover)
+  // Floating toggle button
   ui.toggleBtn.textContent = 'Open Tools';
   Object.assign(ui.toggleBtn.style, {
     position: 'absolute',
@@ -230,29 +224,22 @@ export function createToolsDock(app, theme) {
 
   // ---------- Controls ----------
   const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
-
-  // Explode (slider drives a smoothed spring tween; see ExplodeManager below)
   const explodeSlider = mkSlider(0, 1, 0.01, 0);
-
-  // Section
   const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
   const secDist = mkSlider(-1, 1, 0.001, 0);
   const secEnable = mkToggle('Enable section');
   const secShowPlane = mkToggle('Show slice plane');
 
-  // Views row (NO per-row Snapshot button)
   const rowCam = document.createElement('div');
   Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
   const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
   [bIso, bTop, bFront, bRight].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
 
-  // Projection + Scene toggles
   const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
   const togGrid = mkToggle('Grid');
   const togGround = mkToggle('Ground & shadows');
   const togAxes = mkToggle('XYZ axes');
 
-  // Assemble rows
   ui.body.appendChild(mkRow('Render mode', renderModeSel));
   ui.body.appendChild(mkRow('Explode', explodeSlider));
   ui.body.appendChild(mkRow('Section axis', axisSel));
@@ -267,29 +254,22 @@ export function createToolsDock(app, theme) {
   ui.body.appendChild(mkRow('', togAxes.wrap));
 
   // ---------- Logic ----------
-
-  // Open/close with tween
   let isOpen = false;
   function set(open) {
     isOpen = !!open;
     if (open) {
-      // ensure visible then animate in
       ui.dock.style.display = 'block';
-      // style to left like your original
       styleDockLeft(ui.dock);
-      // start collapsed then uncollapse
       requestAnimationFrame(() => {
         ui.dock.style.transform = 'translateX(0)';
         ui.dock.style.opacity = '1';
       });
       ui.toggleBtn.textContent = 'Close Tools';
-      explode.prepare(); // refresh when opening
+      explode.prepare();
     } else {
-      // animate out then hide
       ui.dock.style.transform = 'translateX(-110%)';
       ui.dock.style.opacity = '0';
       ui.toggleBtn.textContent = 'Open Tools';
-      // after transition ends, set display none
       const onEnd = () => {
         if (!isOpen) ui.dock.style.display = 'none';
         ui.dock.removeEventListener('transitionend', onEnd);
@@ -301,7 +281,6 @@ export function createToolsDock(app, theme) {
   function closeDock() { set(false); }
   ui.toggleBtn.addEventListener('click', () => set(ui.dock.style.display === 'none'));
 
-  // Snapshot (header only)
   ui.fitBtn.addEventListener('click', () => {
     try {
       const url = app.renderer.domElement.toDataURL('image/png');
@@ -309,7 +288,6 @@ export function createToolsDock(app, theme) {
     } catch (_) {}
   });
 
-  // Render mode
   renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
   function setRenderMode(mode) {
     const root = app.robot || app.scene;
@@ -394,7 +372,7 @@ export function createToolsDock(app, theme) {
     refreshSectionVisual(maxDim, center);
     secVisual.visible = !!secPlaneVisible;
 
-    // Orient the teal plane to match clipping plane normal
+    // Orient visual
     const look = new THREE.Vector3().copy(n);
     const up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
@@ -455,7 +433,7 @@ export function createToolsDock(app, theme) {
     return pos;
   }
 
-  const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
+  const bIsoEl = bIso, bTopEl = bTop, bFrontEl = bFront, bRightEl = bRight;
   bIsoEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
   bTopEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('top'), null, 750); });
   bFrontEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
@@ -474,10 +452,6 @@ export function createToolsDock(app, theme) {
 
   // ============================================================
   //                       EXPLODE MANAGER
-  //  Smooth, spring-tweened explode with robust calibration
-  //  - Stable per-part vectors in parent local space
-  //  - No double-application on nested meshes
-  //  - Recalibrates baseline when amount≈0 or on demand
   // ============================================================
   function makeExplodeManager() {
     const registry = []; // { node, parent, baseLocal, dirLocal }
@@ -634,12 +608,9 @@ export function createToolsDock(app, theme) {
   }
 
   const explode = makeExplodeManager();
-
   try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
 
-  explodeSlider.addEventListener('input', () => {
-    explode.setTarget(Number(explodeSlider.value) || 0);
-  });
+  explodeSlider.addEventListener('input', () => { explode.setTarget(Number(explodeSlider.value) || 0); });
 
   // ---------- Utilities ----------
   function styleDockLeft(dockEl) {
@@ -655,14 +626,12 @@ export function createToolsDock(app, theme) {
   // Start closed
   set(false);
 
-  // ---------- Global hotkey “H” to toggle dock (idempotent) ----------
-  ensureGlobalHotkey(ui.dock);
+  // ---------- Global hotkey “H” (robusto + log) ----------
+  ensureGlobalHotkey(ui.dock, app);
 
   // ---------- Public API ----------
   function destroy() {
-    try {
-      window.removeEventListener('keydown', ui.dock.__onKeyDown, true);
-    } catch (_) {}
+    try { removeGlobalHotkey(ui.dock); } catch (_) {}
     try { ui.toggleBtn.remove(); } catch (_) {}
     try { ui.dock.remove(); } catch (_) {}
     try { ui.root.remove(); } catch (_) {}
@@ -678,18 +647,48 @@ export function createToolsDock(app, theme) {
   ui.dock.__toolsDockAPI = api;
   return api;
 
-  // ------------- helpers (hotkey) -------------
-  function ensureGlobalHotkey(dockEl) {
-    if (!dockEl || dockEl.__onKeyDown) return;
-    dockEl.__onKeyDown = function onKeyDown(e) {
+  // ------------- helpers: hotkey binding -------------
+  function ensureGlobalHotkey(dockEl, appRef) {
+    if (!dockEl) return;
+    if (dockEl.__hotkeyBound) return;
+
+    const handler = (e) => {
       const k = (e.key || '').toLowerCase();
       if (k === 'h') {
+        console.log('[ToolsDock] h pressed'); // <<<<<< LOG VISUAL
         e.preventDefault();
-        // If closed → quick “pre-display” then slide in; if open → slide out then display:none
-        const wantOpen = (ui.dock.style.display === 'none');
+        const wantOpen = (dockEl.style.display === 'none');
         set(wantOpen);
       }
     };
-    window.addEventListener('keydown', dockEl.__onKeyDown, true);
+    dockEl.__hotkeyBound = true;
+    dockEl.__hotkeyHandler = handler;
+
+    const targets = new Set([
+      window,
+      document,
+      document.body,
+      appRef?.renderer?.domElement,
+      appRef?.container,
+      appRef?.canvas
+    ].filter(Boolean));
+
+    dockEl.__hotkeyTargets = [];
+    targets.forEach(t => {
+      try { t.addEventListener('keydown', handler, true); dockEl.__hotkeyTargets.push(t); } catch(_) {}
+    });
+
+    // Opcional: foco inicial al canvas si existe, para captar teclas
+    try { appRef?.renderer?.domElement?.setAttribute?.('tabindex', '0'); } catch(_) {}
+  }
+
+  function removeGlobalHotkey(dockEl) {
+    if (!dockEl || !dockEl.__hotkeyTargets || !dockEl.__hotkeyHandler) return;
+    for (const t of dockEl.__hotkeyTargets) {
+      try { t.removeEventListener('keydown', dockEl.__hotkeyHandler, true); } catch(_) {}
+    }
+    dockEl.__hotkeyTargets = [];
+    dockEl.__hotkeyHandler = null;
+    dockEl.__hotkeyBound = false;
   }
 }
