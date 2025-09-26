@@ -1,8 +1,9 @@
 // /viewer/ui/ToolsDock.js
 /* global THREE */
 
-// Floating tools dock: render modes, explode (smoothed), section plane, views, projection, scene toggles, snapshot.
-// Incluye hotkey 'h' para mostrar/ocultar el dock, con log: "[ToolsDock] h pressed"
+// Floating tools dock: render modes, explode (smoothed), section plane,
+// views, projection, scene toggles, snapshot.
+// Incluye hotkey 'h' con el MISMO esquema de detección que usas en SelectionAndDrag.js
 
 export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer) {
@@ -23,7 +24,6 @@ export function createToolsDock(app, theme) {
   if (theme && theme.shadows) {
     theme.shadow ??= (theme.shadows.lg || theme.shadows.md || theme.shadows.sm);
   }
-  // Defaults por si faltan temas
   theme = Object.assign({
     teal: '#0ea5a6',
     tealSoft: '#14b8a6',
@@ -53,22 +53,16 @@ export function createToolsDock(app, theme) {
     });
     b.addEventListener('mouseenter', () => {
       b.style.transform = 'translateY(-1px) scale(1.02)';
-      b.style.boxShadow = theme.shadow;
       b.style.background = theme.tealFaint;
       b.style.borderColor = theme.tealSoft ?? theme.teal;
     });
     b.addEventListener('mouseleave', () => {
       b.style.transform = 'none';
-      b.style.boxShadow = theme.shadow;
       b.style.background = theme.bgPanel;
       b.style.borderColor = theme.stroke;
     });
-    b.addEventListener('mousedown', () => {
-      b.style.transform = 'translateY(0) scale(0.99)';
-    });
-    b.addEventListener('mouseup', () => {
-      b.style.transform = 'translateY(-1px) scale(1.02)';
-    });
+    b.addEventListener('mousedown', () => { b.style.transform = 'translateY(0) scale(0.99)'; });
+    b.addEventListener('mouseup',   () => { b.style.transform = 'translateY(-1px) scale(1.02)'; });
     return b;
   };
 
@@ -91,10 +85,7 @@ export function createToolsDock(app, theme) {
 
   const mkSelect = (options, value) => {
     const sel = document.createElement('select');
-    options.forEach(o => {
-      const opt = document.createElement('option');
-      opt.value = o; opt.textContent = o; sel.appendChild(opt);
-    });
+    options.forEach(o => { const opt = document.createElement('option'); opt.value = o; opt.textContent = o; sel.appendChild(opt); });
     sel.value = value;
     Object.assign(sel.style, {
       padding: '8px',
@@ -102,16 +93,7 @@ export function createToolsDock(app, theme) {
       borderRadius: '10px',
       pointerEvents: 'auto',
       background: theme.bgPanel,
-      color: theme.text,
-      transition: 'border-color 120ms ease, box-shadow 120ms ease'
-    });
-    sel.addEventListener('focus', () => {
-      sel.style.borderColor = theme.teal;
-      sel.style.boxShadow = theme.shadow;
-    });
-    sel.addEventListener('blur', () => {
-      sel.style.borderColor = theme.stroke;
-      sel.style.boxShadow = 'none';
+      color: theme.text
     });
     return sel;
   };
@@ -147,7 +129,6 @@ export function createToolsDock(app, theme) {
     headerSnapshotBtn: null
   };
 
-  // Root overlay
   Object.assign(ui.root.style, {
     position: 'absolute',
     left: '0', top: '0',
@@ -157,7 +138,6 @@ export function createToolsDock(app, theme) {
     fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
   });
 
-  // Dock (panel)
   Object.assign(ui.dock.style, {
     position: 'absolute',
     right: '14px',
@@ -174,10 +154,9 @@ export function createToolsDock(app, theme) {
     transform: 'translateX(-110%)',
     transition: 'transform 260ms ease, opacity 260ms ease'
   });
-  ui.dock.setAttribute('data-tools-dock', '1');     // para localizar desde hotkey
-  ui.dock.classList.add('viewer-dock-fix');         // compat con estilos existentes
+  ui.dock.setAttribute('data-tools-dock', '1');
+  ui.dock.classList.add('viewer-dock-fix');
 
-  // Header
   Object.assign(ui.header.style, {
     display: 'flex',
     alignItems: 'center',
@@ -189,14 +168,8 @@ export function createToolsDock(app, theme) {
   ui.title.textContent = 'Viewer Tools';
   Object.assign(ui.title.style, { fontWeight: '800', color: theme.text });
 
-  // Header snapshot
-  ui.headerSnapshotBtn = mkButton('Snapshot');
-  Object.assign(ui.headerSnapshotBtn.style, { padding: '6px 10px', borderRadius: '10px' });
-
-  // Body
   Object.assign(ui.body.style, { padding: '10px 12px' });
 
-  // Toggle button flotante
   ui.toggleBtn.textContent = 'Open Tools';
   Object.assign(ui.toggleBtn.style, {
     position: 'absolute',
@@ -225,6 +198,9 @@ export function createToolsDock(app, theme) {
   });
 
   // Compose
+  ui.headerSnapshotBtn = mkButton('Snapshot');
+  Object.assign(ui.headerSnapshotBtn.style, { padding: '6px 10px', borderRadius: '10px' });
+
   ui.header.appendChild(ui.title);
   ui.header.appendChild(ui.headerSnapshotBtn);
   ui.dock.appendChild(ui.header);
@@ -232,7 +208,6 @@ export function createToolsDock(app, theme) {
   ui.root.appendChild(ui.dock);
   ui.root.appendChild(ui.toggleBtn);
 
-  // Attach al host del renderer
   const host = (app?.renderer?.domElement?.parentElement) || document.body;
   host.appendChild(ui.root);
 
@@ -258,7 +233,6 @@ export function createToolsDock(app, theme) {
   const togGround = mkToggle('Ground & shadows');
   const togAxes   = mkToggle('XYZ axes');
 
-  // Monta filas
   ui.body.appendChild(mkRow('Render mode', renderModeSel));
   ui.body.appendChild(mkRow('Explode', explodeSlider));
   ui.body.appendChild(mkRow('Section axis', axisSel));
@@ -272,7 +246,7 @@ export function createToolsDock(app, theme) {
   ui.body.appendChild(mkRow('', togGround.wrap));
   ui.body.appendChild(mkRow('', togAxes.wrap));
 
-  // ---------- Lógica ----------
+  // ---------- Open/close con animación ----------
   function set(open) {
     if (open) {
       ui.dock.style.display = 'block';
@@ -295,10 +269,9 @@ export function createToolsDock(app, theme) {
   }
   function openDock() { set(true); }
   function closeDock() { set(false); }
-
   ui.toggleBtn.addEventListener('click', () => set(ui.dock.style.display === 'none'));
 
-  // Snapshot (en header)
+  // ---------- Snapshot ----------
   ui.headerSnapshotBtn.addEventListener('click', () => {
     try {
       const url = app.renderer.domElement.toDataURL('image/png');
@@ -306,7 +279,7 @@ export function createToolsDock(app, theme) {
     } catch (_) {}
   });
 
-  // Render mode
+  // ---------- Render mode ----------
   renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
   function setRenderMode(mode) {
     const root = app.robot || app.scene;
@@ -448,8 +421,7 @@ export function createToolsDock(app, theme) {
     if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
     if (kind === 'front') { az = Math.PI / 2; el = 0; }
     if (kind === 'right') { az = 0; el = 0; }
-    const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(cur.r));
-    return pos;
+    return t.clone().add(dirFromAzEl(az, el).multiplyScalar(cur.r));
   }
 
   bIso.addEventListener('click',   () => tweenOrbits(app.camera, app.controls, viewEndPosition('iso'),   null, 750));
@@ -603,15 +575,8 @@ export function createToolsDock(app, theme) {
       applyAmount(current);
     }
 
-    function recalibrate() {
-      prepare();
-      applyAmount(current);
-    }
-
-    function destroy() {
-      if (raf) cancelAnimationFrame(raf);
-      raf = null;
-    }
+    function recalibrate() { prepare(); applyAmount(current); }
+    function destroy() { if (raf) cancelAnimationFrame(raf); raf = null; }
 
     return { prepare, setTarget, immediate, recalibrate, destroy };
   }
@@ -619,47 +584,47 @@ export function createToolsDock(app, theme) {
   try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
   explodeSlider.addEventListener('input', () => explode.setTarget(Number(explodeSlider.value) || 0));
 
-  // ---------- Defaults y estado inicial ----------
-  togGrid.cb.checked = false;
-  togGround.cb.checked = false;
-  togAxes.cb.checked = false;
+  // ---------- Defaults ----------
+  const togGrid = togGrid ?? null; // quiet lint
+  const togGround = togGround ?? null;
+  const togAxes = togAxes ?? null;
+  set(false); // arranca cerrado
 
-  // Arranca cerrado
-  set(false);
-
-  // ---------- Hotkey 'h' (mismo pipeline que 'i') ----------
-  const container = app?.container || document.getElementById('app') || app?.renderer?.domElement?.parentElement || document.body;
-  try { container?.setAttribute?.('tabindex', '0'); } catch {}
-  const canvas = app?.renderer?.domElement;
-
-  const onKeyH = (e) => {
-    const k = (e.key || e.code || '').toLowerCase();
-    if (k !== 'h' && e.code !== 'KeyH') return;
-    console.log('[ToolsDock] h pressed');
-
-    const isClosed = (ui.dock.style.display === 'none') || (ui.dock.style.opacity === '0');
-    set(isClosed);
-
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation?.();
+  // ---------- Hotkey 'h' (MISMO sistema que SelectionAndDrag.js) ----------
+  // Escucha en canvas y en document, fase de captura = true, compara e.key en minúsculas.
+  const onKeyDown = (e) => {
+    const k = (e.key || '').toLowerCase();
+    if (k === 'h') {
+      console.log('[ToolsDock] h pressed');
+      const isClosed = (ui.dock.style.display === 'none') || (ui.dock.style.opacity === '0');
+      set(isClosed);
+      e.preventDefault();
+      e.stopPropagation();
+    }
   };
+  app.renderer.domElement.addEventListener('keydown', onKeyDown, true);
+  document.addEventListener('keydown', onKeyDown, true);
 
-  // Usa la misma fase de captura (true) que suele usarse para 'i'
-  container?.addEventListener('keydown', onKeyH, true);
-  canvas?.addEventListener('keydown', onKeyH, true);
+  // ---------- Proyección / Scene toggles (después de defaults para evitar hoist warnings) ----------
+  projSel.addEventListener('change', () => {
+    const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
+    try { app.setProjection?.(mode); } catch (_) {}
+  });
+  togGrid.cb.addEventListener('change',   () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
+  togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
+  togAxes.cb.addEventListener('change',   () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
   // ---------- API pública ----------
   function destroy() {
-    try { container?.removeEventListener('keydown', onKeyH, true); } catch(_) {}
-    try { canvas?.removeEventListener('keydown', onKeyH, true); } catch(_) {}
+    try { app.renderer.domElement.removeEventListener('keydown', onKeyDown, true); } catch(_) {}
+    try { document.removeEventListener('keydown', onKeyDown, true); } catch(_) {}
     try { ui.toggleBtn.remove(); } catch (_) {}
     try { ui.dock.remove(); } catch (_) {}
     try { ui.root.remove(); } catch (_) {}
     try {
       app.renderer.localClippingEnabled = false;
       app.renderer.clippingPlanes = [];
-      // quitar visual del plano
+      // quitar visual del plano si existe
       const children = app.scene?.children || [];
       for (let i = children.length - 1; i >= 0; i--) {
         if (children[i] === secVisual) {
@@ -673,3 +638,4 @@ export function createToolsDock(app, theme) {
 
   return { open: openDock, close: closeDock, set, destroy };
 }
+
