@@ -3,7 +3,7 @@
 
 // Floating tools dock: render modes, explode (smoothed), section plane,
 // views, projection, scene toggles, snapshot.
-// Hotkey 'h' para abrir/cerrar el dock (mismo sistema que pediste).
+// Hotkey 'h' para abrir/cerrar el dock con el MISMO patrón que pediste.
 
 export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer) {
@@ -36,7 +36,7 @@ export function createToolsDock(app, theme) {
   }, theme || {});
 
   // ---------- Helpers UI ----------
-  const mkButton = (label) => {
+  function mkButton(label) {
     const b = document.createElement('button');
     b.textContent = label;
     Object.assign(b.style, {
@@ -64,9 +64,9 @@ export function createToolsDock(app, theme) {
     b.addEventListener('mousedown', () => { b.style.transform = 'translateY(0) scale(0.99)'; });
     b.addEventListener('mouseup',   () => { b.style.transform = 'translateY(-1px) scale(1.02)'; });
     return b;
-  };
+  }
 
-  const mkRow = (label, child) => {
+  function mkRow(label, child) {
     const row = document.createElement('div');
     Object.assign(row.style, {
       display: 'grid',
@@ -81,9 +81,9 @@ export function createToolsDock(app, theme) {
     row.appendChild(l);
     row.appendChild(child);
     return row;
-  };
+  }
 
-  const mkSelect = (options, value) => {
+  function mkSelect(options, value) {
     const sel = document.createElement('select');
     options.forEach(o => { const opt = document.createElement('option'); opt.value = o; opt.textContent = o; sel.appendChild(opt); });
     sel.value = value;
@@ -96,18 +96,18 @@ export function createToolsDock(app, theme) {
       color: theme.text
     });
     return sel;
-  };
+  }
 
-  const mkSlider = (min, max, step, value) => {
+  function mkSlider(min, max, step, value) {
     const s = document.createElement('input');
     s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
     s.style.width = '100%';
     s.style.accentColor = theme.teal;
     s.style.pointerEvents = 'auto';
     return s;
-  };
+  }
 
-  const mkToggle = (label) => {
+  function mkToggle(label) {
     const wrap = document.createElement('label');
     const cb = document.createElement('input'); cb.type = 'checkbox';
     const span = document.createElement('span'); span.textContent = label;
@@ -116,7 +116,7 @@ export function createToolsDock(app, theme) {
     Object.assign(span.style, { fontWeight: '700', color: theme.text });
     wrap.appendChild(cb); wrap.appendChild(span);
     return { wrap, cb };
-  };
+  }
 
   // ---------- DOM ----------
   const ui = {
@@ -286,7 +286,8 @@ export function createToolsDock(app, theme) {
     root.traverse(o => {
       if (o.isMesh && o.material) {
         const mats = Array.isArray(o.material) ? o.material : [o.material];
-        for (const m of mats) {
+        for (let i = 0; i < mats.length; i++) {
+          const m = mats[i];
           m.wireframe = (mode === 'Wireframe');
           if (mode === 'X-Ray') {
             m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.depthTest = true;
@@ -363,7 +364,6 @@ export function createToolsDock(app, theme) {
     refreshSectionVisual(maxDim, center);
     secVisual.visible = !!secPlaneVisible;
 
-    // Orienta el plano visual
     const look = new THREE.Vector3().copy(n);
     const up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
@@ -380,8 +380,8 @@ export function createToolsDock(app, theme) {
   secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
 
   // ---------- Vistas (animadas) ----------
-  const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
+  function easeInOutCubic(t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
+  function dirFromAzEl(az, el) { return new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize(); }
 
   function currentAzEl(cam, target) {
     const v = cam.position.clone().sub(target);
@@ -389,10 +389,11 @@ export function createToolsDock(app, theme) {
     return { el: Math.asin(v.y / len), az: Math.atan2(v.z, v.x), r: len };
   }
 
-  function tweenOrbits(cam, ctrl, toPos, toTarget = null, ms = 700) {
+  function tweenOrbits(cam, ctrl, toPos, toTarget, ms) {
+    if (typeof ms !== 'number') ms = 700;
     const p0 = cam.position.clone(), t0 = ctrl.target.clone(), tStart = performance.now();
     ctrl.enabled = false; cam.up.set(0, 1, 0);
-    const moveTarget = (toTarget !== null);
+    const moveTarget = (toTarget !== null && typeof toTarget === 'object');
     function step(t) {
       const u = Math.min(1, (t - tStart) / ms), e = easeInOutCubic(u);
       cam.position.set(
@@ -520,9 +521,9 @@ export function createToolsDock(app, theme) {
       const f = Math.max(0, Math.min(1, a01 || 0));
       const maxOffset = maxDim * 0.6;
 
-      for (const rec of registry) {
-        const { node, baseLocal, dirLocal } = rec;
-        node.position.copy(baseLocal).addScaledVector(dirLocal, f * maxOffset);
+      for (let i = 0; i < registry.length; i++) {
+        const rec = registry[i];
+        rec.node.position.copy(rec.baseLocal).addScaledVector(rec.dirLocal, f * maxOffset);
       }
       updateSectionPlane?.();
       try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch(_) {}
@@ -545,7 +546,7 @@ export function createToolsDock(app, theme) {
       applyAmount(current);
 
       if (current === 0) {
-        zeroSince ??= now;
+        if (zeroSince == null) zeroSince = now;
         if (now - zeroSince > 300) {
           const keepTarget = target;
           prepare();
@@ -586,8 +587,8 @@ export function createToolsDock(app, theme) {
   // ---------- Arranque ----------
   set(false); // dock cerrado por defecto
 
-  // ---------- Hotkey 'h' (exacto al sistema que pediste) ----------
-  const onKeyDown = (e) => {
+  // ---------- Hotkey 'h' EXACTO con tu patrón ----------
+  function onKeyDown(e) {
     const k = (e.key || '').toLowerCase();
     if (k === 'h') {
       console.log('[ToolsDock] h pressed');
@@ -596,12 +597,15 @@ export function createToolsDock(app, theme) {
       e.preventDefault();
       e.stopPropagation();
     }
-  };
-  // Se escucha en el canvas y en document (fase de captura = true)
+  }
+  // MISMA forma de registrar listeners que tu ejemplo:
   app.renderer.domElement.addEventListener('keydown', onKeyDown, true);
+  // try also the document (useful if canvas doesn't keep focus)
   document.addEventListener('keydown', onKeyDown, true);
 
   // ---------- API pública ----------
+  function openDock() { set(true); }
+  function closeDock() { set(false); }
   function destroy() {
     try { app.renderer.domElement.removeEventListener('keydown', onKeyDown, true); } catch (_) {}
     try { document.removeEventListener('keydown', onKeyDown, true); } catch (_) {}
@@ -618,3 +622,4 @@ export function createToolsDock(app, theme) {
 
   return { open: openDock, close: closeDock, set, destroy };
 }
+
