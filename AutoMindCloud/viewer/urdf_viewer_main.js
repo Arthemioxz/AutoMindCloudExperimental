@@ -12,11 +12,11 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
  * Public entry: render the URDF viewer.
  * @param {Object} opts
  * @param {HTMLElement} opts.container
- * @param {string} opts.urdfContent              — URDF string
- * @param {Object.<string,string>} opts.meshDB   — key → base64
+ * @param {string} opts.urdfContent              â€” URDF string
+ * @param {Object.<string,string>} opts.meshDB   â€” key â†’ base64
  * @param {'link'|'mesh'} [opts.selectMode='link']
  * @param {number|null} [opts.background=THEME.bgCanvas]
- * @param {string|null} [opts.clickAudioDataURL] — optional UI SFX (not required)
+ * @param {string|null} [opts.clickAudioDataURL] â€” optional UI SFX (not required)
  */
 export function render(opts = {}) {
   const {
@@ -61,7 +61,7 @@ export function render(opts = {}) {
     selectMode
   });
 
-  // 6) Facade “app” that is passed to UI components
+  // 6) Facade â€œappâ€ that is passed to UI components
   const app = {
     // Expose core bits
     ...core,
@@ -213,7 +213,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   const robotClone = core.robot.clone(true);
   scene.add(robotClone);
 
-  // Map assetKey → meshes[] in the clone (using __assetKey tags copied by clone)
+  // Map assetKey â†’ meshes[] in the clone (using __assetKey tags copied by clone)
   const cloneAssetToMeshes = new Map();
   robotClone.traverse(o => {
     const k = o?.userData?.__assetKey;
