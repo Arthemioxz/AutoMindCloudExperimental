@@ -8,13 +8,12 @@ import * as Tools from './ui/ToolsDock.js';
 import * as Comp from './ui/ComponentsPanel.js';
 import * as ThemeMod from './Theme.js';
 
-// ---- Robust resolver for factory functions/objects ----
+// ---------- robust resolver ----------
 function resolveFactory(mod, names) {
   for (const n of names) {
     const v = mod && mod[n];
     if (typeof v === 'function') return v;
   }
-  // check default export cases
   const d = mod && mod.default;
   if (typeof d === 'function') return d;
   if (d && typeof d === 'object') {
@@ -26,19 +25,29 @@ function resolveFactory(mod, names) {
   return null;
 }
 
+// IMPORTANT: ViewerCore in your repo exports createViewer(...)
 const createViewerCore = resolveFactory(Core, [
-  'createViewerCore', 'initCore', 'createApp', 'makeViewer', 'bootstrap',
-  'ViewerCore' // sometimes a constructor function
+  'createViewer',          // ← your file exports this
+  'createViewerCore',
+  'initCore',
+  'createApp',
+  'makeViewer',
+  'bootstrap',
+  'ViewerCore',            // constructor-style
 ]);
+
 const createAssetDB = resolveFactory(Assets, [
   'createAssetDB', 'AssetDB', 'makeAssetDB', 'initAssetDB'
 ]);
+
 const attachSelection = resolveFactory(Interact, [
   'attachSelection', 'initSelection', 'wireSelection', 'enableSelection'
 ]);
+
 const createToolsDock = resolveFactory(Tools, [
   'createToolsDock', 'initToolsDock', 'makeToolsDock'
 ]);
+
 const createComponentsPanel = resolveFactory(Comp, [
   'createComponentsPanel', 'createComponents', 'initComponentsPanel', 'makeComponentsPanel'
 ]);
@@ -67,26 +76,27 @@ function fixedDistance(camera, object, pad = 1.0) {
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const ease = (t)=> (t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2);
 
-// ---------- key bindings: i= isolate, h= components, u= tools ----------
+// ---------- key bindings: i= isolate, h= components (slide), u= tools ----------
 function setupKeyHandlers(app, toolsDockRef, componentsRef, interactionsRef) {
   const targetEl =
     (app && app.renderer && app.renderer.domElement) ||
     (app && app.container) ||
     window;
 
-  function toggleByApiOrDom(ref, preferClass, cls) {
-    // 1) API
+  function toggleByApiOrDom(ref, preferSel, cls) {
+    // 1) API path
     if (ref) {
       if (typeof ref.set === 'function' && 'isOpen' in ref) { ref.set(!ref.isOpen); return; }
       if (typeof ref.open === 'function' && typeof ref.close === 'function') {
-        ref._open = !ref._open;
-        if (ref._open) ref.open(); else ref.close();
-        return;
+        ref._open = !ref._open; if (ref._open) ref.open(); else ref.close(); return;
       }
     }
-    // 2) DOM fallback
-    const root = preferClass ? document.querySelector(preferClass) : (ref && ref.root);
-    if (root) root.classList.toggle(cls || 'collapsed');
+    // 2) DOM fallback (adds/removes slide class for smoothness)
+    const root = preferSel ? document.querySelector(preferSel) : (ref && ref.root);
+    if (root) {
+      root.classList.add('am-slide'); // ensures CSS transition exists
+      root.classList.toggle(cls || 'collapsed');
+    }
   }
 
   function onKey(e) {
@@ -95,11 +105,11 @@ function setupKeyHandlers(app, toolsDockRef, componentsRef, interactionsRef) {
       try { interactionsRef?.toggleIsolateSelected?.(); } catch(_) {}
       e.preventDefault(); e.stopPropagation();
     }
-    if (k === 'h') { // user asked for 'h' to tween/toggle Components panel
+    if (k === 'h') { // tween/toggle Components panel
       toggleByApiOrDom(componentsRef, '.components-panel', 'collapsed');
       e.preventDefault(); e.stopPropagation();
     }
-    if (k === 'u') { // keep tools toggle on a separate key to avoid conflicts
+    if (k === 'u') { // tools dock toggle on separate key
       toggleByApiOrDom(toolsDockRef, '.viewer-dock-fix', 'collapsed');
       e.preventDefault(); e.stopPropagation();
     }
@@ -110,8 +120,7 @@ function setupKeyHandlers(app, toolsDockRef, componentsRef, interactionsRef) {
 
 /**
  * Public API
- * opts:
- *  - container, urdfContent, meshDB, selectMode ('link'...), background (hex|null), clickAudioDataURL
+ * opts: { container, urdfContent, meshDB, selectMode, background, clickAudioDataURL }
  * returns: app (augmented with .toolsDock, .components, .dispose())
  */
 export async function render(opts = {}) {
@@ -129,11 +138,11 @@ export async function render(opts = {}) {
 
   if (!container) throw new Error('[urdf_viewer_main] Missing container');
 
-  // 1) Core app
-  const maybeApp = createViewerCore(opts, theme);
+  // 1) Core app (your ViewerCore exports createViewer({...}))
+  const maybeApp = createViewerCore({ container, background });
   const app = (maybeApp && typeof maybeApp.then === 'function') ? await maybeApp : maybeApp;
 
-  // background
+  // If caller provided background override, re-apply
   try {
     if (background === null) { app.renderer.setClearAlpha(0); }
     else if (typeof background === 'number') { app.renderer.setClearColor(background); }
@@ -142,7 +151,7 @@ export async function render(opts = {}) {
   // 2) Assets
   const assetDB = createAssetDB(meshDB);
 
-  // 3) Load URDF
+  // 3) Load URDF (ViewerCore exposes loadURDF)
   const p = app.loadURDF?.(urdfContent, assetDB.loadMeshCb);
   if (p && typeof p.then === 'function') await p;
 
@@ -158,7 +167,7 @@ export async function render(opts = {}) {
   try { toolsDock?.open?.(); toolsDock && (toolsDock._open = true); } catch(_) {}
   try { componentsPanel?.open?.(); componentsPanel && (componentsPanel._open = true); } catch(_) {}
 
-  // 6) Initial view
+  // 6) Initial view: prefer ToolsDock navigateToView('iso')
   try {
     if (toolsDock && typeof toolsDock.navigateToView === 'function') {
       toolsDock.navigateToView('iso', 650);
@@ -172,7 +181,7 @@ export async function render(opts = {}) {
       const targetPos = center.clone().add(dir.multiplyScalar(dist));
       const start = performance.now(), ms = 600;
       const step = (now) => {
-        const u = clamp((now - start)/ms, 0, 1); const e = ease(u);
+        const u = Math.max(0, Math.min(1, (now - start)/ms)); const e = ease(u);
         app.camera.position.set(
           p0.x + (targetPos.x - p0.x)*e,
           p0.y + (targetPos.y - p0.y)*e,
@@ -193,7 +202,7 @@ export async function render(opts = {}) {
   // 7) Keys
   const disposeKeys = setupKeyHandlers(app, toolsDock, componentsPanel, interactionsRef);
 
-  // augment and return
+  // Augment return
   const originalDispose = app.dispose?.bind(app);
   app.dispose = () => {
     try { disposeKeys?.(); } catch(_) {}
@@ -203,6 +212,14 @@ export async function render(opts = {}) {
   };
   app.toolsDock = toolsDock;
   app.components = componentsPanel;
+
+  // Ensure slide animation css class exists (DOM fallback toggle)
+  try {
+    const css = `.am-slide{transition:transform .28s ease,opacity .28s ease}
+    .am-slide.collapsed{transform:translateX(18px);opacity:.0;pointer-events:none}`;
+    const tag = document.createElement('style'); tag.textContent = css;
+    document.head.appendChild(tag);
+  } catch(_){}
 
   return app;
 }
