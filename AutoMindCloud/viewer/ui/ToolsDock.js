@@ -6,7 +6,7 @@ export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer)
     throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
 
-  // --- Normalize theme to flat keys this file expects (works with Theme.js structure) ---
+  // --- Normalize theme (works with your Theme.js nested shape) ---
   if (theme && theme.colors) {
     theme.teal       ??= theme.colors.teal;
     theme.tealSoft   ??= theme.colors.tealSoft;
@@ -32,7 +32,7 @@ export function createToolsDock(app, theme) {
     toggleBtn: document.createElement('button')
   };
 
-  // Helpers
+  // Helpers (with hover animations intact)
   const mkButton = (label) => {
     const b = document.createElement('button');
     b.textContent = label;
@@ -45,10 +45,31 @@ export function createToolsDock(app, theme) {
       fontWeight: '700',
       cursor: 'pointer',
       pointerEvents: 'auto',
-      boxShadow: theme.shadow
+      boxShadow: theme.shadow,
+      transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
+    });
+    // Hover/active animations (do not remove)
+    b.addEventListener('mouseenter', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.tealFaint;
+      b.style.borderColor = theme.tealSoft ?? theme.teal;
+    });
+    b.addEventListener('mouseleave', () => {
+      b.style.transform = 'none';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.bgPanel;
+      b.style.borderColor = theme.stroke;
+    });
+    b.addEventListener('mousedown', () => {
+      b.style.transform = 'translateY(0) scale(0.99)';
+    });
+    b.addEventListener('mouseup', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
     });
     return b;
   };
+
   const mkRow = (label, child) => {
     const row = document.createElement('div');
     Object.assign(row.style, {
@@ -65,6 +86,7 @@ export function createToolsDock(app, theme) {
     row.appendChild(child);
     return row;
   };
+
   const mkSelect = (options, value) => {
     const sel = document.createElement('select');
     options.forEach(o => {
@@ -73,17 +95,33 @@ export function createToolsDock(app, theme) {
     });
     sel.value = value;
     Object.assign(sel.style, {
-      padding: '8px', border: `1px solid ${theme.stroke}`,
-      borderRadius: '10px', pointerEvents: 'auto', background: theme.bgPanel, color: theme.text
+      padding: '8px',
+      border: `1px solid ${theme.stroke}`,
+      borderRadius: '10px',
+      pointerEvents: 'auto',
+      background: theme.bgPanel,
+      color: theme.text,
+      transition: 'border-color 120ms ease, box-shadow 120ms ease'
+    });
+    sel.addEventListener('focus', () => {
+      sel.style.borderColor = theme.teal;
+      sel.style.boxShadow = theme.shadow;
+    });
+    sel.addEventListener('blur', () => {
+      sel.style.borderColor = theme.stroke;
+      sel.style.boxShadow = 'none';
     });
     return sel;
   };
+
   const mkSlider = (min, max, step, value) => {
     const s = document.createElement('input');
     s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
-    s.style.width = '100%'; s.style.accentColor = theme.teal;
+    s.style.width = '100%';
+    s.style.accentColor = theme.teal;
     return s;
   };
+
   const mkToggle = (label) => {
     const wrap = document.createElement('label');
     const cb = document.createElement('input'); cb.type = 'checkbox';
@@ -148,7 +186,19 @@ export function createToolsDock(app, theme) {
     fontWeight: '700',
     boxShadow: theme.shadow,
     pointerEvents: 'auto',
-    zIndex: '10000'
+    zIndex: '10000',
+    transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
+  });
+  // Hover animation for the floating toggle
+  ui.toggleBtn.addEventListener('mouseenter', () => {
+    ui.toggleBtn.style.transform = 'translateY(-1px) scale(1.02)';
+    ui.toggleBtn.style.background = theme.tealFaint;
+    ui.toggleBtn.style.borderColor = theme.tealSoft ?? theme.teal;
+  });
+  ui.toggleBtn.addEventListener('mouseleave', () => {
+    ui.toggleBtn.style.transform = 'none';
+    ui.toggleBtn.style.background = theme.bgPanel;
+    ui.toggleBtn.style.borderColor = theme.stroke;
   });
 
   // Header button (Snapshot)
@@ -169,7 +219,7 @@ export function createToolsDock(app, theme) {
   // ---------- Controls ----------
   const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
 
-  // Explode (exists + wired later)
+  // Explode
   const explodeSlider = mkSlider(0, 1, 0.01, 0);
 
   // Section
@@ -178,7 +228,7 @@ export function createToolsDock(app, theme) {
   const secEnable = mkToggle('Enable section');
   const secShowPlane = mkToggle('Show slice plane');
 
-  // Views row (NO Snapshot button here)
+  // Views row (NO per-row Snapshot button)
   const rowCam = document.createElement('div');
   Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
   const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
@@ -250,7 +300,7 @@ export function createToolsDock(app, theme) {
     });
   }
 
-  // Section plane
+  // ---------- Section plane ----------
   let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
   let sectionPlane = null, secVisual = null;
 
@@ -290,7 +340,11 @@ export function createToolsDock(app, theme) {
       return;
     }
 
-    const n = new THREE.Vector3(secAxis === 'X' ? 1 : 0, secAxis === 'Y' ? 1 : 0, secAxis === 'Z' ? 1 : 0);
+    const n = new THREE.Vector3(
+      secAxis === 'X' ? 1 : 0,
+      secAxis === 'Y' ? 1 : 0,
+      secAxis === 'Z' ? 1 : 0
+    );
     const box = new THREE.Box3().setFromObject(app.robot);
     if (box.isEmpty()) { renderer.localClippingEnabled = false; if (secVisual) secVisual.visible = false; return; }
     const size = box.getSize(new THREE.Vector3());
@@ -308,7 +362,7 @@ export function createToolsDock(app, theme) {
     refreshSectionVisual(maxDim, center);
     secVisual.visible = !!secPlaneVisible;
 
-    // Orient teal plane
+    // Orient the teal plane to match clipping plane normal
     const look = new THREE.Vector3().copy(n);
     const up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
@@ -324,7 +378,7 @@ export function createToolsDock(app, theme) {
   secEnable.cb.addEventListener('change', () => { secEnabled = !!secEnable.cb.checked; updateSectionPlane(); });
   secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
 
-  // Views (animated)
+  // ---------- Views (animated) ----------
   const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
   const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
 
@@ -375,18 +429,39 @@ export function createToolsDock(app, theme) {
   bFrontEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
   bRightEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
 
-  // Projection
+  // ---------- Projection ----------
   projSel.addEventListener('change', () => {
     const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
     try { app.setProjection?.(mode); } catch (_) {}
   });
 
-  // Scene toggles
+  // ---------- Scene toggles ----------
   togGrid.cb.addEventListener('change', () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
   togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
   togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
   // ---------- Explode ----------
+  // Prefer EXACT explode from ComponentSelection.js if available.
+  // Supported discovery (any of these may exist):
+  //   1) app.explode.prepareExplodeVectors() / app.explode.applyExplode(amount)
+  //   2) app.componentSelection.explode.prepareExplodeVectors() / .applyExplode(amount)
+  //   3) window.ComponentSelection?.explode?.prepareExplodeVectors() / .applyExplode(amount)
+  function getExternalExplode() {
+    const ex1 = app?.explode;
+    if (ex1?.prepareExplodeVectors && ex1?.applyExplode) return { prep: ex1.prepareExplodeVectors.bind(ex1), apply: ex1.applyExplode.bind(ex1) };
+
+    const ex2 = app?.componentSelection?.explode;
+    if (ex2?.prepareExplodeVectors && ex2?.applyExplode) return { prep: ex2.prepareExplodeVectors.bind(ex2), apply: ex2.applyExplode.bind(ex2) };
+
+    const ex3 = (typeof window !== 'undefined') ? (window.ComponentSelection?.explode) : null;
+    if (ex3?.prepareExplodeVectors && ex3?.applyExplode) return { prep: ex3.prepareExplodeVectors.bind(ex3), apply: ex3.applyExplode.bind(ex3) };
+
+    return null;
+  }
+
+  const externalExplode = getExternalExplode();
+
+  // Built-in fallback (only used if external one not found)
   const __explode = {
     prepared: false,
     baseByObj: new WeakMap(),
@@ -402,6 +477,8 @@ export function createToolsDock(app, theme) {
   }
 
   function prepareExplodeVectors() {
+    if (externalExplode) { try { externalExplode.prep(); } catch(_){} return; }
+
     const R = computeRobotBounds();
     if (!R) { __explode.prepared = false; return; }
     __explode.baseByObj = new WeakMap();
@@ -432,11 +509,17 @@ export function createToolsDock(app, theme) {
   }
 
   function setExplode(amount01) {
+    if (externalExplode) {
+      try { externalExplode.apply(Number(amount01) || 0); } catch(_) {}
+      updateSectionPlane?.();
+      return;
+    }
+
     if (!app?.robot) return;
     if (!__explode.prepared) prepareExplodeVectors();
 
     const f = Math.max(0, Math.min(1, Number(amount01)||0));
-    const maxOffset = __explode.maxDim * 0.6; // distance scale
+    const maxOffset = __explode.maxDim * 0.6;
 
     app.robot.traverse((o) => {
       if (!__explode.baseByObj.has(o) || !__explode.dirByObj.has(o)) return;
@@ -448,9 +531,9 @@ export function createToolsDock(app, theme) {
     updateSectionPlane?.();
   }
 
-  // Faster tween for "more velocity"
+  // Fast, snappy tween (more velocity)
   let explodeTween = null, explodeCurrent = 0;
-  function tweenExplode(to, ms = 90) {  // quick, snappy
+  function tweenExplode(to, ms = 90) {
     const from = explodeCurrent;
     const t0 = performance.now();
     cancelAnimationFrame(explodeTween);
@@ -464,6 +547,7 @@ export function createToolsDock(app, theme) {
     }
     explodeTween = requestAnimationFrame(step);
   }
+
   explodeSlider.addEventListener('input', () => {
     const target = Number(explodeSlider.value) || 0;
     tweenExplode(target, 90);
