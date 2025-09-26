@@ -1,61 +1,177 @@
-// /viewer/ui/ComponentsPanel.js
-// Floating gallery of components (assets) with thumbnails + isolate/show-all
-// Dependencies: None (expects an app facade and a theme object)
+// /viewer/ui/ToolsDock.js
+// Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
+// Adds robust global hotkey "H" (keydown/keyup/keypress) with visible logs and a key-catcher overlay.
+/* global THREE */
 
-/**
- * @typedef {Object} Theme
- * @property {string} teal
- * @property {string} tealSoft
- * @property {string} tealFaint
- * @property {string} bgPanel
- * @property {string|number} bgCanvas
- * @property {string} stroke
- * @property {string} text
- * @property {string} textMuted
- * @property {string} shadow
- */
+export function createToolsDock(app, theme) {
+  if (!app || !app.camera || !app.controls || !app.renderer)
+    throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
 
-/**
- * Create the Components Panel (floating UI).
- * @param {Object} app
- * @param {Theme} theme
- * @returns {{
- *   open: () => void,
- *   close: () => void,
- *   set: (open:boolean) => void,
- *   refresh: () => Promise<void>,
- *   destroy: () => void
- * }}
- */
-export function createComponentsPanel(app, theme) {
-  if (!app || !app.assets || !app.isolate || !app.showAll)
-    throw new Error('[ComponentsPanel] Missing required app APIs');
+  // --- Normalize theme ---
+  if (theme && theme.colors) {
+    theme.teal       ??= theme.colors.teal;
+    theme.tealSoft   ??= theme.colors.tealSoft;
+    theme.tealFaint  ??= theme.colors.tealFaint;
+    theme.bgPanel    ??= theme.colors.panelBg;
+    theme.bgCanvas   ??= theme.colors.canvasBg;
+    theme.stroke     ??= theme.colors.stroke;
+    theme.text       ??= theme.colors.text;
+    theme.textMuted  ??= theme.colors.textMuted;
+  }
+  if (theme && theme.shadows) {
+    theme.shadow ??= (theme.shadows.lg || theme.shadows.md || theme.shadows.sm);
+  }
 
-  // ---- DOM structure
+  // Reuse if exists
+  const existing = document.querySelector('.viewer-dock-fix');
+  if (existing && existing.__toolsDockAPI) {
+    ensureGlobalHotkey(existing, app);
+    return existing.__toolsDockAPI;
+  }
+
+  // ---------- DOM ----------
   const ui = {
     root: document.createElement('div'),
-    btn: document.createElement('button'),
-    panel: document.createElement('div'),
+    dock: document.createElement('div'),
     header: document.createElement('div'),
     title: document.createElement('div'),
-    showAllBtn: document.createElement('button'),
-    list: document.createElement('div')
+    fitBtn: document.createElement('button'),
+    body: document.createElement('div'),
+    toggleBtn: document.createElement('button'),
+    // key catcher overlay
+    catcher: document.createElement('div'),
+    // minimal onscreen debug
+    debug: document.createElement('div'),
   };
 
-  // ---- Styles
-  const css = {
-    root: {
-      position: 'absolute',
-      left: '0', top: '0',
-      width: '100%', height: '100%',
-      pointerEvents: 'none',
-      zIndex: '9999',
-      fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial',
-    },
-    btn: {
-      position: 'absolute',
-      left: '14px',
-      bottom: '14px',
+  // Root overlay
+  Object.assign(ui.root.style, {
+    position: 'absolute',
+    left: '0', top: '0',
+    width: '100%', height: '100%',
+    pointerEvents: 'none',
+    zIndex: '9999',
+    fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
+  });
+
+  // Key-catcher (full-screen but pointerEvents only when focused/actioned)
+  Object.assign(ui.catcher.style, {
+    position: 'absolute',
+    inset: '0',
+    pointerEvents: 'none',
+    outline: 'none'
+  });
+  ui.catcher.setAttribute('tabindex', '0');
+  ui.root.appendChild(ui.catcher);
+
+  // Tiny debug HUD (top-left)
+  Object.assign(ui.debug.style, {
+    position: 'absolute',
+    left: '8px',
+    top: '8px',
+    padding: '2px 6px',
+    fontSize: '11px',
+    color: '#0b3b3c',
+    background: 'rgba(255,255,255,0.7)',
+    border: '1px solid rgba(14,165,166,0.35)',
+    borderRadius: '6px',
+    pointerEvents: 'none'
+  });
+  ui.debug.textContent = 'Hotkey: (click viewport, press H)';
+  ui.root.appendChild(ui.debug);
+
+  // Dock
+  Object.assign(ui.dock.style, {
+    position: 'absolute',
+    right: '14px',
+    top: '14px',
+    width: '440px',
+    background: theme.bgPanel,
+    border: `1px solid ${theme.stroke}`,
+    borderRadius: '18px',
+    boxShadow: theme.shadow,
+    pointerEvents: 'auto',
+    overflow: 'hidden',
+    display: 'none',
+    transform: 'translateX(0)',
+    opacity: '1',
+    transition: 'transform 280ms ease, opacity 200ms ease'
+  });
+
+  Object.assign(ui.header.style, {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '10px 12px',
+    borderBottom: `1px solid ${theme.stroke}`,
+    background: theme.tealFaint
+  });
+
+  ui.title.textContent = 'Viewer Tools';
+  Object.assign(ui.title.style, { fontWeight: '800', color: theme.text });
+
+  Object.assign(ui.body.style, { padding: '10px 12px' });
+
+  // Floating toggle button
+  ui.toggleBtn.textContent = 'Open Tools';
+  Object.assign(ui.toggleBtn.style, {
+    position: 'absolute',
+    right: '14px',
+    top: '14px',
+    padding: '8px 12px',
+    borderRadius: '12px',
+    border: `1px solid ${theme.stroke}`,
+    background: theme.bgPanel,
+    color: theme.text,
+    fontWeight: '700',
+    boxShadow: theme.shadow,
+    pointerEvents: 'auto',
+    zIndex: '10000',
+    transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
+  });
+
+  // Header button (Snapshot)
+  ui.fitBtn.textContent = 'Snapshot';
+  Object.assign(ui.fitBtn.style, {
+    padding: '6px 10px',
+    borderRadius: '10px',
+    border: `1px solid ${theme.stroke}`,
+    background: theme.bgPanel,
+    color: theme.text,
+    fontWeight: '700',
+    cursor: 'pointer'
+  });
+
+  ui.header.appendChild(ui.title);
+  ui.header.appendChild(ui.fitBtn);
+  ui.dock.appendChild(ui.header);
+  ui.dock.appendChild(ui.body);
+  ui.root.appendChild(ui.dock);
+  ui.root.appendChild(ui.toggleBtn);
+
+  // Hover effects
+  [ui.toggleBtn, ui.fitBtn].forEach(b => {
+    b.addEventListener('mouseenter', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+      b.style.background = theme.tealFaint;
+      b.style.borderColor = theme.tealSoft ?? theme.teal;
+    });
+    b.addEventListener('mouseleave', () => {
+      b.style.transform = 'none';
+      b.style.background = theme.bgPanel;
+      b.style.borderColor = theme.stroke;
+    });
+  });
+
+  // Attach
+  const host = (app?.renderer?.domElement?.parentElement) || document.body;
+  host.appendChild(ui.root);
+
+  // ---------- Helpers ----------
+  const mkButton = (label) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    Object.assign(b.style, {
       padding: '8px 12px',
       borderRadius: '12px',
       border: `1px solid ${theme.stroke}`,
@@ -63,269 +179,497 @@ export function createComponentsPanel(app, theme) {
       color: theme.text,
       fontWeight: '700',
       cursor: 'pointer',
+      pointerEvents: 'auto',
       boxShadow: theme.shadow,
-      pointerEvents: 'auto'
-    },
-    panel: {
-      position: 'absolute',
-      right: '14px',
-      bottom: '14px',
-      width: '440px',
-      maxHeight: '72%',
-      background: theme.bgPanel,
-      border: `1px solid ${theme.stroke}`,
-      boxShadow: theme.shadow,
-      borderRadius: '18px',
-      overflow: 'hidden',
-      display: 'none',
-      pointerEvents: 'auto'
-    },
-    header: {
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: '8px',
-      padding: '10px 12px',
-      borderBottom: `1px solid ${theme.stroke}`,
-      background: theme.tealFaint
-    },
-    title: { fontWeight: '800', color: theme.text },
-    showAllBtn: {
-      padding: '6px 10px',
-      borderRadius: '10px',
-      border: `1px solid ${theme.stroke}`,
-      background: theme.bgPanel,
-      fontWeight: '700',
-      cursor: 'pointer'
-    },
-    list: {
-      overflowY: 'auto',
-      maxHeight: 'calc(72vh - 52px)',
-      padding: '10px'
-    }
+      transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
+    });
+    b.addEventListener('mouseenter', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+      b.style.background = theme.tealFaint;
+      b.style.borderColor = theme.tealSoft ?? theme.teal;
+    });
+    b.addEventListener('mouseleave', () => {
+      b.style.transform = 'none';
+      b.style.background = theme.bgPanel;
+      b.style.borderColor = theme.stroke;
+    });
+    b.addEventListener('mousedown', () => { b.style.transform = 'translateY(0) scale(0.99)'; });
+    b.addEventListener('mouseup', () => { b.style.transform = 'translateY(-1px) scale(1.02)'; });
+    return b;
   };
 
-  applyStyles(ui.root, css.root);
-  applyStyles(ui.btn, css.btn);
-  applyStyles(ui.panel, css.panel);
-  applyStyles(ui.header, css.header);
-  applyStyles(ui.title, css.title);
-  applyStyles(ui.showAllBtn, css.showAllBtn);
-  applyStyles(ui.list, css.list);
+  const mkRow = (label, child) => {
+    const row = document.createElement('div');
+    Object.assign(row.style, {
+      display: 'grid',
+      gridTemplateColumns: '120px 1fr',
+      gap: '10px',
+      alignItems: 'center',
+      margin: '6px 0'
+    });
+    const l = document.createElement('div');
+    l.textContent = label;
+    Object.assign(l.style, { color: theme.textMuted, fontWeight: '700' });
+    row.appendChild(l);
+    row.appendChild(child);
+    return row;
+  };
 
-  ui.btn.textContent = 'Components';
-  ui.title.textContent = 'Components';
-  ui.showAllBtn.textContent = 'Show all';
+  const mkSelect = (options, value) => {
+    const sel = document.createElement('select');
+    options.forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o; opt.textContent = o; sel.appendChild(opt);
+    });
+    sel.value = value;
+    Object.assign(sel.style, {
+      padding: '8px',
+      border: `1px solid ${theme.stroke}`,
+      borderRadius: '10px',
+      pointerEvents: 'auto',
+      background: theme.bgPanel,
+      color: theme.text
+    });
+    return sel;
+  };
 
-  ui.header.appendChild(ui.title);
-  ui.header.appendChild(ui.showAllBtn);
-  ui.panel.appendChild(ui.header);
-  ui.panel.appendChild(ui.list);
+  const mkSlider = (min, max, step, value) => {
+    const s = document.createElement('input');
+    s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
+    s.style.width = '100%';
+    s.style.accentColor = theme.teal;
+    return s;
+  };
 
-  ui.root.appendChild(ui.panel);
-  ui.root.appendChild(ui.btn);
+  const mkToggle = (label) => {
+    const wrap = document.createElement('label');
+    const cb = document.createElement('input'); cb.type = 'checkbox';
+    const span = document.createElement('span'); span.textContent = label;
+    Object.assign(wrap.style, { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', pointerEvents: 'auto' });
+    cb.style.accentColor = theme.teal;
+    Object.assign(span.style, { fontWeight: '700', color: theme.text });
+    wrap.appendChild(cb); wrap.appendChild(span);
+    return { wrap, cb };
+  };
 
-  // Attach to the same container as the viewer canvas (assume renderer DOM parent)
-  const host = (app?.renderer?.domElement?.parentElement) || document.body;
-  host.appendChild(ui.root);
+  // ---------- Controls ----------
+  const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
+  const explodeSlider = mkSlider(0, 1, 0.01, 0);
+  const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
+  const secDist = mkSlider(-1, 1, 0.001, 0);
+  const secEnable = mkToggle('Enable section');
+  const secShowPlane = mkToggle('Show slice plane');
 
-  // ---- State
-  let open = false;
-  let building = false; // prevent concurrent refresh
-  let disposed = false;
+  const rowCam = document.createElement('div');
+  Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
+  const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
+  [bIso, bTop, bFront, bRight].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
 
-  // ---- Behavior
-  function set(isOpen) {
-    open = !!isOpen;
-    ui.panel.style.display = open ? 'block' : 'none';
+  const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
+  const togGrid = mkToggle('Grid');
+  const togGround = mkToggle('Ground & shadows');
+  const togAxes = mkToggle('XYZ axes');
+
+  ui.body.appendChild(mkRow('Render mode', renderModeSel));
+  ui.body.appendChild(mkRow('Explode', explodeSlider));
+  ui.body.appendChild(mkRow('Section axis', axisSel));
+  ui.body.appendChild(mkRow('Section dist', secDist));
+  ui.body.appendChild(mkRow('', secEnable.wrap));
+  ui.body.appendChild(mkRow('', secShowPlane.wrap));
+  ui.body.appendChild(mkRow('Views', rowCam));
+  rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight);
+  ui.body.appendChild(mkRow('Projection', projSel));
+  ui.body.appendChild(mkRow('', togGrid.wrap));
+  ui.body.appendChild(mkRow('', togGround.wrap));
+  ui.body.appendChild(mkRow('', togAxes.wrap));
+
+  // ---------- Logic ----------
+  function styleDockLeft(dockEl) {
+    dockEl.classList.add('viewer-dock-fix');
+    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
   }
-  function openPanel() { set(true); maybeBuild(); }
-  function closePanel() { set(false); }
 
-  ui.btn.addEventListener('click', () => {
-    set(ui.panel.style.display === 'none');
-    if (open) maybeBuild();
-  });
-
-  ui.showAllBtn.addEventListener('click', () => {
-    try { app.showAll?.(); } catch (_) {}
-  });
-
-  async function maybeBuild() {
-    if (building || disposed) return;
-    building = true;
-    try {
-      await renderList();
-    } finally {
-      building = false;
+  let isOpen = false;
+  function set(open) {
+    isOpen = !!open;
+    if (open) {
+      ui.dock.style.display = 'block';
+      styleDockLeft(ui.dock);
+      requestAnimationFrame(() => {
+        ui.dock.style.transform = 'translateX(0)';
+        ui.dock.style.opacity = '1';
+      });
+      ui.toggleBtn.textContent = 'Close Tools';
+      explode.prepare();
+    } else {
+      ui.dock.style.transform = 'translateX(-110%)';
+      ui.dock.style.opacity = '0';
+      ui.toggleBtn.textContent = 'Open Tools';
+      const onEnd = () => {
+        if (!isOpen) ui.dock.style.display = 'none';
+        ui.dock.removeEventListener('transitionend', onEnd);
+      };
+      ui.dock.addEventListener('transitionend', onEnd);
     }
   }
+  function openDock() { set(true); }
+  function closeDock() { set(false); }
+  ui.toggleBtn.addEventListener('click', () => set(ui.dock.style.display === 'none'));
 
-  async function renderList() {
-    clearElement(ui.list);
-
-    // Retrieve assets list; support sync or async
-    let items = [];
+  ui.fitBtn.addEventListener('click', () => {
     try {
-      const res = app.assets.list?.();
-      items = Array.isArray(res) ? res : (await res);
-    } catch (e) {
-      items = [];
-    }
+      const url = app.renderer.domElement.toDataURL('image/png');
+      const a = document.createElement('a'); a.href = url; a.download = 'snapshot.png'; a.click();
+    } catch (_) {}
+  });
 
-    if (!items || !items.length) {
-      const empty = document.createElement('div');
-      empty.textContent = 'No components with visual geometry found.';
-      empty.style.color = theme.textMuted;
-      empty.style.fontWeight = '600';
-      empty.style.padding = '8px 2px';
-      ui.list.appendChild(empty);
+  renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
+  function setRenderMode(mode) {
+    const root = app.robot || app.scene;
+    if (!root) return;
+    root.traverse(o => {
+      if (o.isMesh && o.material) {
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) {
+          m.wireframe = (mode === 'Wireframe');
+          if (mode === 'X-Ray') {
+            m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.depthTest = true;
+          } else if (mode === 'Ghost') {
+            m.transparent = true; m.opacity = 0.70; m.depthWrite = true; m.depthTest = true;
+          } else {
+            m.transparent = false; m.opacity = 1.0; m.depthWrite = true; m.depthTest = true;
+          }
+          m.needsUpdate = true;
+        }
+      }
+    });
+  }
+
+  // ---------- Section plane ----------
+  let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
+  let sectionPlane = null, secVisual = null;
+
+  function ensureSectionVisual() {
+    if (secVisual) return secVisual;
+    secVisual = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1, 1, 1),
+      new THREE.MeshBasicMaterial({
+        color: theme.teal,
+        transparent: true,
+        opacity: 0.4,
+        depthWrite: false,
+        depthTest: false,
+        toneMapped: false,
+        side: THREE.DoubleSide
+      })
+    );
+    secVisual.visible = false;
+    secVisual.renderOrder = 10000;
+    app.scene.add(secVisual);
+    return secVisual;
+  }
+
+  function refreshSectionVisual(maxDim, center) {
+    if (!secVisual) return;
+    const size = Math.max(1e-6, maxDim || 1);
+    secVisual.scale.set(size * 1.2, size * 1.2, 1);
+    if (center) secVisual.position.copy(center);
+  }
+
+  function updateSectionPlane() {
+    const renderer = app.renderer;
+    renderer.clippingPlanes = [];
+    if (!secEnabled || !app.robot) {
+      renderer.localClippingEnabled = false;
+      if (secVisual) secVisual.visible = false;
       return;
     }
 
-    // Normalize and sort (by base name)
-    const normalized = items.map((it) => ({
-      assetKey: it.assetKey || it.key || '',
-      base: it.base || basenameNoExt(it.assetKey || ''),
-      ext: it.ext || extOf(it.assetKey || ''),
-      count: it.count || 1,
-      desc: it.desc || ''
-    })).sort((a, b) => a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }));
+    const n = new THREE.Vector3(
+      secAxis === 'X' ? 1 : 0,
+      secAxis === 'Y' ? 1 : 0,
+      secAxis === 'Z' ? 1 : 0
+    );
+    const box = new THREE.Box3().setFromObject(app.robot);
+    if (box.isEmpty()) { renderer.localClippingEnabled = false; if (secVisual) secVisual.visible = false; return; }
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const center = box.getCenter(new THREE.Vector3());
 
-    // Build rows
-    for (const ent of normalized) {
-      const row = document.createElement('div');
-      applyStyles(row, rowStyles(theme));
+    const dist = (Number(secDist.value) || 0) * maxDim * 0.5;
+    const plane = new THREE.Plane(n, -center.dot(n) - dist);
 
-      const img = document.createElement('img');
-      applyStyles(img, thumbStyles(theme));
-      img.alt = ent.base;
-      img.loading = 'lazy';
+    renderer.localClippingEnabled = true;
+    renderer.clippingPlanes = [plane];
+    sectionPlane = plane;
 
-      const meta = document.createElement('div');
-      const title = document.createElement('div');
-      title.textContent = ent.base;
-      title.style.fontWeight = '700';
-      title.style.fontSize = '14px';
-      title.style.color = theme.text;
+    ensureSectionVisual();
+    refreshSectionVisual(maxDim, center);
+    secVisual.visible = !!secPlaneVisible;
 
-      const small = document.createElement('div');
-      small.textContent = `.${ent.ext || 'asset'} • ${ent.count} instance${ent.count > 1 ? 's' : ''}`;
-      small.style.color = theme.textMuted;
-      small.style.fontSize = '12px';
-      small.style.marginTop = '2px';
+    const look = new THREE.Vector3().copy(n);
+    const up = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
+    const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0, 0, 0), look, up);
+    const q = new THREE.Quaternion().setFromRotationMatrix(m);
+    secVisual.setRotationFromQuaternion(q);
+    const p0 = n.clone().multiplyScalar(-plane.constant);
+    secVisual.position.copy(p0);
+  }
 
-      const desc = document.createElement('div');
-      desc.textContent = ent.desc || ' ';
-      desc.style.color = theme.textMuted;
-      desc.style.fontSize = '12px';
-      desc.style.marginTop = '4px';
+  axisSel.addEventListener('change', () => { secAxis = axisSel.value; updateSectionPlane(); });
+  secDist.addEventListener('input', () => updateSectionPlane());
+  secEnable.cb.addEventListener('change', () => { secEnabled = !!secEnable.cb.checked; updateSectionPlane(); });
+  secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
 
-      meta.appendChild(title);
-      meta.appendChild(small);
-      if (desc.textContent.trim()) meta.appendChild(desc);
+  // ---------- Views ----------
+  const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
 
-      row.appendChild(img);
-      row.appendChild(meta);
-      ui.list.appendChild(row);
+  function currentAzEl(cam, target) {
+    const v = cam.position.clone().sub(target);
+    const len = Math.max(1e-9, v.length());
+    return { el: Math.asin(v.y / len), az: Math.atan2(v.z, v.x), r: len };
+  }
 
-      // Click → isolate this asset
-      row.addEventListener('click', () => {
-        try { app.isolate.asset?.(ent.assetKey); } catch (_) {}
-      });
-
-      // Async thumbnail
-      try {
-        const url = await app.assets.thumbnail?.(ent.assetKey);
-        if (url) img.src = url;
-        else img.replaceWith(makeThumbFallback(ent.base, theme));
-      } catch (_) {
-        img.replaceWith(makeThumbFallback(ent.base, theme));
-      }
+  function tweenOrbits(cam, ctrl, toPos, toTarget = null, ms = 700) {
+    const p0 = cam.position.clone(), t0 = ctrl.target.clone(), tStart = performance.now();
+    ctrl.enabled = false; cam.up.set(0, 1, 0);
+    const moveTarget = (toTarget !== null);
+    function step(t) {
+      const u = Math.min(1, (t - tStart) / ms), e = easeInOutCubic(u);
+      cam.position.set(
+        p0.x + (toPos.x - p0.x) * e,
+        p0.y + (toPos.y - p0.y) * e,
+        p0.z + (toPos.z - p0.z) * e
+      );
+      if (moveTarget) ctrl.target.set(
+        t0.x + (toTarget.x - t0.x) * e,
+        t0.y + (toTarget.y - t0.y) * e,
+        t0.z + (toTarget.z - t0.z) * e
+      );
+      ctrl.update(); app.renderer.render(app.scene, cam);
+      if (u < 1) requestAnimationFrame(step); else ctrl.enabled = true;
     }
+    requestAnimationFrame(step);
   }
 
-  // Public API
-  async function refresh() {
-    if (disposed) return;
-    await renderList();
+  function viewEndPosition(kind) {
+    const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
+    const cur = currentAzEl(cam, t);
+    let az = cur.az, el = cur.el;
+    const topEps = 1e-3;
+    if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.2; }
+    if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
+    if (kind === 'front') { az = Math.PI / 2; el = 0; }
+    if (kind === 'right') { az = 0; el = 0; }
+    const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(cur.r));
+    return pos;
   }
 
-  function destroy() {
-    disposed = true;
-    try { ui.btn.remove(); } catch (_) {}
-    try { ui.panel.remove(); } catch (_) {}
-    try { ui.root.remove(); } catch (_) {}
-  }
+  [bIso, bTop, bFront, bRight].forEach((btn, i) => {
+    const kind = ['iso','top','front','right'][i];
+    btn.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition(kind), null, 750); });
+  });
 
-  // Initial defaults
+  // Projection / toggles
+  projSel.addEventListener('change', () => {
+    const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
+    try { app.setProjection?.(mode); } catch (_) {}
+  });
+  const togGrid = togGrid; // names kept for clarity in rows above
+  const togGround = togGround;
+  const togAxes = togAxes;
+  togGrid.cb.addEventListener('change', () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
+  togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
+  togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
+
+  // ---------- Explode manager ----------
+  function makeExplodeManager() {
+    const registry = [];
+    const marker = new WeakSet();
+    let maxDim = 1;
+    let prepared = false;
+
+    let current = 0, target = 0, vel = 0, raf = null, lastT = 0;
+    const stiffness = 18, damping = 2 * Math.sqrt(stiffness);
+    let zeroSince = null;
+
+    function worldDirToParentLocal(parent, dirWorld) {
+      const m = new THREE.Matrix4().copy(parent.matrixWorld).invert();
+      const n = new THREE.Matrix3().setFromMatrix4(m);
+      return dirWorld.clone().applyMatrix3(n).normalize();
+    }
+    function chooseTopPartFor(mesh) {
+      let n = mesh;
+      while (n && n !== app.robot) {
+        if (marker.has(n)) return n;
+        if (n.parent === app.robot) return n;
+        n = n.parent;
+      }
+      return mesh.parent || mesh;
+    }
+    function computeBounds() {
+      const box = new THREE.Box3().setFromObject(app.robot);
+      if (box.isEmpty()) return null;
+      return { center: box.getCenter(new THREE.Vector3()), size: box.getSize(new THREE.Vector3()) };
+    }
+    function prepare() {
+      registry.length = 0;
+      if (!app.robot) { prepared = false; return; }
+      const R = computeBounds(); if (!R) { prepared = false; return; }
+      maxDim = Math.max(R.size.x, R.size.y, R.size.z) || 1;
+      const parts = new Set(); const seen = new WeakSet();
+      app.robot.traverse((o) => {
+        if (o.isMesh && o.geometry && o.visible && !o.userData.__isHoverOverlay) {
+          const top = chooseTopPartFor(o);
+          if (!seen.has(top)) { parts.add(top); seen.add(top); marker.add(top); }
+        }
+      });
+      parts.forEach((node) => {
+        const parent = node.parent || app.robot;
+        const baseLocal = node.position.clone();
+        const box = new THREE.Box3().setFromObject(node);
+        if (box.isEmpty()) return;
+        const cWorld = box.getCenter(new THREE.Vector3());
+        const dirWorld = cWorld.sub(R.center).normalize();
+        if (!isFinite(dirWorld.x + dirWorld.y + dirWorld.z)) return;
+        const dirLocal = worldDirToParentLocal(parent, dirWorld);
+        if (!isFinite(dirLocal.x + dirLocal.y + dirLocal.z) || dirLocal.lengthSq() < 1e-12)
+          dirLocal.set((Math.random()*2-1),(Math.random()*2-1),(Math.random()*2-1)).normalize();
+        registry.push({ node, parent, baseLocal, dirLocal });
+      });
+      prepared = true;
+      zeroSince = performance.now();
+    }
+    function applyAmount(a01) {
+      if (!prepared) prepare();
+      const f = Math.max(0, Math.min(1, a01 || 0));
+      const maxOffset = maxDim * 0.6;
+      for (const rec of registry) {
+        const { node, baseLocal, dirLocal } = rec;
+        node.position.copy(baseLocal).addScaledVector(dirLocal, f * maxOffset);
+      }
+      updateSectionPlane?.();
+      try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch(_) {}
+    }
+    function tickSpring(now) {
+      if (!lastT) lastT = now;
+      const dt = Math.min(0.05, (now - lastT) / 1000);
+      lastT = now;
+      const a = stiffness * (target - current) - damping * vel;
+      vel += a * dt; current += vel * dt;
+      if (Math.abs(current - target) < 0.0005 && Math.abs(vel) < 0.0005) { current = target; vel = 0; }
+      applyAmount(current);
+      if (current === 0) {
+        zeroSince ??= now;
+        if (now - zeroSince > 300) { const keep = target; prepare(); applyAmount(current); target = keep; zeroSince = now; }
+      } else zeroSince = null;
+      if (current !== target || vel !== 0) raf = requestAnimationFrame(tickSpring); else raf = null;
+    }
+    function setTarget(a01) {
+      target = Math.max(0, Math.min(1, Number(a01) || 0));
+      if (!prepared) prepare();
+      if (!raf) { lastT = 0; raf = requestAnimationFrame(tickSpring); }
+    }
+    function recalibrate() { prepare(); applyAmount(current); }
+    function destroy() { if (raf) cancelAnimationFrame(raf); raf = null; }
+    return { setTarget, recalibrate, destroy, prepare };
+  }
+  const explode = makeExplodeManager();
+  try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
+  explodeSlider.addEventListener('input', () => { explode.setTarget(Number(explodeSlider.value) || 0); });
+
+  // Defaults & start
+  const togGridRef = togGrid, togGroundRef = togGround, togAxesRef = togAxes;
+  togGridRef.cb.checked = false; togGroundRef.cb.checked = false; togAxesRef.cb.checked = false;
   set(false);
 
-  return { open: openPanel, close: closePanel, set, refresh, destroy };
-}
+  // ---------- Robust hotkey binding with logs ----------
+  ensureGlobalHotkey(ui.dock, app);
 
-/* ------------------ Helpers ------------------ */
+  // ---------- Public API ----------
+  function destroy() {
+    try { removeGlobalHotkey(ui.dock); } catch (_) {}
+    try { ui.toggleBtn.remove(); } catch (_) {}
+    try { ui.dock.remove(); } catch (_) {}
+    try { ui.root.remove(); } catch (_) {}
+    try {
+      app.renderer.localClippingEnabled = false;
+      app.renderer.clippingPlanes = [];
+    } catch (_) {}
+    explode.destroy();
+  }
+  const api = { open: openDock, close: closeDock, set, destroy };
+  ui.dock.__toolsDockAPI = api;
+  return api;
 
-function applyStyles(el, styles) {
-  Object.assign(el.style, styles);
-}
+  // ==================== Hotkey helpers ====================
+  function ensureGlobalHotkey(dockEl, appRef) {
+    if (!dockEl || dockEl.__hotkeyBound) return;
 
-function clearElement(el) {
-  while (el.firstChild) el.removeChild(el.firstChild);
-}
+    const log = (type, e) => {
+      const k = (e.key || '').toLowerCase();
+      console.log(`[ToolsDock] key event: ${type} key=${k}`, e);
+      ui.debug.textContent = `Last key: ${k} (${type})`;
+    };
 
-function basenameNoExt(p) {
-  const q = String(p || '').split('/').pop().split('?')[0].split('#')[0];
-  const dot = q.lastIndexOf('.');
-  return dot >= 0 ? q.slice(0, dot) : q;
-}
+    const toggleOnH = (e) => {
+      const k = (e.key || '').toLowerCase();
+      if (k === 'h') {
+        console.log('[ToolsDock] h pressed');
+        e.preventDefault();
+        const wantOpen = (dockEl.style.display === 'none');
+        set(wantOpen);
+      }
+    };
 
-function extOf(p) {
-  const q = String(p || '').split('?')[0].split('#')[0];
-  const dot = q.lastIndexOf('.');
-  return dot >= 0 ? q.slice(dot + 1).toLowerCase() : '';
-}
+    const handlerKeydown  = (e) => { log('keydown', e);  toggleOnH(e); };
+    const handlerKeyup    = (e) => { log('keyup', e);    toggleOnH(e); };
+    const handlerKeypress = (e) => { log('keypress', e); toggleOnH(e); };
 
-function rowStyles(theme) {
-  return {
-    display: 'grid',
-    gridTemplateColumns: '128px 1fr',
-    gap: '12px',
-    alignItems: 'center',
-    padding: '10px',
-    borderRadius: '12px',
-    border: `1px solid ${theme.stroke}`,
-    marginBottom: '10px',
-    background: '#fff',
-    cursor: 'pointer',
-    transition: 'transform .08s ease, box-shadow .12s ease',
-  };
-}
+    dockEl.__hotkeyBound = true;
+    dockEl.__hotkeyTargets = [];
+    dockEl.__hotkeyHandlers = [];
 
-function thumbStyles(theme) {
-  return {
-    width: '128px',
-    height: '96px',
-    objectFit: 'contain',
-    background: '#f7fbfb',
-    borderRadius: '10px',
-    border: `1px solid ${theme.stroke}`
-  };
-}
+    const add = (target, type, h) => {
+      if (!target) return;
+      try {
+        target.addEventListener(type, h, true);
+        dockEl.__hotkeyTargets.push(target);
+        dockEl.__hotkeyHandlers.push([type, h]);
+      } catch (_) {}
+    };
 
-function makeThumbFallback(label, theme) {
-  const wrap = document.createElement('div');
-  wrap.style.width = '128px';
-  wrap.style.height = '96px';
-  wrap.style.display = 'flex';
-  wrap.style.alignItems = 'center';
-  wrap.style.justifyContent = 'center';
-  wrap.style.background = '#f7fbfb';
-  wrap.style.border = `1px solid ${theme.stroke}`;
-  wrap.style.borderRadius = '10px';
-  wrap.style.fontSize = '11px';
-  wrap.style.color = theme.textMuted;
-  wrap.style.textAlign = 'center';
-  wrap.textContent = label || '—';
-  return wrap;
+    // Targets
+    const canvas = appRef?.renderer?.domElement;
+    const targets = new Set([window, document, document.body, canvas, appRef?.container, appRef?.canvas].filter(Boolean));
+    targets.forEach(t => {
+      add(t, 'keydown', handlerKeydown);
+      add(t, 'keyup', handlerKeyup);
+      add(t, 'keypress', handlerKeypress);
+    });
+
+    // Make canvas focusable and try to focus on click/move
+    try { canvas?.setAttribute?.('tabindex', '0'); } catch(_) {}
+    const focusCanvas = () => { try { canvas?.focus?.(); } catch(_) {} };
+    canvas?.addEventListener?.('pointerdown', focusCanvas, true);
+    canvas?.addEventListener?.('click', focusCanvas, true);
+    canvas?.addEventListener?.('mouseenter', () => { /* hint */ ui.debug.textContent = 'Hotkey active: press H'; }, true);
+
+    // Key catcher activation on any click in viewport
+    host.addEventListener('click', () => { try { ui.catcher.focus(); } catch(_) {} }, true);
+  }
+
+  function removeGlobalHotkey(dockEl) {
+    if (!dockEl || !dockEl.__hotkeyTargets || !dockEl.__hotkeyHandlers) return;
+    for (let i = 0; i < dockEl.__hotkeyTargets.length; i++) {
+      const t = dockEl.__hotkeyTargets[i];
+      const [type, h] = dockEl.__hotkeyHandlers[i];
+      try { t.removeEventListener(type, h, true); } catch(_) {}
+    }
+    dockEl.__hotkeyTargets = [];
+    dockEl.__hotkeyHandlers = [];
+    dockEl.__hotkeyBound = false;
+  }
 }
