@@ -105,7 +105,6 @@ export function attachInteraction({ scene, camera, controls, renderer, robot, ui
       if (!center) return;
       if (!fixedDistance) computeFixedDistance(robot);
       if (!isoToggle) {
-        // mantener az/el actuales y trasladar hasta el centro de la selección
         const v = camera.position.clone().sub(controls.target);
         const r = Math.max(v.length(), 1e-6);
         const el = Math.asin(v.y / r);
@@ -151,3 +150,4 @@ export function attachInteraction({ scene, camera, controls, renderer, robot, ui
     }
   };
 }
+
