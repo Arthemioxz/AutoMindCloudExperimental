@@ -2,33 +2,6 @@
 // Floating tools dock: render modes, explode, section plane, views, projection, scene toggles, snapshot.
 /* global THREE */
 
-/**
- * @typedef {Object} Theme
- * @property {string} teal
- * @property {string} tealSoft
- * @property {string} tealFaint
- * @property {string} bgPanel
- * @property {number|string} bgCanvas
- * @property {string} stroke
- * @property {string} text
- * @property {string} textMuted
- * @property {string} shadow
- */
-
-/**
- * Create the tools dock UI and wire it to the viewer app.
- * Expects:
- *  - app.scene (THREE.Scene)
- *  - app.camera (THREE.Camera)
- *  - app.controls (OrbitControls-like)
- *  - app.renderer (THREE.WebGLRenderer)
- *  - app.robot (Object3D) optional but used for tools
- *  - app.setProjection(mode) optional
- *  - app.setSceneToggles(opts) optional
- * @param {Object} app
- * @param {Theme} theme
- * @returns {{ open:()=>void, close:()=>void, set:(open:boolean)=>void, destroy:()=>void }}
- */
 export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer)
     throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
@@ -44,7 +17,7 @@ export function createToolsDock(app, theme) {
     toggleBtn: document.createElement('button')
   };
 
-  // Helpers (UI builders)
+  // Helpers
   const mkButton = (label) => {
     const b = document.createElement('button');
     b.textContent = label;
@@ -173,29 +146,27 @@ export function createToolsDock(app, theme) {
   ui.root.appendChild(ui.dock);
   ui.root.appendChild(ui.toggleBtn);
 
-  // Attach to viewer host
+  // Attach
   const host = (app?.renderer?.domElement?.parentElement) || document.body;
   host.appendChild(ui.root);
 
-  // ---------- Controls inside the dock ----------
-
-  // Render mode
+  // ---------- Controls ----------
   const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
 
-  // NEW: Explode slider
+  // Explode (exists + wired later)
   const explodeSlider = mkSlider(0, 1, 0.01, 0);
 
-  // Section plane
+  // Section
   const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
   const secDist = mkSlider(-1, 1, 0.001, 0);
   const secEnable = mkToggle('Enable section');
   const secShowPlane = mkToggle('Show slice plane');
 
-  // Views
+  // Views row (NO Snapshot button here)
   const rowCam = document.createElement('div');
-  Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: '8px', margin: '8px 0' });
-  const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right'), bSnap = mkButton('Snapshot');
-  [bIso, bTop, bFront, bRight, bSnap].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
+  Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
+  const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
+  [bIso, bTop, bFront, bRight].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
 
   // Projection + Scene toggles
   const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
@@ -205,19 +176,19 @@ export function createToolsDock(app, theme) {
 
   // Assemble rows
   ui.body.appendChild(mkRow('Render mode', renderModeSel));
-  ui.body.appendChild(mkRow('Explode', explodeSlider));          // NEW row
+  ui.body.appendChild(mkRow('Explode', explodeSlider));
   ui.body.appendChild(mkRow('Section axis', axisSel));
   ui.body.appendChild(mkRow('Section dist', secDist));
   ui.body.appendChild(mkRow('', secEnable.wrap));
   ui.body.appendChild(mkRow('', secShowPlane.wrap));
   ui.body.appendChild(mkRow('Views', rowCam));
-  rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight); rowCam.appendChild(bSnap);
+  rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight);
   ui.body.appendChild(mkRow('Projection', projSel));
   ui.body.appendChild(mkRow('', togGrid.wrap));
   ui.body.appendChild(mkRow('', togGround.wrap));
   ui.body.appendChild(mkRow('', togAxes.wrap));
 
-  // ---------- Logic wiring ----------
+  // ---------- Logic ----------
 
   // Open/close
   function set(open) {
@@ -225,23 +196,20 @@ export function createToolsDock(app, theme) {
     ui.toggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
     if (open) {
       styleDockLeft(ui.dock);
-      // Recompute explode vectors on open in case robot changed
-      prepareExplodeVectors();
+      prepareExplodeVectors(); // refresh when opening
     }
   }
   function openDock() { set(true); }
   function closeDock() { set(false); }
   ui.toggleBtn.addEventListener('click', () => set(ui.dock.style.display === 'none'));
 
-  // Snapshot
-  ui.fitBtn.addEventListener('click', () => doSnapshot());
-  bSnap.addEventListener('click', () => doSnapshot());
-  function doSnapshot() {
+  // Snapshot (header only)
+  ui.fitBtn.addEventListener('click', () => {
     try {
       const url = app.renderer.domElement.toDataURL('image/png');
       const a = document.createElement('a'); a.href = url; a.download = 'snapshot.png'; a.click();
     } catch (_) {}
-  }
+  });
 
   // Render mode
   renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
@@ -254,20 +222,11 @@ export function createToolsDock(app, theme) {
         for (const m of mats) {
           m.wireframe = (mode === 'Wireframe');
           if (mode === 'X-Ray') {
-            m.transparent = true;
-            m.opacity = 0.35;
-            m.depthWrite = false;
-            m.depthTest = true;
+            m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.depthTest = true;
           } else if (mode === 'Ghost') {
-            m.transparent = true;
-            m.opacity = 0.70;
-            m.depthWrite = true;
-            m.depthTest = true;
+            m.transparent = true; m.opacity = 0.70; m.depthWrite = true; m.depthTest = true;
           } else {
-            m.transparent = false;
-            m.opacity = 1.0;
-            m.depthWrite = true;
-            m.depthTest = true;
+            m.transparent = false; m.opacity = 1.0; m.depthWrite = true; m.depthTest = true;
           }
           m.needsUpdate = true;
         }
@@ -275,7 +234,7 @@ export function createToolsDock(app, theme) {
     });
   }
 
-  // ---------- Section plane (renderer local clipping) ----------
+  // Section plane
   let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
   let sectionPlane = null, secVisual = null;
 
@@ -315,12 +274,7 @@ export function createToolsDock(app, theme) {
       return;
     }
 
-    const n = new THREE.Vector3(
-      secAxis === 'X' ? 1 : 0,
-      secAxis === 'Y' ? 1 : 0,
-      secAxis === 'Z' ? 1 : 0
-    );
-
+    const n = new THREE.Vector3(secAxis === 'X' ? 1 : 0, secAxis === 'Y' ? 1 : 0, secAxis === 'Z' ? 1 : 0);
     const box = new THREE.Box3().setFromObject(app.robot);
     if (box.isEmpty()) { renderer.localClippingEnabled = false; if (secVisual) secVisual.visible = false; return; }
     const size = box.getSize(new THREE.Vector3());
@@ -328,7 +282,7 @@ export function createToolsDock(app, theme) {
     const center = box.getCenter(new THREE.Vector3());
 
     const dist = (Number(secDist.value) || 0) * maxDim * 0.5;
-    const plane = new THREE.Plane(n, -center.dot(n) - dist); // n·x + d = 0
+    const plane = new THREE.Plane(n, -center.dot(n) - dist);
 
     renderer.localClippingEnabled = true;
     renderer.clippingPlanes = [plane];
@@ -338,7 +292,7 @@ export function createToolsDock(app, theme) {
     refreshSectionVisual(maxDim, center);
     secVisual.visible = !!secPlaneVisible;
 
-    // Orient the teal plane to match clipping plane normal
+    // Orient teal plane
     const look = new THREE.Vector3().copy(n);
     const up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
@@ -354,7 +308,7 @@ export function createToolsDock(app, theme) {
   secEnable.cb.addEventListener('change', () => { secEnabled = !!secEnable.cb.checked; updateSectionPlane(); });
   secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
 
-  // ---------- Views (animated from current camera) ----------
+  // Views (animated)
   const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
   const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
 
@@ -399,27 +353,28 @@ export function createToolsDock(app, theme) {
     return pos;
   }
 
+  const bIso = rowCam.children[0], bTop = rowCam.children[1], bFront = rowCam.children[2], bRight = rowCam.children[3];
   bIso.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
   bTop.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('top'), null, 750); });
   bFront.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
   bRight.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
 
-  // ---------- Projection ----------
+  // Projection
   projSel.addEventListener('change', () => {
     const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
     try { app.setProjection?.(mode); } catch (_) {}
   });
 
-  // ---------- Scene toggles ----------
+  // Scene toggles
   togGrid.cb.addEventListener('change', () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
   togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
   togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
-  // ---------- Explode logic ----------
+  // ---------- Explode ----------
   const __explode = {
     prepared: false,
-    baseByObj: new WeakMap(),      // Object3D -> THREE.Vector3 (local base pos)
-    dirByObj:  new WeakMap(),      // Object3D -> THREE.Vector3 (world-space unit dir)
+    baseByObj: new WeakMap(),
+    dirByObj:  new WeakMap(),
     maxDim: 1
   };
 
@@ -433,13 +388,11 @@ export function createToolsDock(app, theme) {
   function prepareExplodeVectors() {
     const R = computeRobotBounds();
     if (!R) { __explode.prepared = false; return; }
-
     __explode.baseByObj = new WeakMap();
     __explode.dirByObj  = new WeakMap();
     __explode.maxDim = Math.max(R.size.x, R.size.y, R.size.z) || 1;
 
     const rootCenter = R.center.clone();
-
     const candidates = new Set();
     app.robot.traverse((o) => {
       if (o.isMesh && o.geometry && o.visible) {
@@ -453,9 +406,7 @@ export function createToolsDock(app, theme) {
       if (!b.isEmpty()) {
         const c = b.getCenter(new THREE.Vector3());
         const v = c.sub(rootCenter);
-        if (v.lengthSq() < 1e-10) {
-          v.set((Math.random()*2-1)*0.01, (Math.random()*2-1)*0.01, (Math.random()*2-1)*0.01);
-        }
+        if (v.lengthSq() < 1e-10) v.set((Math.random()*2-1)*0.01, (Math.random()*2-1)*0.01, (Math.random()*2-1)*0.01);
         v.normalize();
         __explode.dirByObj.set(node, v);
       }
@@ -469,7 +420,7 @@ export function createToolsDock(app, theme) {
     if (!__explode.prepared) prepareExplodeVectors();
 
     const f = Math.max(0, Math.min(1, Number(amount01)||0));
-    const maxOffset = __explode.maxDim * 0.6; // scale with model size
+    const maxOffset = __explode.maxDim * 0.6; // distance scale (kept same)
 
     app.robot.traverse((o) => {
       if (!__explode.baseByObj.has(o) || !__explode.dirByObj.has(o)) return;
@@ -478,19 +429,19 @@ export function createToolsDock(app, theme) {
       o.position.copy(base).addScaledVector(dir, f * maxOffset);
     });
 
-    // keep section plane visual consistent if enabled
     updateSectionPlane?.();
   }
 
-  // Explode slider wiring (with subtle tween)
+  // Faster tween for "more velocity"
   let explodeTween = null, explodeCurrent = 0;
-  function tweenExplode(to, ms = 160) {
+  function tweenExplode(to, ms = 90) {             // was 160ms → now quicker
     const from = explodeCurrent;
     const t0 = performance.now();
     cancelAnimationFrame(explodeTween);
     function step(t) {
       const u = Math.min(1, (t - t0) / ms);
-      const ease = u < 0.5 ? 2*u*u : -1 + (4 - 2*u)*u;
+      // snappier ease-out
+      const ease = 1 - Math.pow(1 - u, 3);
       const v = from + (to - from) * ease;
       setExplode(v);
       explodeCurrent = v;
@@ -500,7 +451,7 @@ export function createToolsDock(app, theme) {
   }
   explodeSlider.addEventListener('input', () => {
     const target = Number(explodeSlider.value) || 0;
-    tweenExplode(target, 160);
+    tweenExplode(target, 90);
   });
 
   // ---------- Utilities ----------
@@ -522,7 +473,6 @@ export function createToolsDock(app, theme) {
     try { ui.toggleBtn.remove(); } catch (_) {}
     try { ui.dock.remove(); } catch (_) {}
     try { ui.root.remove(); } catch (_) {}
-    // Remove clipping plane artifacts
     try {
       app.renderer.localClippingEnabled = false;
       app.renderer.clippingPlanes = [];
