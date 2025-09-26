@@ -1,5 +1,5 @@
 // /viewer/ui/ToolsDock.js
-// Floating tools dock: render modes, section plane, views, projection, scene toggles, snapshot.
+// Floating tools dock: render modes, explode, section plane, views, projection, scene toggles, snapshot.
 /* global THREE */
 
 /**
@@ -17,6 +17,14 @@
 
 /**
  * Create the tools dock UI and wire it to the viewer app.
+ * Expects:
+ *  - app.scene (THREE.Scene)
+ *  - app.camera (THREE.Camera)
+ *  - app.controls (OrbitControls-like)
+ *  - app.renderer (THREE.WebGLRenderer)
+ *  - app.robot (Object3D) optional but used for tools
+ *  - app.setProjection(mode) optional
+ *  - app.setSceneToggles(opts) optional
  * @param {Object} app
  * @param {Theme} theme
  * @returns {{ open:()=>void, close:()=>void, set:(open:boolean)=>void, destroy:()=>void }}
@@ -154,8 +162,8 @@ export function createToolsDock(app, theme) {
     zIndex: '10000'
   });
 
-  // Header "Fit" (we keep it as a convenience to upper layers; optional)
-  ui.fitBtn = mkButton('Snapshot'); // repurpose header button as Snapshot for utilidad
+  // Header button (Snapshot)
+  ui.fitBtn = mkButton('Snapshot');
   Object.assign(ui.fitBtn.style, { padding: '6px 10px', borderRadius: '10px' });
 
   ui.header.appendChild(ui.title);
@@ -173,6 +181,9 @@ export function createToolsDock(app, theme) {
 
   // Render mode
   const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
+
+  // NEW: Explode slider
+  const explodeSlider = mkSlider(0, 1, 0.01, 0);
 
   // Section plane
   const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
@@ -194,6 +205,7 @@ export function createToolsDock(app, theme) {
 
   // Assemble rows
   ui.body.appendChild(mkRow('Render mode', renderModeSel));
+  ui.body.appendChild(mkRow('Explode', explodeSlider));          // NEW row
   ui.body.appendChild(mkRow('Section axis', axisSel));
   ui.body.appendChild(mkRow('Section dist', secDist));
   ui.body.appendChild(mkRow('', secEnable.wrap));
@@ -211,17 +223,19 @@ export function createToolsDock(app, theme) {
   function set(open) {
     ui.dock.style.display = open ? 'block' : 'none';
     ui.toggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
-    // Move the dock to left when it is opened (usability on small screens)
-    if (open) styleDockLeft(ui.dock);
+    if (open) {
+      styleDockLeft(ui.dock);
+      // Recompute explode vectors on open in case robot changed
+      prepareExplodeVectors();
+    }
   }
   function openDock() { set(true); }
   function closeDock() { set(false); }
   ui.toggleBtn.addEventListener('click', () => set(ui.dock.style.display === 'none'));
 
-  // Snapshot (header button) → triggers same as dedicated button
+  // Snapshot
   ui.fitBtn.addEventListener('click', () => doSnapshot());
   bSnap.addEventListener('click', () => doSnapshot());
-
   function doSnapshot() {
     try {
       const url = app.renderer.domElement.toDataURL('image/png');
@@ -231,7 +245,6 @@ export function createToolsDock(app, theme) {
 
   // Render mode
   renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
-
   function setRenderMode(mode) {
     const root = app.robot || app.scene;
     if (!root) return;
@@ -262,7 +275,7 @@ export function createToolsDock(app, theme) {
     });
   }
 
-  // Section plane (renderer local clipping)
+  // ---------- Section plane (renderer local clipping) ----------
   let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
   let sectionPlane = null, secVisual = null;
 
@@ -341,7 +354,7 @@ export function createToolsDock(app, theme) {
   secEnable.cb.addEventListener('change', () => { secEnabled = !!secEnable.cb.checked; updateSectionPlane(); });
   secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
 
-  // Views (animated from current camera)
+  // ---------- Views (animated from current camera) ----------
   const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
   const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
 
@@ -349,7 +362,6 @@ export function createToolsDock(app, theme) {
     const v = cam.position.clone().sub(target);
     const len = Math.max(1e-9, v.length());
     return { el: Math.asin(v.y / len), az: Math.atan2(v.z, v.x), r: len };
-    // az: angle from +X towards +Z; el: from XZ plane upwards
   }
 
   function tweenOrbits(cam, ctrl, toPos, toTarget = null, ms = 700) {
@@ -378,10 +390,9 @@ export function createToolsDock(app, theme) {
     const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
     const cur = currentAzEl(cam, t);
     let az = cur.az, el = cur.el;
-    // Slight epsilon to avoid gimbal-ish top
     const topEps = 1e-3;
-    if (kind === 'iso') { az = Math.PI * 0.25; el = Math.PI * 0.2; }
-    if (kind === 'top') { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
+    if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.2; }
+    if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
     if (kind === 'front') { az = Math.PI / 2; el = 0; }
     if (kind === 'right') { az = 0; el = 0; }
     const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(cur.r));
@@ -393,27 +404,109 @@ export function createToolsDock(app, theme) {
   bFront.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
   bRight.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
 
-  // Projection
+  // ---------- Projection ----------
   projSel.addEventListener('change', () => {
     const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
     try { app.setProjection?.(mode); } catch (_) {}
   });
 
-  // Scene toggles
+  // ---------- Scene toggles ----------
   togGrid.cb.addEventListener('change', () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
   togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
   togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
+  // ---------- Explode logic ----------
+  const __explode = {
+    prepared: false,
+    baseByObj: new WeakMap(),      // Object3D -> THREE.Vector3 (local base pos)
+    dirByObj:  new WeakMap(),      // Object3D -> THREE.Vector3 (world-space unit dir)
+    maxDim: 1
+  };
+
+  function computeRobotBounds() {
+    if (!app?.robot) return null;
+    const box = new THREE.Box3().setFromObject(app.robot);
+    if (box.isEmpty()) return null;
+    return { box, center: box.getCenter(new THREE.Vector3()), size: box.getSize(new THREE.Vector3()) };
+  }
+
+  function prepareExplodeVectors() {
+    const R = computeRobotBounds();
+    if (!R) { __explode.prepared = false; return; }
+
+    __explode.baseByObj = new WeakMap();
+    __explode.dirByObj  = new WeakMap();
+    __explode.maxDim = Math.max(R.size.x, R.size.y, R.size.z) || 1;
+
+    const rootCenter = R.center.clone();
+
+    const candidates = new Set();
+    app.robot.traverse((o) => {
+      if (o.isMesh && o.geometry && o.visible) {
+        candidates.add(o.parent || o);
+      }
+    });
+
+    candidates.forEach((node) => {
+      __explode.baseByObj.set(node, node.position.clone());
+      const b = new THREE.Box3().setFromObject(node);
+      if (!b.isEmpty()) {
+        const c = b.getCenter(new THREE.Vector3());
+        const v = c.sub(rootCenter);
+        if (v.lengthSq() < 1e-10) {
+          v.set((Math.random()*2-1)*0.01, (Math.random()*2-1)*0.01, (Math.random()*2-1)*0.01);
+        }
+        v.normalize();
+        __explode.dirByObj.set(node, v);
+      }
+    });
+
+    __explode.prepared = true;
+  }
+
+  function setExplode(amount01) {
+    if (!app?.robot) return;
+    if (!__explode.prepared) prepareExplodeVectors();
+
+    const f = Math.max(0, Math.min(1, Number(amount01)||0));
+    const maxOffset = __explode.maxDim * 0.6; // scale with model size
+
+    app.robot.traverse((o) => {
+      if (!__explode.baseByObj.has(o) || !__explode.dirByObj.has(o)) return;
+      const base = __explode.baseByObj.get(o);
+      const dir  = __explode.dirByObj.get(o);
+      o.position.copy(base).addScaledVector(dir, f * maxOffset);
+    });
+
+    // keep section plane visual consistent if enabled
+    updateSectionPlane?.();
+  }
+
+  // Explode slider wiring (with subtle tween)
+  let explodeTween = null, explodeCurrent = 0;
+  function tweenExplode(to, ms = 160) {
+    const from = explodeCurrent;
+    const t0 = performance.now();
+    cancelAnimationFrame(explodeTween);
+    function step(t) {
+      const u = Math.min(1, (t - t0) / ms);
+      const ease = u < 0.5 ? 2*u*u : -1 + (4 - 2*u)*u;
+      const v = from + (to - from) * ease;
+      setExplode(v);
+      explodeCurrent = v;
+      if (u < 1) explodeTween = requestAnimationFrame(step);
+    }
+    explodeTween = requestAnimationFrame(step);
+  }
+  explodeSlider.addEventListener('input', () => {
+    const target = Number(explodeSlider.value) || 0;
+    tweenExplode(target, 160);
+  });
+
   // ---------- Utilities ----------
   function styleDockLeft(dockEl) {
-    // Add a CSS adjustment class to place the dock to the left if desired
     dockEl.classList.add('viewer-dock-fix');
-    Object.assign(dockEl.style, {
-      right: 'auto',
-      left: '16px',
-      top: '16px'
-    });
-    // Minimal CSS baked-in; tweak in your global stylesheet if needed
+    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
   }
 
   // Defaults
@@ -439,4 +532,3 @@ export function createToolsDock(app, theme) {
 
   return { open: openDock, close: closeDock, set, destroy };
 }
-
