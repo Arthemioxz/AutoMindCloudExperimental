@@ -444,7 +444,7 @@ export function createToolsDock(app, theme) {
   //  Smooth, spring-tweened explode with robust calibration
   //  - Stable per-part vectors in **parent local space**
   //  - No double-application on nested meshes
-  //  - Recalibrates baseline when amount≈0 or on demand
+  //  - Recalibrates baseline when amountâ‰ˆ0 or on demand
   // ============================================================
   function makeExplodeManager() {
     // Internals
@@ -459,7 +459,7 @@ export function createToolsDock(app, theme) {
     let vel = 0;                // velocity in "amount units / s"
     let raf = null;
     let lastT = 0;
-    const stiffness = 18;       // rad/s (ω) — higher snappier
+    const stiffness = 18;       // rad/s (Ï‰) â€” higher snappier
     const damping   = 2 * Math.sqrt(stiffness); // critical damping
 
     // recalibration timer when at zero
@@ -574,7 +574,7 @@ export function createToolsDock(app, theme) {
       // auto-recalibrate baseline if user keeps it at ~0 for a moment
       if (current === 0) {
         zeroSince ??= now;
-        if (now - zeroSince > 300) { // 300ms stable at zero → recapture as new baseline
+        if (now - zeroSince > 300) { // 300ms stable at zero â†’ recapture as new baseline
           const keepTarget = target; // preserve intent
           prepare();                 // new base from current joint pose
           applyAmount(current);      // re-apply exact zero after recalibration
