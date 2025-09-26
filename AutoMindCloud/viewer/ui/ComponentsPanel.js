@@ -1,4 +1,3 @@
-
 // ComponentsPanel.js — panel izquierdo con build perezoso (evita lag)
 
 export function createComponentsPanel({ container, theme, onPick }) {
@@ -21,12 +20,11 @@ export function createComponentsPanel({ container, theme, onPick }) {
   container.appendChild(root);
 
   let built = false;
-  let robotRef = null;
   let selectedName = '';
 
   function buildOnce(robot) {
     if (built) return;
-    built = true; robotRef = robot;
+    built = true;
     const title = document.createElement('div');
     title.textContent = 'Components'; title.style.fontWeight = '800'; title.style.margin = '4px 6px 8px';
     root.appendChild(title);
@@ -73,3 +71,4 @@ export function createComponentsPanel({ container, theme, onPick }) {
 
   return { open, close, toggle, isOpen, buildOnce, markSelected };
 }
+
