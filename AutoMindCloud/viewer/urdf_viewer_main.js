@@ -12,7 +12,7 @@ export function render(opts = {}) {
 
   // estilo
   applyGlobalTheme(document); enhanceButtons(document);
-  // exponer meshDB global para URDFLoader
+  // exponer meshDB global para URDFLoader y para el patch Collada
   window.__AMC_meshDB__ = meshDB || {};
 
   const core = { boxCenter, boxMax, tweenOrbits, restoreInitialPose };
@@ -81,7 +81,7 @@ export function render(opts = {}) {
       destroy: () => { inter.onDestroy(); coreCtx.destroy(); }
     };
 
-    // construir lista una sola vez (lazy: aquí o al abrir con components.toggle())
+    // construir lista una sola vez (lazy)
     components.buildOnce(robot);
 
     // pos inicial: ISO
