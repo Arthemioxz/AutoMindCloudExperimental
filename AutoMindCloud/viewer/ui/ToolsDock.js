@@ -3,7 +3,7 @@
 
 // Floating tools dock: render modes, explode (smoothed), section plane,
 // views, projection, scene toggles, snapshot.
-// Incluye hotkey 'h' con el MISMO esquema de detección que usas en SelectionAndDrag.js
+// Hotkey 'h' para abrir/cerrar el dock (mismo sistema que pediste).
 
 export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer) {
@@ -167,7 +167,6 @@ export function createToolsDock(app, theme) {
   });
   ui.title.textContent = 'Viewer Tools';
   Object.assign(ui.title.style, { fontWeight: '800', color: theme.text });
-
   Object.assign(ui.body.style, { padding: '10px 12px' });
 
   ui.toggleBtn.textContent = 'Open Tools';
@@ -255,7 +254,7 @@ export function createToolsDock(app, theme) {
         ui.dock.style.opacity = '1';
       });
       ui.toggleBtn.textContent = 'Close Tools';
-      explode.prepare();
+      explode.prepare?.();
     } else {
       ui.dock.style.transform = 'translateX(-110%)';
       ui.dock.style.opacity = '0';
@@ -364,7 +363,7 @@ export function createToolsDock(app, theme) {
     refreshSectionVisual(maxDim, center);
     secVisual.visible = !!secPlaneVisible;
 
-    // Orientar el plano visual
+    // Orienta el plano visual
     const look = new THREE.Vector3().copy(n);
     const up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
@@ -584,14 +583,10 @@ export function createToolsDock(app, theme) {
   try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
   explodeSlider.addEventListener('input', () => explode.setTarget(Number(explodeSlider.value) || 0));
 
-  // ---------- Defaults ----------
-  const togGrid = togGrid ?? null; // quiet lint
-  const togGround = togGround ?? null;
-  const togAxes = togAxes ?? null;
-  set(false); // arranca cerrado
+  // ---------- Arranque ----------
+  set(false); // dock cerrado por defecto
 
-  // ---------- Hotkey 'h' (MISMO sistema que SelectionAndDrag.js) ----------
-  // Escucha en canvas y en document, fase de captura = true, compara e.key en minúsculas.
+  // ---------- Hotkey 'h' (exacto al sistema que pediste) ----------
   const onKeyDown = (e) => {
     const k = (e.key || '').toLowerCase();
     if (k === 'h') {
@@ -602,40 +597,24 @@ export function createToolsDock(app, theme) {
       e.stopPropagation();
     }
   };
+  // Se escucha en el canvas y en document (fase de captura = true)
   app.renderer.domElement.addEventListener('keydown', onKeyDown, true);
   document.addEventListener('keydown', onKeyDown, true);
 
-  // ---------- Proyección / Scene toggles (después de defaults para evitar hoist warnings) ----------
-  projSel.addEventListener('change', () => {
-    const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
-    try { app.setProjection?.(mode); } catch (_) {}
-  });
-  togGrid.cb.addEventListener('change',   () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
-  togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
-  togAxes.cb.addEventListener('change',   () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
-
   // ---------- API pública ----------
   function destroy() {
-    try { app.renderer.domElement.removeEventListener('keydown', onKeyDown, true); } catch(_) {}
-    try { document.removeEventListener('keydown', onKeyDown, true); } catch(_) {}
+    try { app.renderer.domElement.removeEventListener('keydown', onKeyDown, true); } catch (_) {}
+    try { document.removeEventListener('keydown', onKeyDown, true); } catch (_) {}
     try { ui.toggleBtn.remove(); } catch (_) {}
     try { ui.dock.remove(); } catch (_) {}
     try { ui.root.remove(); } catch (_) {}
     try {
       app.renderer.localClippingEnabled = false;
       app.renderer.clippingPlanes = [];
-      // quitar visual del plano si existe
-      const children = app.scene?.children || [];
-      for (let i = children.length - 1; i >= 0; i--) {
-        if (children[i] === secVisual) {
-          app.scene.remove(secVisual);
-          break;
-        }
-      }
+      if (secVisual) app.scene.remove(secVisual);
     } catch (_) {}
     explode.destroy();
   }
 
   return { open: openDock, close: closeDock, set, destroy };
 }
-
