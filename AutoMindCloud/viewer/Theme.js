@@ -53,5 +53,6 @@ export function injectCssVars(theme = THEME) {
   document.head.appendChild(style);
 }
 
-// Export por defecto tambiÃ©n (para compatibilidad)
+// Export por defecto también (para compatibilidad)
 export default THEME;
+
