@@ -1,6 +1,7 @@
 // /viewer/ui/ToolsDock.js
 // Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
-/* global THREE */
+// Adds global hotkey "H" to collapse/expand with tween.
+// /* global THREE */
 
 export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer)
@@ -19,6 +20,14 @@ export function createToolsDock(app, theme) {
   }
   if (theme && theme.shadows) {
     theme.shadow ??= (theme.shadows.lg || theme.shadows.md || theme.shadows.sm);
+  }
+
+  // ---------- Reuse existing dock if already mounted (idempotent) ----------
+  const existing = document.querySelector('.viewer-dock-fix');
+  if (existing && existing.__toolsDockAPI) {
+    // Ensure hotkey is wired
+    ensureGlobalHotkey(existing);
+    return existing.__toolsDockAPI;
   }
 
   // ---------- DOM ----------
@@ -155,7 +164,11 @@ export function createToolsDock(app, theme) {
     boxShadow: theme.shadow,
     pointerEvents: 'auto',
     overflow: 'hidden',
-    display: 'none'
+    display: 'none',
+    // Tween collapse/expand
+    transform: 'translateX(0)',
+    opacity: '1',
+    transition: 'transform 280ms ease, opacity 200ms ease'
   });
 
   Object.assign(ui.header.style, {
@@ -255,13 +268,33 @@ export function createToolsDock(app, theme) {
 
   // ---------- Logic ----------
 
-  // Open/close
+  // Open/close with tween
+  let isOpen = false;
   function set(open) {
-    ui.dock.style.display = open ? 'block' : 'none';
-    ui.toggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
+    isOpen = !!open;
     if (open) {
+      // ensure visible then animate in
+      ui.dock.style.display = 'block';
+      // style to left like your original
       styleDockLeft(ui.dock);
+      // start collapsed then uncollapse
+      requestAnimationFrame(() => {
+        ui.dock.style.transform = 'translateX(0)';
+        ui.dock.style.opacity = '1';
+      });
+      ui.toggleBtn.textContent = 'Close Tools';
       explode.prepare(); // refresh when opening
+    } else {
+      // animate out then hide
+      ui.dock.style.transform = 'translateX(-110%)';
+      ui.dock.style.opacity = '0';
+      ui.toggleBtn.textContent = 'Open Tools';
+      // after transition ends, set display none
+      const onEnd = () => {
+        if (!isOpen) ui.dock.style.display = 'none';
+        ui.dock.removeEventListener('transitionend', onEnd);
+      };
+      ui.dock.addEventListener('transitionend', onEnd);
     }
   }
   function openDock() { set(true); }
@@ -442,42 +475,37 @@ export function createToolsDock(app, theme) {
   // ============================================================
   //                       EXPLODE MANAGER
   //  Smooth, spring-tweened explode with robust calibration
-  //  - Stable per-part vectors in **parent local space**
+  //  - Stable per-part vectors in parent local space
   //  - No double-application on nested meshes
   //  - Recalibrates baseline when amount≈0 or on demand
   // ============================================================
   function makeExplodeManager() {
-    // Internals
-    const registry = []; // { node, baseLocal:Vector3, dirLocal:Vector3 }
-    const marker = new WeakSet(); // mark chosen top parts to avoid nesting
+    const registry = []; // { node, parent, baseLocal, dirLocal }
+    const marker = new WeakSet();
     let maxDim = 1;
     let prepared = false;
 
     // spring state
-    let current = 0;            // current explode amount [0..1]
-    let target = 0;             // target explode amount [0..1]
-    let vel = 0;                // velocity in "amount units / s"
+    let current = 0;
+    let target = 0;
+    let vel = 0;
     let raf = null;
     let lastT = 0;
-    const stiffness = 18;       // rad/s (ω) — higher snappier
-    const damping   = 2 * Math.sqrt(stiffness); // critical damping
+    const stiffness = 18;
+    const damping   = 2 * Math.sqrt(stiffness);
 
-    // recalibration timer when at zero
     let zeroSince = null;
 
     function worldDirToParentLocal(parent, dirWorld) {
-      // Convert direction vector from world to parent's local (ignore translation)
       const m = new THREE.Matrix4().copy(parent.matrixWorld).invert();
-      const n = new THREE.Matrix3().setFromMatrix4(m); // normal matrix
+      const n = new THREE.Matrix3().setFromMatrix4(m);
       return dirWorld.clone().applyMatrix3(n).normalize();
     }
 
     function chooseTopPartFor(mesh) {
-      // climb up until we reach a node whose parent either is the robot root
-      // or has already been selected as a part
       let n = mesh;
       while (n && n !== app.robot) {
-        if (marker.has(n)) return n; // already chosen
+        if (marker.has(n)) return n;
         if (n.parent === app.robot) return n;
         n = n.parent;
       }
@@ -492,14 +520,12 @@ export function createToolsDock(app, theme) {
 
     function prepare() {
       registry.length = 0;
-      markClear();
       if (!app.robot) { prepared = false; return; }
 
       const R = computeBounds();
       if (!R) { prepared = false; return; }
       maxDim = Math.max(R.size.x, R.size.y, R.size.z) || 1;
 
-      // collect parts (top-most parents with geometry)
       const parts = new Set();
       const seen = new WeakSet();
       app.robot.traverse((o) => {
@@ -509,7 +535,6 @@ export function createToolsDock(app, theme) {
         }
       });
 
-      // capture base & dir in parent local space
       parts.forEach((node) => {
         const parent = node.parent || app.robot;
         const baseLocal = node.position.clone();
@@ -521,7 +546,6 @@ export function createToolsDock(app, theme) {
         if (!isFinite(dirWorld.x + dirWorld.y + dirWorld.z)) return;
 
         const dirLocal = worldDirToParentLocal(parent, dirWorld);
-        // if degenerate, jitter slightly
         if (!isFinite(dirLocal.x + dirLocal.y + dirLocal.z) || dirLocal.lengthSq() < 1e-12) {
           dirLocal.set((Math.random()*2-1), (Math.random()*2-1), (Math.random()*2-1)).normalize();
         }
@@ -530,11 +554,7 @@ export function createToolsDock(app, theme) {
       });
 
       prepared = true;
-      zeroSince = performance.now(); // fresh baseline considered "zero"
-    }
-
-    function markClear() {
-      // (no-op now, we simply let WeakSets be GC'd)
+      zeroSince = performance.now();
     }
 
     function applyAmount(a01) {
@@ -547,37 +567,32 @@ export function createToolsDock(app, theme) {
         node.position.copy(baseLocal).addScaledVector(dirLocal, f * maxOffset);
       }
 
-      // keep section visuals and other helpers in sync
       updateSectionPlane?.();
-      // render one frame so it feels responsive even if main loop is paused
       try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch(_) {}
     }
 
     function tickSpring(now) {
       if (!lastT) lastT = now;
-      const dt = Math.min(0.05, (now - lastT) / 1000); // clamp 50ms for stability
+      const dt = Math.min(0.05, (now - lastT) / 1000);
       lastT = now;
 
-      // critically damped spring to target
       const x = current, v = vel, xT = target;
       const a = stiffness * (xT - x) - damping * v;
       vel = v + a * dt;
       current = x + vel * dt;
 
-      // snap when close
       if (Math.abs(current - target) < 0.0005 && Math.abs(vel) < 0.0005) {
         current = target; vel = 0;
       }
 
       applyAmount(current);
 
-      // auto-recalibrate baseline if user keeps it at ~0 for a moment
       if (current === 0) {
         zeroSince ??= now;
-        if (now - zeroSince > 300) { // 300ms stable at zero → recapture as new baseline
-          const keepTarget = target; // preserve intent
-          prepare();                 // new base from current joint pose
-          applyAmount(current);      // re-apply exact zero after recalibration
+        if (now - zeroSince > 300) {
+          const keepTarget = target;
+          prepare();
+          applyAmount(current);
           target = keepTarget;
           zeroSince = now;
         }
@@ -588,7 +603,7 @@ export function createToolsDock(app, theme) {
       if (current !== target || vel !== 0) {
         raf = requestAnimationFrame(tickSpring);
       } else {
-        raf = null; // stop when settled
+        raf = null;
       }
     }
 
@@ -606,7 +621,6 @@ export function createToolsDock(app, theme) {
     }
 
     function recalibrate() {
-      // public: recalc baseline to current (useful after big joint moves)
       prepare();
       applyAmount(current);
     }
@@ -621,22 +635,11 @@ export function createToolsDock(app, theme) {
 
   const explode = makeExplodeManager();
 
-  // Expose a hook so other parts (e.g., joint-drag code) can request recalibration:
   try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
 
-  // Drive explode from slider (smooth spring tween)
   explodeSlider.addEventListener('input', () => {
     explode.setTarget(Number(explodeSlider.value) || 0);
   });
-
-  // Double-click label area to recalibrate baseline instantly (optional UX)
-  // (Assumes the row label is the first child of the row grid)
-  // You can comment this if unwanted.
-  // ui.body.querySelectorAll('div').forEach(div => {
-  //   if (div.textContent === 'Explode') {
-  //     div.addEventListener('dblclick', () => explode.recalibrate());
-  //   }
-  // });
 
   // ---------- Utilities ----------
   function styleDockLeft(dockEl) {
@@ -652,8 +655,14 @@ export function createToolsDock(app, theme) {
   // Start closed
   set(false);
 
-  // Public API
+  // ---------- Global hotkey “H” to toggle dock (idempotent) ----------
+  ensureGlobalHotkey(ui.dock);
+
+  // ---------- Public API ----------
   function destroy() {
+    try {
+      window.removeEventListener('keydown', ui.dock.__onKeyDown, true);
+    } catch (_) {}
     try { ui.toggleBtn.remove(); } catch (_) {}
     try { ui.dock.remove(); } catch (_) {}
     try { ui.root.remove(); } catch (_) {}
@@ -665,5 +674,22 @@ export function createToolsDock(app, theme) {
     explode.destroy();
   }
 
-  return { open: openDock, close: closeDock, set, destroy };
+  const api = { open: openDock, close: closeDock, set, destroy };
+  ui.dock.__toolsDockAPI = api;
+  return api;
+
+  // ------------- helpers (hotkey) -------------
+  function ensureGlobalHotkey(dockEl) {
+    if (!dockEl || dockEl.__onKeyDown) return;
+    dockEl.__onKeyDown = function onKeyDown(e) {
+      const k = (e.key || '').toLowerCase();
+      if (k === 'h') {
+        e.preventDefault();
+        // If closed → quick “pre-display” then slide in; if open → slide out then display:none
+        const wantOpen = (ui.dock.style.display === 'none');
+        set(wantOpen);
+      }
+    };
+    window.addEventListener('keydown', dockEl.__onKeyDown, true);
+  }
 }
