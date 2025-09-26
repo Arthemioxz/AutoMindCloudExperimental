@@ -54,8 +54,8 @@ export async function loadRobot({ urdfContent, meshDB, selectMode = 'link' }) {
   const loader = new URDFLoader();
   loader.fetchOptions = { mode: 'cors', cache: 'no-store' };
 
-  // Exponer meshDB global (inyectado por el entry)
-  const mdb = window.__AMC_meshDB__ || {};
+  // meshDB expuesto por el entry (llenado desde Python)
+  const mdb = window.__AMC_meshDB__ || meshDB || {};
 
   loader.loadMeshCb = (path, loadingManager, done) => {
     try {
@@ -73,9 +73,30 @@ export async function loadRobot({ urdfContent, meshDB, selectMode = 'link' }) {
         const mat = new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 0.05, roughness: 0.9 });
         done(new THREE.Mesh(geo, mat));
       } else if (ext === 'dae') {
+        // --- FIX: reescribir rutas de texturas dentro del XML a data:URL del meshDB ---
         const dae = new THREE.ColladaLoader(loadingManager);
         fetch(dataUrl).then(r => r.arrayBuffer()).then(buf => {
-          const txt = new TextDecoder().decode(buf);
+          let txt = new TextDecoder().decode(buf);
+
+          // Reemplaza <init_from>ruta.jpg</init_from> → <init_from>data:...</init_from>
+          txt = txt.replace(/<init_from>\s*([^<>\s]+)\s*<\/init_from>/gi, (m, p1) => {
+            const raw = String(p1).toLowerCase().replace(/\\/g, '/');
+            const baseNm = raw.split('/').pop();
+            const tries = [raw, raw.replace(/^\.?\//, ''), baseNm];
+            for (const t of tries) if (mdb[t]) return `<init_from>${mdb[t]}</init_from>`;
+            return m;
+          });
+
+          // (Opcional) url(...) en materiales
+          txt = txt.replace(/url\(([^)]+)\)/gi, (m, p1) => {
+            const raw = p1.replace(/['"]/g, '').trim().toLowerCase().replace(/\\/g, '/');
+            const baseNm = raw.split('/').pop();
+            const tries = [raw, raw.replace(/^\.?\//, ''), baseNm];
+            for (const t of tries) if (mdb[t]) return `url(${mdb[t]})`;
+            return m;
+          });
+          // --- FIN FIX ---
+
           const res = dae.parse(txt);
           const g = new THREE.Group(); g.add(res.scene);
           done(g);
@@ -156,4 +177,5 @@ export function tweenOrbits(camera, controls, { toPos, toTarget = null, ms = 700
   }
   requestAnimationFrame(step);
 }
+
 
