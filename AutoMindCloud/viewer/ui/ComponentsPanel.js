@@ -27,41 +27,6 @@
  *   destroy: () => void
  * }}
  */
-
-// === Unified teal-white hover helper (applied to all buttons) ===
-function applyButtonHover(b, theme) {
-  if (!b) return;
-  const teal = (theme.colors?.teal) || theme.teal || '#0ea5a6';
-  const panelBg = (theme.colors?.panelBg) || theme.bgPanel || '#ffffff';
-  const stroke = (theme.colors?.teal) || theme.teal || '#0ea5a6';
-  const shadow = theme.shadow || (theme.shadows?.md) || '0 8px 24px rgba(0,0,0,0.12)';
-  b.style.background = panelBg;
-  b.style.color = '#000000';
-  b.style.border = `1px solid ${teal}`;
-  b.style.cursor = b.style.cursor || 'pointer';
-  b.style.transition = 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, color 120ms ease, border-color 120ms ease';
-
-  b.addEventListener('mouseenter', () => {
-    b.style.transform = 'translateY(-1px) scale(1.02)';
-    b.style.background = teal;
-    b.style.color = '#ffffff';
-    b.style.borderColor = teal;
-    b.style.boxShadow = shadow;
-  });
-  b.addEventListener('mouseleave', () => {
-    b.style.transform = 'none';
-    b.style.background = panelBg;
-    b.style.color = '#000000';
-    b.style.borderColor = teal;
-    b.style.boxShadow = shadow;
-  });
-  b.addEventListener('mousedown', () => {
-    b.style.transform = 'translateY(0) scale(0.97)';
-  });
-  b.addEventListener('mouseup', () => {
-    b.style.transform = 'translateY(-1px) scale(1.02)';
-  });
-}
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll)
     throw new Error('[ComponentsPanel] Missing required app APIs');
@@ -99,11 +64,12 @@ export function createComponentsPanel(app, theme) {
       fontWeight: '700',
       cursor: 'pointer',
       boxShadow: theme.shadow,
-      pointerEvents: 'auto'
+      pointerEvents: 'auto',
+      transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
     },
     panel: {
       position: 'absolute',
-      right: '14px',
+      left: '14px', // Cambiado de right a left
       bottom: '14px',
       width: '440px',
       maxHeight: '72%',
@@ -131,7 +97,8 @@ export function createComponentsPanel(app, theme) {
       border: `1px solid ${theme.stroke}`,
       background: theme.bgPanel,
       fontWeight: '700',
-      cursor: 'pointer'
+      cursor: 'pointer',
+      transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
     },
     list: {
       overflowY: 'auto',
@@ -142,18 +109,38 @@ export function createComponentsPanel(app, theme) {
 
   applyStyles(ui.root, css.root);
   applyStyles(ui.btn, css.btn);
-  \1
-  ui.panel.setAttribute('data-amc-dock','components');
-applyStyles(ui.header, css.header);
+  applyStyles(ui.panel, css.panel);
+  applyStyles(ui.header, css.header);
   applyStyles(ui.title, css.title);
   applyStyles(ui.showAllBtn, css.showAllBtn);
   applyStyles(ui.list, css.list);
 
   ui.btn.textContent = 'Components';
-  applyButtonHover(ui.btn, theme);
   ui.title.textContent = 'Components';
   ui.showAllBtn.textContent = 'Show all';
-  applyButtonHover(ui.showAllBtn, theme);
+
+  // Hover effects para botones
+  ui.btn.addEventListener('mouseenter', () => {
+    ui.btn.style.transform = 'translateY(-1px) scale(1.02)';
+    ui.btn.style.background = theme.tealFaint;
+    ui.btn.style.borderColor = theme.tealSoft;
+  });
+  ui.btn.addEventListener('mouseleave', () => {
+    ui.btn.style.transform = 'none';
+    ui.btn.style.background = theme.bgPanel;
+    ui.btn.style.borderColor = theme.stroke;
+  });
+
+  ui.showAllBtn.addEventListener('mouseenter', () => {
+    ui.showAllBtn.style.transform = 'translateY(-1px) scale(1.02)';
+    ui.showAllBtn.style.background = theme.tealFaint;
+    ui.showAllBtn.style.borderColor = theme.tealSoft;
+  });
+  ui.showAllBtn.addEventListener('mouseleave', () => {
+    ui.showAllBtn.style.transform = 'none';
+    ui.showAllBtn.style.background = theme.bgPanel;
+    ui.showAllBtn.style.borderColor = theme.stroke;
+  });
 
   ui.header.appendChild(ui.title);
   ui.header.appendChild(ui.showAllBtn);
@@ -232,19 +219,42 @@ applyStyles(ui.header, css.header);
 
     // Build rows
     for (const ent of normalized) {
-      \1
-      // Hover effect for component rows
-      row.style.transition = 'background-color 120ms ease, transform 120ms ease';
+      const row = document.createElement('div');
+      applyStyles(row, {
+        display: 'grid',
+        gridTemplateColumns: '128px 1fr',
+        gap: '12px',
+        alignItems: 'center',
+        padding: '10px',
+        borderRadius: '12px',
+        border: `1px solid ${theme.stroke}`,
+        marginBottom: '10px',
+        background: '#fff',
+        cursor: 'pointer',
+        transition: 'transform 0.08s ease, box-shadow 0.12s ease, background-color 0.2s ease, border-color 0.2s ease'
+      });
+
+      // Hover effects para filas
       row.addEventListener('mouseenter', () => {
-        row.style.background = theme.tealFaint || (theme.colors && theme.colors.tealFaint) || 'rgba(20,184,185,0.12)';
+        row.style.background = theme.tealFaint;
+        row.style.borderColor = theme.tealSoft;
         row.style.transform = 'translateY(-1px)';
       });
       row.addEventListener('mouseleave', () => {
-        row.style.background = 'transparent';
+        row.style.background = '#fff';
+        row.style.borderColor = theme.stroke;
         row.style.transform = 'none';
       });
-    const img = document.createElement('img');
-      applyStyles(img, thumbStyles(theme));
+
+      const img = document.createElement('img');
+      applyStyles(img, {
+        width: '128px',
+        height: '96px',
+        objectFit: 'contain',
+        background: '#f7fbfb',
+        borderRadius: '10px',
+        border: `1px solid ${theme.stroke}`
+      });
       img.alt = ent.base;
       img.loading = 'lazy';
 
@@ -302,7 +312,20 @@ applyStyles(ui.header, css.header);
     try { ui.btn.remove(); } catch (_) {}
     try { ui.panel.remove(); } catch (_) {}
     try { ui.root.remove(); } catch (_) {}
+    try { document.removeEventListener('keydown', onKeyDown); } catch (_) {}
   }
+
+  // Hotkey "c" para abrir/cerrar componentes
+  function onKeyDown(e) {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+    if (e.key === 'c' || e.key === 'C' || e.code === 'KeyC') {
+      e.preventDefault();
+      set(!open);
+      if (!open) maybeBuild();
+    }
+  }
+  document.addEventListener('keydown', onKeyDown, true);
 
   // Initial defaults
   set(false);
@@ -332,33 +355,6 @@ function extOf(p) {
   return dot >= 0 ? q.slice(dot + 1).toLowerCase() : '';
 }
 
-function rowStyles(theme) {
-  return {
-    display: 'grid',
-    gridTemplateColumns: '128px 1fr',
-    gap: '12px',
-    alignItems: 'center',
-    padding: '10px',
-    borderRadius: '12px',
-    border: `1px solid ${theme.stroke}`,
-    marginBottom: '10px',
-    background: '#fff',
-    cursor: 'pointer',
-    transition: 'transform .08s ease, box-shadow .12s ease',
-  };
-}
-
-function thumbStyles(theme) {
-  return {
-    width: '128px',
-    height: '96px',
-    objectFit: 'contain',
-    background: '#f7fbfb',
-    borderRadius: '10px',
-    border: `1px solid ${theme.stroke}`
-  };
-}
-
 function makeThumbFallback(label, theme) {
   const wrap = document.createElement('div');
   wrap.style.width = '128px';
@@ -375,4 +371,3 @@ function makeThumbFallback(label, theme) {
   wrap.textContent = label || '—';
   return wrap;
 }
-
