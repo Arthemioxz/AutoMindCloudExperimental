@@ -23,6 +23,8 @@ function normalizeKey(url = '') {
                     .toLowerCase();
 }
 
+console.log('Updated');
+
 /** LoadingManager that remaps URLs requested by loaders to data: URLs from meshDB */
 function buildLoadingManager(meshDB) {
   const manager = new THREE.LoadingManager();
