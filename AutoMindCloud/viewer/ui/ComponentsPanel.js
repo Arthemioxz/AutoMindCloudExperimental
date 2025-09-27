@@ -1,174 +1,392 @@
 // /viewer/ui/ComponentsPanel.js
-// Components/parts list panel
-
-import { createButton } from './ui_utils.js';
+// Floating gallery of components (assets) with thumbnails + isolate/show-all
+// Dependencies: None (expects an app facade and a theme object)
 
 /**
- * Creates a components/parts list panel
- * @param {Object} app - The main app facade
- * @param {Object} theme - Theme colors
- * @returns {Object} { destroy() }
+ * @typedef {Object} Theme
+ * @property {string} teal
+ * @property {string} tealSoft
+ * @property {string} tealFaint
+ * @property {string} bgPanel
+ * @property {string|number} bgCanvas
+ * @property {string} stroke
+ * @property {string} text
+ * @property {string} textMuted
+ * @property {string} shadow
+ */
+
+/**
+ * Create the Components Panel (floating UI).
+ * @param {Object} app
+ * @param {Theme} theme
+ * @returns {{
+ *   open: () => void,
+ *   close: () => void,
+ *   set: (open:boolean) => void,
+ *   refresh: () => Promise<void>,
+ *   destroy: () => void
+ * }}
  */
 export function createComponentsPanel(app, theme) {
-  const { container, assets, isolate } = app;
-  
-  // Create panel container
-  const panelDiv = document.createElement('div');
-  panelDiv.className = 'urdf-components-panel';
-  Object.assign(panelDiv.style, {
-    position: 'absolute',
-    top: '10px',
-    left: '10px',
-    width: '300px',
-    maxHeight: '80vh',
-    background: theme.bgPanel || '#ffffff',
-    border: `1px solid ${theme.border || '#cccccc'}`,
-    borderRadius: '8px',
-    padding: '12px',
-    fontFamily: 'Arial, sans-serif',
-    fontSize: '14px',
-    boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
-    zIndex: '1000',
-    overflowY: 'auto'
+  if (!app || !app.assets || !app.isolate || !app.showAll)
+    throw new Error('[ComponentsPanel] Missing required app APIs');
+
+  // ---- DOM structure
+  const ui = {
+    root: document.createElement('div'),
+    btn: document.createElement('button'),
+    panel: document.createElement('div'),
+    header: document.createElement('div'),
+    title: document.createElement('div'),
+    showAllBtn: document.createElement('button'),
+    list: document.createElement('div')
+  };
+
+  // ---- Styles
+  const css = {
+    root: {
+      position: 'absolute',
+      left: '0', top: '0',
+      width: '100%', height: '100%',
+      pointerEvents: 'none',
+      zIndex: '9999',
+      fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial',
+    },
+    btn: {
+      position: 'absolute',
+      left: '14px',
+      bottom: '14px',
+      padding: '8px 12px',
+      borderRadius: '12px',
+      border: `1px solid ${theme.stroke}`,
+      background: theme.bgPanel,
+      color: theme.text,
+      fontWeight: '700',
+      cursor: 'pointer',
+      boxShadow: theme.shadow,
+      pointerEvents: 'auto'
+    },
+    panel: {
+      position: 'absolute',
+      right: '14px',
+      bottom: '14px',
+      width: '440px',
+      maxHeight: '72%',
+      background: theme.bgPanel,
+      border: `1px solid ${theme.stroke}`,
+      boxShadow: theme.shadow,
+      borderRadius: '18px',
+      overflow: 'hidden',
+      display: 'none',
+      pointerEvents: 'auto'
+    },
+    header: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: '8px',
+      padding: '10px 12px',
+      borderBottom: `1px solid ${theme.stroke}`,
+      background: theme.tealFaint
+    },
+    title: { fontWeight: '800', color: theme.text },
+    showAllBtn: {
+      padding: '6px 10px',
+      borderRadius: '10px',
+      border: `1px solid ${theme.stroke}`,
+      background: theme.bgPanel,
+      fontWeight: '700',
+      cursor: 'pointer'
+    },
+    list: {
+      overflowY: 'auto',
+      maxHeight: 'calc(72vh - 52px)',
+      padding: '10px'
+    }
+  };
+
+  applyStyles(ui.root, css.root);
+  applyStyles(ui.btn, css.btn);
+  applyStyles(ui.panel, css.panel);
+  applyStyles(ui.header, css.header);
+  applyStyles(ui.title, css.title);
+  applyStyles(ui.showAllBtn, css.showAllBtn);
+  applyStyles(ui.list, css.list);
+
+  ui.btn.textContent = 'Components';
+  ui.title.textContent = 'Components';
+  ui.showAllBtn.textContent = 'Show all';
+
+  ui.header.appendChild(ui.title);
+  ui.header.appendChild(ui.showAllBtn);
+  ui.panel.appendChild(ui.header);
+  ui.panel.appendChild(ui.list);
+
+  ui.root.appendChild(ui.panel);
+  ui.root.appendChild(ui.btn);
+
+  // Attach to the same container as the viewer canvas (assume renderer DOM parent)
+  const host = (app?.renderer?.domElement?.parentElement) || document.body;
+  host.appendChild(ui.root);
+
+  // ---- State
+  let open = false;
+  let building = false; // prevent concurrent refresh
+  let disposed = false;
+
+  // ---- Behavior
+  function set(isOpen) {
+    open = !!isOpen;
+    ui.panel.style.display = open ? 'block' : 'none';
+  }
+  function openPanel() { set(true); maybeBuild(); }
+  function closePanel() { set(false); }
+
+  ui.btn.addEventListener('click', () => {
+    set(ui.panel.style.display === 'none');
+    if (open) maybeBuild();
   });
 
-  // Title
-  const title = document.createElement('h3');
-  title.textContent = 'Robot Components';
-  title.style.margin = '0 0 15px 0';
-  title.style.color = theme.textPrimary || '#333333';
-  panelDiv.appendChild(title);
+  ui.showAllBtn.addEventListener('click', () => {
+    try { app.showAll?.(); } catch (_) {}
+  });
 
-  // Search box
-  const searchInput = document.createElement('input');
-  searchInput.type = 'text';
-  searchInput.placeholder = 'Search components...';
-  searchInput.style.cssText = `
-    width: 100%;
-    padding: 8px;
-    margin-bottom: 15px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    box-sizing: border-box;
-  `;
-  panelDiv.appendChild(searchInput);
-
-  // Components list container
-  const listDiv = document.createElement('div');
-  panelDiv.appendChild(listDiv);
-
-  // Load and display components
-  let allComponents = [];
-  let currentFilter = '';
-
-  function loadComponents() {
-    allComponents = assets.list();
-    filterComponents();
+  async function maybeBuild() {
+    if (building || disposed) return;
+    building = true;
+    try {
+      await renderList();
+    } finally {
+      building = false;
+    }
   }
 
-  function filterComponents() {
-    listDiv.innerHTML = '';
-    
-    const filtered = allComponents.filter(comp => 
-      comp.base.toLowerCase().includes(currentFilter.toLowerCase()) ||
-      comp.ext.toLowerCase().includes(currentFilter.toLowerCase())
-    );
+  async function renderList() {
+    clearElement(ui.list);
 
-    if (filtered.length === 0) {
-      const emptyMsg = document.createElement('div');
-      emptyMsg.textContent = 'No components found';
-      emptyMsg.style.textAlign = 'center';
-      emptyMsg.style.color = '#999';
-      emptyMsg.style.padding = '20px';
-      listDiv.appendChild(emptyMsg);
+    // Retrieve assets list; support sync or async
+    let items = [];
+    try {
+      const res = app.assets.list?.();
+      items = Array.isArray(res) ? res : (await res);
+    } catch (e) {
+      items = [];
+    }
+
+    if (!items || !items.length) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No components with visual geometry found.';
+      empty.style.color = theme.textMuted;
+      empty.style.fontWeight = '600';
+      empty.style.padding = '8px 2px';
+      ui.list.appendChild(empty);
       return;
     }
 
-    filtered.forEach(comp => {
-      const compDiv = document.createElement('div');
-      compDiv.style.cssText = `
-        border: 1px solid #eee;
-        border-radius: 6px;
-        padding: 10px;
-        margin-bottom: 8px;
-        background: #fafafa;
-      `;
+    // Normalize and sort (by base name)
+    const normalized = items.map((it) => ({
+      assetKey: it.assetKey || it.key || '',
+      base: it.base || basenameNoExt(it.assetKey || ''),
+      ext: it.ext || extOf(it.assetKey || ''),
+      count: it.count || 1,
+      desc: it.desc || ''
+    })).sort((a, b) => a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }));
 
-      // Header with name and count
-      const headerDiv = document.createElement('div');
-      headerDiv.style.display = 'flex';
-      headerDiv.style.justifyContent = 'space-between';
-      headerDiv.style.alignItems = 'center';
-      headerDiv.style.marginBottom = '8px';
+    // Build rows
+    for (const ent of normalized) {
+      const row = document.createElement('div');
+      applyStyles(row, rowStyles(theme));
 
-      const nameDiv = document.createElement('div');
-      nameDiv.style.fontWeight = 'bold';
-      nameDiv.textContent = comp.base;
-      
-      const countDiv = document.createElement('div');
-      countDiv.style.background = '#666';
-      countDiv.style.color = 'white';
-      countDiv.style.padding = '2px 6px';
-      countDiv.style.borderRadius = '10px';
-      countDiv.style.fontSize = '12px';
-      countDiv.textContent = comp.count;
+      const img = document.createElement('img');
+      applyStyles(img, thumbStyles(theme));
+      img.alt = ent.base;
+      img.loading = 'lazy';
 
-      headerDiv.appendChild(nameDiv);
-      headerDiv.appendChild(countDiv);
-      compDiv.appendChild(headerDiv);
+      const meta = document.createElement('div');
+      const title = document.createElement('div');
+      title.textContent = ent.base;
+      title.style.fontWeight = '700';
+      title.style.fontSize = '14px';
+      title.style.color = theme.text;
 
-      // File info
-      const fileDiv = document.createElement('div');
-      fileDiv.style.color: '#666';
-      fileDiv.style.fontSize: '12px';
-      fileDiv.style.marginBottom: '8px';
-      fileDiv.textContent = `${comp.assetKey} (${comp.ext.toUpperCase()})`;
-      compDiv.appendChild(fileDiv);
+      const small = document.createElement('div');
+      small.textContent = `.${ent.ext || 'asset'} • ${ent.count} instance${ent.count > 1 ? 's' : ''}`;
+      small.style.color = theme.textMuted;
+      small.style.fontSize = '12px';
+      small.style.marginTop = '2px';
 
-      // Actions
-      const actionsDiv = document.createElement('div');
-      actionsDiv.style.display = 'flex';
-      actionsDiv.style.gap: '8px';
+      const desc = document.createElement('div');
+      desc.textContent = ent.desc || ' ';
+      desc.style.color = theme.textMuted;
+      desc.style.fontSize = '12px';
+      desc.style.marginTop = '4px';
 
-      const isolateBtn = createButton('Isolate', () => {
-        isolate.asset(comp.assetKey);
-        if (window.__urdf_click__) window.__urdf_click__();
+      meta.appendChild(title);
+      meta.appendChild(small);
+      if (desc.textContent.trim()) meta.appendChild(desc);
+
+      row.appendChild(img);
+      row.appendChild(meta);
+      ui.list.appendChild(row);
+
+      // Click → isolate this asset
+      row.addEventListener('click', () => {
+        try { app.isolate.asset?.(ent.assetKey); } catch (_) {}
       });
-      isolateBtn.style.flex = '1';
 
-      const showAllBtn = createButton('Show All', () => {
-        isolate.clear();
-        if (window.__urdf_click__) window.__urdf_click__();
-      });
-      showAllBtn.style.flex = '1';
-
-      actionsDiv.appendChild(isolateBtn);
-      actionsDiv.appendChild(showAllBtn);
-      compDiv.appendChild(actionsDiv);
-
-      listDiv.appendChild(compDiv);
-    });
-  }
-
-  // Search functionality
-  searchInput.addEventListener('input', (e) => {
-    currentFilter = e.target.value;
-    filterComponents();
-  });
-
-  // Initial load
-  loadComponents();
-
-  // Add to container
-  container.appendChild(panelDiv);
-
-  function destroy() {
-    if (panelDiv.parentNode) {
-      panelDiv.parentNode.removeChild(panelDiv);
+      // Async thumbnail
+      try {
+        const url = await app.assets.thumbnail?.(ent.assetKey);
+        if (url) img.src = url;
+        else img.replaceWith(makeThumbFallback(ent.base, theme));
+      } catch (_) {
+        img.replaceWith(makeThumbFallback(ent.base, theme));
+      }
     }
   }
 
-  return {
-    destroy
+  // Public API
+  async function refresh() {
+    if (disposed) return;
+    await renderList();
+  }
+
+  function destroy() {
+    disposed = true;
+    try { ui.btn.remove(); } catch (_) {}
+    try { ui.panel.remove(); } catch (_) {}
+    try { ui.root.remove(); } catch (_) {}
+  }
+
+  /* ---------- Python-to-JS migrated functions ---------- */
+
+  /**
+   * Get selected component from UI (simulates Python logic)
+   * @returns {THREE.Object3D|null} - Selected component or null
+   */
+  function getSelectedComponent() {
+    // Simulate the Python logic for getting selected component from UI
+    const selectedRows = document.querySelectorAll('.viewer-dock-fix tr.selected, .viewer-dock-fix tr[style*="background"]');
+    if (selectedRows.length === 0) return null;
+    
+    const row = selectedRows[0];
+    const linkName = row.cells[0]?.textContent?.trim();
+    if (!linkName) return null;
+    
+    let targetComponent = null;
+    app.robot?.traverse?.(obj => {
+      if (obj.name === linkName || obj.userData?.linkName === linkName) {
+        targetComponent = obj;
+      }
+    });
+    
+    return targetComponent;
+  }
+
+  /**
+   * Isolate selected component (Python logic migrated)
+   */
+  function isolateSelectedComponent() {
+    const selectedComp = getSelectedComponent();
+    if (!selectedComp) {
+      console.log('No component selected');
+      return;
+    }
+    
+    // Use the existing isolate functionality
+    try { 
+      app.isolate.asset?.(selectedComp.name || selectedComp.userData?.assetKey); 
+    } catch (_) {}
+  }
+
+  // Initial defaults
+  set(false);
+
+  return { 
+    open: openPanel, 
+    close: closePanel, 
+    set, 
+    refresh, 
+    destroy,
+    
+    // New utility functions
+    getSelectedComponent,
+    isolateSelectedComponent
   };
 }
+
+/* ------------------ Helpers ------------------ */
+
+function applyStyles(el, styles) {
+  Object.assign(el.style, styles);
+}
+
+function clearElement(el) {
+  while (el.firstChild) el.removeChild(el.firstChild);
+}
+
+function basenameNoExt(p) {
+  const q = String(p || '').split('/').pop().split('?')[0].split('#')[0];
+  const dot = q.lastIndexOf('.');
+  return dot >= 0 ? q.slice(0, dot) : q;
+}
+
+function extOf(p) {
+  const q = String(p || '').split('?')[0].split('#')[0];
+  const dot = q.lastIndexOf('.');
+  return dot >= 0 ? q.slice(dot + 1).toLowerCase() : '';
+}
+
+function rowStyles(theme) {
+  return {
+    display: 'grid',
+    gridTemplateColumns: '128px 1fr',
+    gap: '12px',
+    alignItems: 'center',
+    padding: '10px',
+    borderRadius: '12px',
+    border: `1px solid ${theme.stroke}`,
+    marginBottom: '10px',
+    background: '#fff',
+    cursor: 'pointer',
+    transition: 'transform .08s ease, box-shadow .12s ease',
+  };
+}
+
+function thumbStyles(theme) {
+  return {
+    width: '128px',
+    height: '96px',
+    objectFit: 'contain',
+    background: '#f7fbfb',
+    borderRadius: '10px',
+    border: `1px solid ${theme.stroke}`
+  };
+}
+
+function makeThumbFallback(label, theme) {
+  const wrap = document.createElement('div');
+  wrap.style.width = '128px';
+  wrap.style.height = '96px';
+  wrap.style.display = 'flex';
+  wrap.style.alignItems = 'center';
+  wrap.style.justifyContent = 'center';
+  wrap.style.background = '#f7fbfb';
+  wrap.style.border = `1px solid ${theme.stroke}`;
+  wrap.style.borderRadius = '10px';
+  wrap.style.fontSize = '11px';
+  wrap.style.color = theme.textMuted;
+  wrap.style.textAlign = 'center';
+  wrap.textContent = label || '—';
+  return wrap;
+}
+
+// Export helper functions if needed elsewhere
+export { 
+  applyStyles, 
+  clearElement, 
+  basenameNoExt, 
+  extOf,
+  getSelectedComponent,
+  isolateSelectedComponent 
+};
