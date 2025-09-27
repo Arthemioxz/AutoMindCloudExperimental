@@ -255,7 +255,7 @@ export function createToolsDock(app, theme) {
 
   // ---------- Logic ----------
 
-  // Open/close
+  // Open/close (original behavior for the button — unchanged)
   function set(open) {
     ui.dock.style.display = open ? 'block' : 'none';
     ui.toggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
@@ -652,6 +652,54 @@ export function createToolsDock(app, theme) {
   // Start closed
   set(false);
 
+  // ======== Minimal addition: 'h' hotkey with a small tween (button behavior unchanged) ========
+  // We animate only for the hotkey to keep the rest of your code intact.
+  const _onKeyDownToggleTools = (e) => {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+    if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
+      e.preventDefault();
+      try { console.log('pressed h'); } catch {}
+      const isOpen = ui.dock.style.display !== 'none';
+
+      // Prepare start/end styles
+      if (!isOpen) {
+        // opening with tween
+        ui.dock.style.display = 'block';
+        ui.dock.style.willChange = 'opacity, transform';
+        ui.dock.style.transition = 'none';
+        ui.dock.style.opacity = '0';
+        ui.dock.style.transform = 'translateY(-8px)';
+        // next frame -> animate in
+        requestAnimationFrame(() => {
+          ui.toggleBtn.textContent = 'Close Tools';
+          styleDockLeft(ui.dock);
+          explode.prepare();
+          ui.dock.style.transition = 'opacity 180ms ease, transform 180ms ease';
+          ui.dock.style.opacity = '1';
+          ui.dock.style.transform = 'translateY(0)';
+          // clear will-change after
+          setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 200);
+        });
+      } else {
+        // closing with tween
+        ui.dock.style.willChange = 'opacity, transform';
+        ui.dock.style.transition = 'opacity 180ms ease, transform 180ms ease';
+        ui.dock.style.opacity = '0';
+        ui.dock.style.transform = 'translateY(-8px)';
+        const onEnd = () => {
+          ui.dock.style.display = 'none';
+          ui.dock.style.willChange = 'auto';
+          ui.toggleBtn.textContent = 'Open Tools';
+          ui.dock.removeEventListener('transitionend', onEnd);
+        };
+        ui.dock.addEventListener('transitionend', onEnd);
+      }
+    }
+  };
+  document.addEventListener('keydown', _onKeyDownToggleTools, true);
+  // ======== End minimal addition ========
+
   // Public API
   function destroy() {
     try { ui.toggleBtn.remove(); } catch (_) {}
@@ -663,7 +711,10 @@ export function createToolsDock(app, theme) {
       if (secVisual) app.scene.remove(secVisual);
     } catch (_) {}
     explode.destroy();
+    // remove hotkey
+    document.removeEventListener('keydown', _onKeyDownToggleTools, true);
   }
 
   return { open: openDock, close: closeDock, set, destroy };
 }
+
