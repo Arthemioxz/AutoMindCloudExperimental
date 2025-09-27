@@ -61,7 +61,7 @@ export function render(opts = {}) {
     selectMode
   });
 
-  // 6) Facade “app” that is passed to UI components
+  // 6) Facade "app" that is passed to UI components
   const app = {
     // Expose core bits
     ...core,
@@ -89,63 +89,6 @@ export function render(opts = {}) {
   // 7) UI modules
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
-  // ---------- Keyboard 'h' to tween UI docks (Tools right, Components left) ----------
-  function animateDock(el, open, side) {
-    if (!el) return;
-    const dx = (side === 'right') ? 18 : -18;
-    el.style.willChange = 'transform, opacity';
-    el.style.transition = 'transform 200ms ease, opacity 200ms ease';
-    if (open) {
-      // ensure visible before animating in
-      el.style.opacity = '0';
-      el.style.transform = `translateX(${dx}px)`;
-      el.style.display = 'block';
-      requestAnimationFrame(() => {
-        el.style.opacity = '1';
-        el.style.transform = 'translateX(0)';
-      });
-    } else {
-      // animate out, then hide
-      el.style.opacity = '1';
-      el.style.transform = 'translateX(0)';
-      requestAnimationFrame(() => {
-        el.style.opacity = '0';
-        el.style.transform = `translateX(${dx}px)`;
-        setTimeout(() => { el.style.display = 'none'; }, 210);
-      });
-    }
-  }
-
-  function installHUDToggle() {
-    let open = false;
-    const toolsEl = document.querySelector('[data-amc-dock="tools"]');
-    const compsEl = document.querySelector('[data-amc-dock="components"]');
-    // Ensure initial display consistent with modules (closed by default)
-    if (toolsEl) toolsEl.style.display = 'none';
-    if (compsEl) compsEl.style.display = 'none';
-
-    document.addEventListener('keydown', (ev) => {
-      const k = (ev.key || '').toLowerCase();
-      if (k === 'h') {
-        open = !open;
-        if (open) {
-          try { tools.set(true); } catch (_) {}
-          try { comps.set(true); } catch (_) {}
-          animateDock(document.querySelector('[data-amc-dock="tools"]'), true, 'right');
-          animateDock(document.querySelector('[data-amc-dock="components"]'), true, 'left');
-        } else {
-          animateDock(document.querySelector('[data-amc-dock="tools"]'), false, 'right');
-          animateDock(document.querySelector('[data-amc-dock="components"]'), false, 'left');
-          setTimeout(() => {
-            try { tools.set(false); } catch (_) {}
-            try { comps.set(false); } catch (_) {}
-          }, 210);
-        }
-      }
-    });
-  }
-  installHUDToggle();
-
 
   // Optional click SFX for UI (kept minimal; UI modules do not depend on it)
   if (clickAudioDataURL) {
@@ -353,4 +296,3 @@ function installClickSound(dataUrl) {
 if (typeof window !== 'undefined') {
   window.URDFViewer = { render };
 }
-
