@@ -1,3 +1,4 @@
+
 // /viewer/core/AssetDB.js
 // Build a normalized in-memory asset DB and a URDFLoader-compatible loadMeshCb.
 // Three r132 + urdf-loader 0.12.6
@@ -55,7 +56,7 @@ function variantsFor(path) {
   out.add(pkg);
   out.add(base);
 
-  // también probamos sin el primer segmento (por si hay carpeta "meshes/")
+  // tambiÃ©n probamos sin el primer segmento (por si hay carpeta "meshes/")
   const parts = pkg.split('/');
   for (let i = 1; i < parts.length; i++) {
     out.add(parts.slice(i).join('/'));
@@ -70,7 +71,7 @@ function dataURLFor(ext, b64) {
 
 const textDecoder = new TextDecoder();
 function b64ToUint8(b64) {
-  // atob → bytes
+  // atob â†’ bytes
   const bin = atob(String(b64 || ''));
   const len = bin.length;
   const out = new Uint8Array(len);
@@ -84,8 +85,8 @@ function b64ToText(b64) {
 /* ---------- public: buildAssetDB ---------- */
 
 /**
- * Normaliza claves y crea índices de búsqueda.
- * @param {Object.<string,string>} meshDB  — mapa key(base/path) → base64
+ * Normaliza claves y crea Ã­ndices de bÃºsqueda.
+ * @param {Object.<string,string>} meshDB  â€” mapa key(base/path) â†’ base64
  * @returns {{
  *   byKey: Object.<string,string>,
  *   byBase: Map<string, string[]>,
@@ -98,7 +99,7 @@ export function buildAssetDB(meshDB = {}) {
   const byKey = {};
   const byBase = new Map();
 
-  // 1) Normaliza y duplica entradas útiles (sin package://)
+  // 1) Normaliza y duplica entradas Ãºtiles (sin package://)
   Object.keys(meshDB).forEach((rawKey) => {
     const b64 = meshDB[rawKey];
     if (!b64) return;
@@ -113,7 +114,7 @@ export function buildAssetDB(meshDB = {}) {
     // Registra variante sin package://
     if (kNoPkg !== k && !byKey[kNoPkg]) byKey[kNoPkg] = b64;
 
-    // También permite lookup por basename (no exclusivo; puede haber duplicados)
+    // TambiÃ©n permite lookup por basename (no exclusivo; puede haber duplicados)
     const arr = byBase.get(base) || [];
     arr.push(k);               // guardamos la key "completa" como referencia principal
     if (kNoPkg !== k) arr.push(kNoPkg);
@@ -132,7 +133,7 @@ export function buildAssetDB(meshDB = {}) {
       for (const k of ks) {
         if (byKey[k]) return byKey[k];
       }
-      // último recurso: basename
+      // Ãºltimo recurso: basename
       const base = basenameNoQuery(key);
       const arr = byBase.get(base) || [];
       for (const k of arr) {
@@ -147,7 +148,7 @@ export function buildAssetDB(meshDB = {}) {
 /* ---------- internal: choose best asset among candidates ---------- */
 
 function pickBestKey(tryKeys, assetDB) {
-  // Agrupa por basename y elige por prioridad de extensión y tamaño aprox
+  // Agrupa por basename y elige por prioridad de extensiÃ³n y tamaÃ±o aprox
   const groups = new Map();
   for (const kk of tryKeys) {
     const k = normKey(kk);
@@ -219,7 +220,7 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         return;
       }
 
-      // STEP/STP no se soporta en Three sin parser extra — devolvemos placeholder
+      // STEP/STP no se soporta en Three sin parser extra â€” devolvemos placeholder
       if (ext === 'step' || ext === 'stp') {
         onComplete(makeEmpty());
         return;
@@ -301,57 +302,6 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
       try { onComplete(makeEmpty()); } catch (_ee) {}
     }
   };
-}
-
-/* ---------- Python-to-JS migrated functions ---------- */
-
-/**
- * Find URDF and meshes directories in a given root path (JS simulation)
- * @param {string} root - Root directory path
- * @returns {Object} - {urdfDir, meshesDir} or {null, null}
- */
-export function findURDFDirs(root) {
-  // In JS context, this would interface with a file system API
-  // For now, returns mock structure matching Python logic
-  const paths = {
-    urdf: `${root}/urdf`,
-    meshes: `${root}/meshes`
-  };
-  
-  // Simulate directory existence check
-  const dirsExist = Math.random() > 0.5; // Mock check
-  
-  return dirsExist ? paths : { urdfDir: null, meshesDir: null };
-}
-
-/**
- * Extract mesh references from URDF content
- * @param {string} urdfContent - URDF XML content
- * @returns {string[]} - Array of mesh filenames
- */
-export function extractMeshReferences(urdfContent) {
-  const meshRefs = [];
-  const regex = /filename="([^"]+\.(?:stl|dae))"/gi;
-  let match;
-  
-  while ((match = regex.exec(urdfContent)) !== null) {
-    meshRefs.push(match[1]);
-  }
-  
-  return [...new Set(meshRefs)]; // Remove duplicates
-}
-
-/**
- * Normalize file path for consistent lookup
- * @param {string} path - File path to normalize
- * @returns {string} - Normalized path
- */
-export function normalizeAssetPath(path) {
-  return String(path || '')
-    .replace(/\\/g, '/')
-    .toLowerCase()
-    .replace(/^\.\//, '')
-    .replace(/^package:\/\//, '');
 }
 
 /* ---------- (opcional) export ALLOWED sets if UI wants them ---------- */
