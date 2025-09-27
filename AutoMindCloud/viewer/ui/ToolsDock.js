@@ -653,51 +653,98 @@ export function createToolsDock(app, theme) {
   set(false);
 
   //
-  // ======== 'h' hotkey: translational slide tween (right-to-left) ========
-  const _onKeyDownToggleTools = (e) => {
-    const tag = (e.target && e.target.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
-    if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
-      e.preventDefault();
-      try { console.log('pressed h'); } catch {}
-      const isOpen = ui.dock.style.display !== 'none';
-      const CLOSED_TX = -520; // px, slide distance
 
-      if (!isOpen) {
-        // Opening: from off-screen (translateX) to 0
-        ui.dock.style.display = 'block';
-        ui.dock.style.willChange = 'transform, opacity';
-        ui.dock.style.transition = 'none';
-        ui.dock.style.opacity = '0';
-        ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
-        requestAnimationFrame(() => {
-          ui.toggleBtn.textContent = 'Close Tools';
-          styleDockLeft(ui.dock);
-          try { explode.prepare(); } catch(_) {}
-          ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
-          ui.dock.style.opacity = '1';
-          ui.dock.style.transform = 'translateX(0px)';
-          setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
-        });
-      } else {
-        // Closing: to off-screen then display:none
-        ui.dock.style.willChange = 'transform, opacity';
-        ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
-        ui.dock.style.opacity = '0';
-        ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
-        const onEnd = () => {
-          ui.dock.style.display = 'none';
-          ui.dock.style.willChange = 'auto';
-          ui.toggleBtn.textContent = 'Open Tools';
-          ui.dock.removeEventListener('transitionend', onEnd);
-        };
-        ui.dock.addEventListener('transitionend', onEnd);
-      }
-    }
-  };
-  document.addEventListener('keydown', _onKeyDownToggleTools, true);
-  // ======== End hotkey ========
+  // 1) Hotkey handler: ONLY detects "h" and calls the tween
+function onHotkeyH(e) {
+  const tag = (e.target && e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
 
+  if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
+    e.preventDefault();
+    try { console.log('pressed h'); } catch {}
+
+    // Call the tween function (pass your own elements/params)
+    toggleDockTween({
+      dock: ui.dock,                 // REQUIRED: your dock element
+      toggleBtn: ui.toggleBtn,       // optional
+      side: 'left',                  // 'left' | 'right'
+      distance: 520,                 // px off-screen distance
+      labelOpen: 'Open Tools',
+      labelClose: 'Close Tools',
+      onOpenPrepare: () => { try { explode.prepare(); } catch(_) {} }
+    });
+  }
+}
+
+// 2) Tween executor: ONLY performs the open/close animation
+function toggleDockTween({
+  dock,
+  toggleBtn = null,
+  side = 'left',
+  distance = 520,
+  labelOpen = 'Open Tools',
+  labelClose = 'Close Tools',
+  onOpenPrepare
+}) {
+  if (!dock) throw new Error('[toggleDockTween] "dock" is required');
+
+  const CLOSED_TX = side === 'left' ? -distance : distance;
+  const isVisible = (dock.style.display || getComputedStyle(dock).display) !== 'none';
+
+  // Base styles (idempotent)
+  dock.style.willChange = 'transform, opacity';
+  dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
+
+  const setLabel = (txt) => { if (toggleBtn) toggleBtn.textContent = txt; };
+
+  if (!isVisible) {
+    // OPEN
+    dock.style.display = 'block';
+    dock.style.pointerEvents = 'none';
+    dock.style.transition = 'none';
+    dock.style.opacity = '0';
+    dock.style.transform = `translateX(${CLOSED_TX}px)`;
+
+    try { onOpenPrepare && onOpenPrepare(); } catch {}
+
+    requestAnimationFrame(() => {
+      if (side === 'left') { dock.style.left = '0'; dock.style.right = ''; }
+      else { dock.style.right = '0'; dock.style.left = ''; }
+
+      dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
+      dock.style.opacity = '1';
+      dock.style.transform = 'translateX(0px)';
+
+      const onEnd = () => {
+        dock.style.willChange = 'auto';
+        dock.style.pointerEvents = 'auto';
+        dock.removeEventListener('transitionend', onEnd);
+      };
+      dock.addEventListener('transitionend', onEnd);
+
+      setLabel(labelClose);
+    });
+  } else {
+    // CLOSE
+    dock.style.pointerEvents = 'none';
+    dock.style.opacity = '0';
+    dock.style.transform = `translateX(${CLOSED_TX}px)`;
+
+    const onEnd = () => {
+      dock.style.display = 'none';
+      dock.style.willChange = 'auto';
+      dock.style.pointerEvents = 'auto';
+      dock.removeEventListener('transitionend', onEnd);
+    };
+    dock.addEventListener('transitionend', onEnd);
+
+    setLabel(labelOpen);
+  }
+}
+
+// Wire the hotkey:
+document.addEventListener('keydown', onHotkeyH, true);
+  
   //
   // Public API
   function destroy() {
