@@ -13,7 +13,7 @@ function applyButtonHover(b, theme) {
   b.style.background = panelBg;
   b.style.color = '#000000';
   b.style.border = `1px solid ${teal}`;
-  b.style.cursor = b.style.cursor or 'pointer';
+  b.style.cursor = b.style.cursor || 'pointer';
   b.style.transition = 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, color 120ms ease, border-color 120ms ease';
 
   b.addEventListener('mouseenter', () => {
@@ -156,21 +156,9 @@ export function createToolsDock(app, theme) {
   });
 
   // Dock
-  Object.assign(ui.dock.style, {
-    position: 'absolute',
-    right: '14px',
-    top: '14px',
-    width: '440px',
-    background: theme.bgPanel,
-    border: `1px solid ${theme.stroke}`,
-    borderRadius: '18px',
-    boxShadow: theme.shadow,
-    pointerEvents: 'auto',
-    overflow: 'hidden',
-    display: 'none'
-  });
-
-  Object.assign(ui.header.style, {
+  \1
+  ui.dock.setAttribute('data-amc-dock','tools');
+Object.assign(ui.header.style, {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
