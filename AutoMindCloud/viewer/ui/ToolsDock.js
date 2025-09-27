@@ -673,30 +673,11 @@ export function createToolsDock(app, theme) {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // ---------- TWEENED OPEN/CLOSE (unify button + 'H') ----------
 const CLOSED_TX = 520;  // px; slide distance
 let isOpen = false;
 
-// place dock on the LEFT once
+// place dock on the LEFT once (use +CLOSED_TX for right-side)
 styleDockLeft(ui.dock);
 
 // give the dock a permanent transition and keep it in the DOM
@@ -747,6 +728,15 @@ const onKeyDownToggleTools = (e) => {
 };
 window.addEventListener('keydown', onKeyDownToggleTools, true);
 
-// remember to clean up in destroy():
-// window.removeEventListener('keydown', onKeyDownToggleTools, true);
+// (optional) in your destroy(): window.removeEventListener('keydown', onKeyDownToggleTools, true);
+
+
+
+
+
+
+
+
+
+
 
