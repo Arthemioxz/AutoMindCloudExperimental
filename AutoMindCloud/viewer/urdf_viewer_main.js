@@ -32,20 +32,6 @@ export async function latest(repo, branch) {
   }
 }
 
-// /viewer/urdf_viewer_main.js
-
-/**
- * Adjusts the container size to always fit the window.
- * @param {HTMLElement} container 
- */
-export function sizeContainer(container) {
-  if (!container) return;
-  container.style.width  = (window.innerWidth  || 1) + 'px';
-  container.style.height = (window.innerHeight || 1) + 'px';
-}
-
-
-
 export function render(opts = {}) {
   const {
     container,
