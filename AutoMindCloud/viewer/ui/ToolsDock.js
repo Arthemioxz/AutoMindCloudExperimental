@@ -1,12 +1,12 @@
 // /viewer/ui/ToolsDock.js
-// Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
+// Floating tools dock: render modes, explode, section plane, views, projection, scene toggles, snapshot.
 /* global THREE */
 
 export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer)
     throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
 
-  // --- Normalize theme to flat keys (works with your Theme.js nested shape) ---
+  // --- Normalize theme keys (compatible with Theme.js nested shape) ---
   if (theme && theme.colors) {
     theme.teal       ??= theme.colors.teal;
     theme.tealSoft   ??= theme.colors.tealSoft;
@@ -32,7 +32,7 @@ export function createToolsDock(app, theme) {
     toggleBtn: document.createElement('button')
   };
 
-  // ---------- Helpers (with hover animations intact) ----------
+  // Helpers
   const mkButton = (label) => {
     const b = document.createElement('button');
     b.textContent = label;
@@ -48,25 +48,18 @@ export function createToolsDock(app, theme) {
       boxShadow: theme.shadow,
       transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
     });
-    // Hover/active animations (KEEP)
     b.addEventListener('mouseenter', () => {
       b.style.transform = 'translateY(-1px) scale(1.02)';
-      b.style.boxShadow = theme.shadow;
       b.style.background = theme.tealFaint;
       b.style.borderColor = theme.tealSoft ?? theme.teal;
     });
     b.addEventListener('mouseleave', () => {
       b.style.transform = 'none';
-      b.style.boxShadow = theme.shadow;
       b.style.background = theme.bgPanel;
       b.style.borderColor = theme.stroke;
     });
-    b.addEventListener('mousedown', () => {
-      b.style.transform = 'translateY(0) scale(0.99)';
-    });
-    b.addEventListener('mouseup', () => {
-      b.style.transform = 'translateY(-1px) scale(1.02)';
-    });
+    b.addEventListener('mousedown', () => { b.style.transform = 'translateY(0) scale(0.99)'; });
+    b.addEventListener('mouseup',   () => { b.style.transform = 'translateY(-1px) scale(1.02)'; });
     return b;
   };
 
@@ -103,14 +96,8 @@ export function createToolsDock(app, theme) {
       color: theme.text,
       transition: 'border-color 120ms ease, box-shadow 120ms ease'
     });
-    sel.addEventListener('focus', () => {
-      sel.style.borderColor = theme.teal;
-      sel.style.boxShadow = theme.shadow;
-    });
-    sel.addEventListener('blur', () => {
-      sel.style.borderColor = theme.stroke;
-      sel.style.boxShadow = 'none';
-    });
+    sel.addEventListener('focus', () => { sel.style.borderColor = theme.teal; sel.style.boxShadow = theme.shadow; });
+    sel.addEventListener('blur',  () => { sel.style.borderColor = theme.stroke; sel.style.boxShadow = 'none'; });
     return sel;
   };
 
@@ -143,7 +130,7 @@ export function createToolsDock(app, theme) {
     fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
   });
 
-  // Dock
+  // Dock container
   Object.assign(ui.dock.style, {
     position: 'absolute',
     right: '14px',
@@ -155,7 +142,7 @@ export function createToolsDock(app, theme) {
     boxShadow: theme.shadow,
     pointerEvents: 'auto',
     overflow: 'hidden',
-    display: 'none'
+    display: 'none' // remains instant for button click; hotkey will tween
   });
 
   Object.assign(ui.header.style, {
@@ -172,7 +159,7 @@ export function createToolsDock(app, theme) {
 
   Object.assign(ui.body.style, { padding: '10px 12px' });
 
-  // Floating toggle button (with hover)
+  // Floating toggle button (unchanged)
   ui.toggleBtn.textContent = 'Open Tools';
   Object.assign(ui.toggleBtn.style, {
     position: 'absolute',
@@ -217,29 +204,22 @@ export function createToolsDock(app, theme) {
 
   // ---------- Controls ----------
   const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
-
-  // Explode (slider drives a smoothed spring tween; see ExplodeManager below)
   const explodeSlider = mkSlider(0, 1, 0.01, 0);
-
-  // Section
   const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
   const secDist = mkSlider(-1, 1, 0.001, 0);
   const secEnable = mkToggle('Enable section');
   const secShowPlane = mkToggle('Show slice plane');
 
-  // Views row
   const rowCam = document.createElement('div');
   Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
   const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
   [bIso, bTop, bFront, bRight].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
 
-  // Projection + Scene toggles
   const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
   const togGrid = mkToggle('Grid');
   const togGround = mkToggle('Ground & shadows');
   const togAxes = mkToggle('XYZ axes');
 
-  // Assemble rows
   ui.body.appendChild(mkRow('Render mode', renderModeSel));
   ui.body.appendChild(mkRow('Explode', explodeSlider));
   ui.body.appendChild(mkRow('Section axis', axisSel));
@@ -255,7 +235,7 @@ export function createToolsDock(app, theme) {
 
   // ---------- Logic ----------
 
-  // Open/close (original button behavior — unchanged)
+  // Button click behavior (unchanged: instant open/close)
   function set(open) {
     ui.dock.style.display = open ? 'block' : 'none';
     ui.toggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
@@ -268,7 +248,8 @@ export function createToolsDock(app, theme) {
   function closeDock() { set(false); }
   ui.toggleBtn.addEventListener('click', () => set(ui.dock.style.display === 'none'));
 
-  // ======== Minimal addition: 'h' hotkey with a small tween (button logic intact) ========
+  // ======== Minimal addition: 'h' hotkey with a translational slide tween ========
+  // Slides horizontally from the right; leaves button-click behavior untouched.
   const _onKeyDownToggleTools = (e) => {
     const tag = (e.target && e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
@@ -276,26 +257,30 @@ export function createToolsDock(app, theme) {
       e.preventDefault();
       try { console.log('pressed h'); } catch {}
       const isOpen = ui.dock.style.display !== 'none';
+      const CLOSED_TX = 520; // px, slide distance
+
       if (!isOpen) {
+        // Opening: from off-screen (translateX) to 0
         ui.dock.style.display = 'block';
-        ui.dock.style.willChange = 'opacity, transform';
+        ui.dock.style.willChange = 'transform, opacity';
         ui.dock.style.transition = 'none';
         ui.dock.style.opacity = '0';
-        ui.dock.style.transform = 'translateY(-8px)';
+        ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
         requestAnimationFrame(() => {
           ui.toggleBtn.textContent = 'Close Tools';
           styleDockLeft(ui.dock);
           try { explode.prepare(); } catch(_) {}
-          ui.dock.style.transition = 'opacity 180ms ease, transform 180ms ease';
+          ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
           ui.dock.style.opacity = '1';
-          ui.dock.style.transform = 'translateY(0)';
-          setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 220);
+          ui.dock.style.transform = 'translateX(0px)';
+          setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
         });
       } else {
-        ui.dock.style.willChange = 'opacity, transform';
-        ui.dock.style.transition = 'opacity 180ms ease, transform 180ms ease';
+        // Closing: to off-screen then display:none
+        ui.dock.style.willChange = 'transform, opacity';
+        ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
         ui.dock.style.opacity = '0';
-        ui.dock.style.transform = 'translateY(-8px)';
+        ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
         const onEnd = () => {
           ui.dock.style.display = 'none';
           ui.dock.style.willChange = 'auto';
@@ -309,7 +294,7 @@ export function createToolsDock(app, theme) {
   document.addEventListener('keydown', _onKeyDownToggleTools, true);
   // ======== End minimal addition ========
 
-  // Snapshot (header only)
+  // Snapshot
   ui.fitBtn.addEventListener('click', () => {
     try {
       const url = app.renderer.domElement.toDataURL('image/png');
@@ -402,7 +387,7 @@ export function createToolsDock(app, theme) {
     refreshSectionVisual(maxDim, center);
     secVisual.visible = !!secPlaneVisible;
 
-    // Orient the teal plane to match clipping plane normal
+    // Orient teal plane to match clipping normal
     const look = new THREE.Vector3().copy(n);
     const up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
@@ -459,13 +444,12 @@ export function createToolsDock(app, theme) {
     if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
     if (kind === 'front') { az = Math.PI / 2; el = 0; }
     if (kind === 'right') { az = 0; el = 0; }
-    const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(cur.r));
-    return pos;
+    return t.clone().add(dirFromAzEl(az, el).multiplyScalar(cur.r));
   }
 
   const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
-  bIsoEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
-  bTopEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('top'), null, 750); });
+  bIsoEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'),   null, 750); });
+  bTopEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('top'),   null, 750); });
   bFrontEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
   bRightEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
 
@@ -476,11 +460,143 @@ export function createToolsDock(app, theme) {
   });
 
   // ---------- Scene toggles ----------
-  togGrid.cb.addEventListener('change', () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
+  togGrid.cb.addEventListener('change',   () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
   togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
-  togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
+  togAxes.cb.addEventListener('change',   () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
   // ---------- Utilities ----------
+  function styleDockLeft(dockEl) {
+    dockEl.classList.add('viewer-dock-fix');
+    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
+  }
+
+  // ============================================================
+  //                       EXPLODE MANAGER
+  //  (kept intact)
+  // ============================================================
+  function makeExplodeManager() {
+    const registry = [];
+    const marker = new WeakSet();
+    let maxDim = 1;
+    let prepared = false;
+
+    let current = 0, target = 0, vel = 0, raf = null, lastT = 0;
+    const stiffness = 18, damping = 2 * Math.sqrt(stiffness);
+    let zeroSince = null;
+
+    function worldDirToParentLocal(parent, dirWorld) {
+      const m = new THREE.Matrix4().copy(parent.matrixWorld).invert();
+      const n = new THREE.Matrix3().setFromMatrix4(m);
+      return dirWorld.clone().applyMatrix3(n).normalize();
+    }
+
+    function chooseTopPartFor(mesh) {
+      let n = mesh;
+      while (n && n !== app.robot) {
+        if (marker.has(n)) return n;
+        if (n.parent === app.robot) return n;
+        n = n.parent;
+      }
+      return mesh.parent || mesh;
+    }
+
+    function bounds() {
+      const box = new THREE.Box3().setFromObject(app.robot);
+      if (box.isEmpty()) return null;
+      return { center: box.getCenter(new THREE.Vector3()), size: box.getSize(new THREE.Vector3()) };
+    }
+
+    function prepare() {
+      registry.length = 0;
+      if (!app.robot) { prepared = false; return; }
+      const R = bounds(); if (!R) { prepared = false; return; }
+      maxDim = Math.max(R.size.x, R.size.y, R.size.z) || 1;
+
+      const parts = new Set(); const seen = new WeakSet();
+      app.robot.traverse((o) => {
+        if (o.isMesh && o.geometry && o.visible && !o.userData.__isHoverOverlay) {
+          const top = chooseTopPartFor(o);
+          if (!seen.has(top)) { parts.add(top); seen.add(top); marker.add(top); }
+        }
+      });
+
+      parts.forEach((node) => {
+        const parent = node.parent || app.robot;
+        const baseLocal = node.position.clone();
+        const box = new THREE.Box3().setFromObject(node);
+        if (box.isEmpty()) return;
+        const cWorld = box.getCenter(new THREE.Vector3());
+        const dirWorld = cWorld.sub(R.center).normalize();
+        const dirLocal = worldDirToParentLocal(parent, dirWorld);
+        if (!isFinite(dirLocal.lengthSq()) || dirLocal.lengthSq() < 1e-12) dirLocal.set(1,0,0);
+        registry.push({ node, parent, baseLocal, dirLocal });
+      });
+
+      prepared = true;
+      zeroSince = performance.now();
+    }
+
+    function applyAmount(a01) {
+      if (!prepared) prepare();
+      const f = Math.max(0, Math.min(1, a01 || 0));
+      const maxOffset = maxDim * 0.6;
+      for (const rec of registry) {
+        const { node, baseLocal, dirLocal } = rec;
+        node.position.copy(baseLocal).addScaledVector(dirLocal, f * maxOffset);
+      }
+      try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch(_) {}
+    }
+
+    function tick(now) {
+      if (!lastT) lastT = now;
+      const dt = Math.min(0.05, (now - lastT) / 1000);
+      lastT = now;
+
+      const a = stiffness * (target - current) - damping * vel;
+      vel += a * dt;
+      current += vel * dt;
+
+      if (Math.abs(current - target) < 0.0005 && Math.abs(vel) < 0.0005) { current = target; vel = 0; }
+      applyAmount(current);
+
+      if (current === 0) {
+        zeroSince ??= now;
+        if (now - zeroSince > 300) {
+          const keep = target;
+          prepare();
+          applyAmount(current);
+          target = keep;
+          zeroSince = now;
+        }
+      } else zeroSince = null;
+
+      if (current !== target || vel !== 0) raf = requestAnimationFrame(tick); else raf = null;
+    }
+
+    function setTarget(a01) {
+      target = Math.max(0, Math.min(1, Number(a01) || 0));
+      if (!prepared) prepare();
+      if (!raf) { lastT = 0; raf = requestAnimationFrame(tick); }
+    }
+
+    function immediate(a01) {
+      target = current = Math.max(0, Math.min(1, Number(a01) || 0));
+      vel = 0;
+      if (!prepared) prepare();
+      applyAmount(current);
+    }
+
+    function recalibrate() { prepare(); applyAmount(current); }
+    function destroy() { if (raf) cancelAnimationFrame(raf); raf = null; }
+
+    return { prepare, setTarget, immediate, recalibrate, destroy };
+  }
+
+  const explode = makeExplodeManager();
+  try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
+  explodeSlider.addEventListener('input', () => { explode.setTarget(Number(explodeSlider.value) || 0); });
+
+  // Utilities
   function styleDockLeft(dockEl) {
     dockEl.classList.add('viewer-dock-fix');
     Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
@@ -494,7 +610,7 @@ export function createToolsDock(app, theme) {
   // Start closed
   set(false);
 
-  // Public API
+  // Cleanup / API
   function destroy() {
     try { ui.toggleBtn.remove(); } catch (_) {}
     try { ui.dock.remove(); } catch (_) {}
@@ -504,10 +620,60 @@ export function createToolsDock(app, theme) {
       app.renderer.clippingPlanes = [];
       if (secVisual) app.scene.remove(secVisual);
     } catch (_) {}
-    // remove hotkey
     try { document.removeEventListener('keydown', _onKeyDownToggleTools, true); } catch(_) {}
     explode.destroy();
   }
 
   return { open: openDock, close: closeDock, set, destroy };
+
+  // (Note: section plane visuals were defined above; we keep references for cleanup)
+  let secVisual = null; // hoisted for destroy()
+
+  // -------------- Hotkey listener declared near the end for cleanup --------------
+  /* eslint-disable no-var */
+  var _onKeyDownToggleTools = (e) => {}; // will be assigned below
+  /* eslint-enable no-var */
+
+  // Assign actual listener (after functions exist)
+  _onKeyDownToggleTools = (e) => {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+    if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
+      e.preventDefault();
+      try { console.log('pressed h'); } catch {}
+      const isOpen = ui.dock.style.display !== 'none';
+      const CLOSED_TX = 520; // px, slide distance
+
+      if (!isOpen) {
+        ui.dock.style.display = 'block';
+        ui.dock.style.willChange = 'transform, opacity';
+        ui.dock.style.transition = 'none';
+        ui.dock.style.opacity = '0';
+        ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
+        requestAnimationFrame(() => {
+          ui.toggleBtn.textContent = 'Close Tools';
+          styleDockLeft(ui.dock);
+          try { explode.prepare(); } catch(_) {}
+          ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
+          ui.dock.style.opacity = '1';
+          ui.dock.style.transform = 'translateX(0px)';
+          setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
+        });
+      } else {
+        ui.dock.style.willChange = 'transform, opacity';
+        ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
+        ui.dock.style.opacity = '0';
+        ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
+        const onEnd = () => {
+          ui.dock.style.display = 'none';
+          ui.dock.style.willChange = 'auto';
+          ui.toggleBtn.textContent = 'Open Tools';
+          ui.dock.removeEventListener('transitionend', onEnd);
+        };
+        ui.dock.addEventListener('transitionend', onEnd);
+      }
+    }
+  };
+  document.addEventListener('keydown', _onKeyDownToggleTools, true);
 }
+
