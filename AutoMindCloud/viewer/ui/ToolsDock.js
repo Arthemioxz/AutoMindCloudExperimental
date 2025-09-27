@@ -679,95 +679,47 @@ export function createToolsDock(app, theme) {
 
 
 
-// ---------- TWEENED OPEN/CLOSE (unify button + 'H') ----------
-const CLOSED_TX = 520;  // px; slide distance
-let isOpen = false;
-
-// Wait for UI to be available
-function initializeDock() {
-  // Check if ui is defined and has the required elements
-  if (typeof ui === 'undefined' || !ui.dock || !ui.toggleBtn) {
-    console.warn('UI elements not ready yet, retrying...');
-    setTimeout(initializeDock, 100);
-    return;
-  }
-
-  // place dock on the LEFT once
-  styleDockLeft(ui.dock);
-
-  // keep the dock in the DOM; animate transform + opacity
-  Object.assign(ui.dock.style, {
-    display: 'block',
-    willChange: 'transform, opacity',
-    transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease'
-  });
-
-  // helper to apply visual state
-  function applyState(open) {
-    if (open) {
-      ui.dock.style.opacity = '1';
-      ui.dock.style.transform = 'translateX(0)';
-      ui.dock.style.pointerEvents = 'auto';
-      ui.toggleBtn.textContent = 'Close Tools';
-    } else {
-      ui.dock.style.opacity = '0';
-      // negative X = slide off to the left; use +CLOSED_TX if dock anchored right
-      ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
-      ui.dock.style.pointerEvents = 'none';
-      ui.toggleBtn.textContent = 'Open Tools';
-    }
-  }
-
-  function set(open) {
-    const next = !!open;
-    if (next && !isOpen) { 
-      try { 
-        if (typeof explode !== 'undefined' && explode.prepare) {
-          explode.prepare(); 
-        }
-      } catch {} 
-    }
-    isOpen = next;
-    applyState(isOpen);
-  }
-
-  function openDock()  { set(true);  }
-  function closeDock() { set(false); }
-
-  // init hidden (off-screen)
-  applyState(false);
-
-  // Button uses the same setter
-  ui.toggleBtn.addEventListener('click', () => set(!isOpen));
-
-  // 'H' hotkey (inside the same scope → `ui` is defined)
-  const onKeyDownToggleTools = (e) => {
-    if (e.isComposing) return;
+  // ======== 'h' hotkey: translational slide tween (right-to-left) ========
+  const _onKeyDownToggleTools = (e) => {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
     if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
       e.preventDefault();
-      set(!isOpen);
+      try { console.log('pressed h'); } catch {}
+      const isOpen = ui.dock.style.display !== 'none';
+      const CLOSED_TX = 520; // px, slide distance
+
+      if (!isOpen) {
+        // Opening: from off-screen (translateX) to 0
+        ui.dock.style.display = 'block';
+        ui.dock.style.willChange = 'transform, opacity';
+        ui.dock.style.transition = 'none';
+        ui.dock.style.opacity = '0';
+        ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
+        requestAnimationFrame(() => {
+          ui.toggleBtn.textContent = 'Close Tools';
+          styleDockLeft(ui.dock);
+          try { explode.prepare(); } catch(_) {}
+          ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
+          ui.dock.style.opacity = '1';
+          ui.dock.style.transform = 'translateX(0px)';
+          setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
+        });
+      } else {
+        // Closing: to off-screen then display:none
+        ui.dock.style.willChange = 'transform, opacity';
+        ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
+        ui.dock.style.opacity = '0';
+        ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
+        const onEnd = () => {
+          ui.dock.style.display = 'none';
+          ui.dock.style.willChange = 'auto';
+          ui.toggleBtn.textContent = 'Open Tools';
+          ui.dock.removeEventListener('transitionend', onEnd);
+        };
+        ui.dock.addEventListener('transitionend', onEnd);
+      }
     }
   };
-  window.addEventListener('keydown', onKeyDownToggleTools, true);
-
-  // Return cleanup function
-  return () => {
-    window.removeEventListener('keydown', onKeyDownToggleTools, true);
-    if (ui.toggleBtn) {
-      ui.toggleBtn.removeEventListener('click', () => set(!isOpen));
-    }
-  };
-}
-
-// Alternative: If you know ui will be available after DOMContentLoaded
-document.addEventListener('DOMContentLoaded', function() {
-  // If ui is defined globally elsewhere, initialize immediately
-  if (typeof ui !== 'undefined' && ui.dock && ui.toggleBtn) {
-    initializeDock();
-  } else {
-    // Otherwise, wait a bit for other scripts to initialize ui
-    setTimeout(initializeDock, 500);
-  }
-});
-
-// Or if ui is created by another function, call initializeDock after that function
+  document.addEventListener('keydown', _onKeyDownToggleTools, true);
+  // ======== End hotkey ========
