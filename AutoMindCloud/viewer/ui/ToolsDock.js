@@ -494,11 +494,12 @@ function viewEndPosition(kind) {
   if (kind === 'front') { az = Math.PI / 2; el = 0; }
   if (kind === 'right') { az = 0; el = 0; }
 
-  // ---- use fixed system default radius ----
-  const r = DEFAULT_RADIUS ?? cur.r;  // fallback if not initialized
-  const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(r));
+  // ---- FIXED DISTANCE (e.g. 10 units) ----
+  const FIXED_RADIUS = 10;
+  const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(FIXED_RADIUS));
   return pos;
 }
+
 
 
 
