@@ -673,14 +673,19 @@ export function createToolsDock(app, theme) {
 
 
 
+
+
+
+
+
 // ---------- TWEENED OPEN/CLOSE (unify button + 'H') ----------
 const CLOSED_TX = 520;  // px; slide distance
 let isOpen = false;
 
-// place dock on the LEFT once (use +CLOSED_TX for right-side)
+// place dock on the LEFT once
 styleDockLeft(ui.dock);
 
-// give the dock a permanent transition and keep it in the DOM
+// keep the dock in the DOM; animate transform + opacity
 Object.assign(ui.dock.style, {
   display: 'block',
   willChange: 'transform, opacity',
@@ -696,7 +701,7 @@ function applyState(open) {
     ui.toggleBtn.textContent = 'Close Tools';
   } else {
     ui.dock.style.opacity = '0';
-    // negative X = slide off to the left; use +CLOSED_TX if your dock is on the right
+    // negative X = slide off to the left; use +CLOSED_TX if dock anchored right
     ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
     ui.dock.style.pointerEvents = 'none';
     ui.toggleBtn.textContent = 'Open Tools';
@@ -718,7 +723,7 @@ applyState(false);
 // Button uses the same setter
 ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
-// 'H' hotkey (no scope issues since we're inside the function)
+// 'H' hotkey (inside the same scope → `ui` is defined)
 const onKeyDownToggleTools = (e) => {
   if (e.isComposing) return;
   if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
@@ -728,15 +733,5 @@ const onKeyDownToggleTools = (e) => {
 };
 window.addEventListener('keydown', onKeyDownToggleTools, true);
 
-// (optional) in your destroy(): window.removeEventListener('keydown', onKeyDownToggleTools, true);
-
-
-
-
-
-
-
-
-
-
-
+// remember to clean up in destroy():
+// window.removeEventListener('keydown', onKeyDownToggleTools, true);
