@@ -683,20 +683,13 @@ export function createToolsDock(app, theme) {
 
 
 
- // ---------- TWEENED OPEN/CLOSE (hotkey 'H') ----------
-const CLOSED_TX = 520; // px slide distance (negative = slide out to left)
+// ---------- TWEENED OPEN/CLOSE (hotkey 'H') ----------
+const CLOSED_TX = 520; // px slide distance
 let isOpen = false;
-
-// Place the dock on the left and start off-screen
-function styleDockLeft(dockEl) {
-  dockEl.classList.add('viewer-dock-fix');
-  Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
-}
-styleDockLeft(ui.dock);
 
 function placeClosed() {
   ui.dock.style.opacity = '0';
-  ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`; // slide left
+  ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`; // slide out left
   ui.dock.style.pointerEvents = 'none';
   ui.toggleBtn.textContent = 'Open Tools';
 }
@@ -707,31 +700,30 @@ function placeOpen() {
   ui.toggleBtn.textContent = 'Close Tools';
 }
 
-// init hidden
+// initialize hidden
+Object.assign(ui.dock.style, {
+  display: 'block',
+  willChange: 'transform, opacity',
+  transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease'
+});
 placeClosed();
 
 function set(open) {
   isOpen = !!open;
-  if (isOpen) {
-    try { explode.prepare(); } catch (_) {}
-    placeOpen();
-  } else {
-    placeClosed();
-  }
+  if (isOpen) { try { explode.prepare(); } catch(_) {} ; placeOpen(); }
+  else placeClosed();
 }
 function openDock()  { set(true); }
 function closeDock() { set(false); }
 
-// Click toggle (kept)
 ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
-// Global hotkey: H (ignore when typing in inputs)
 const onKeyDownToggleTools = (e) => {
   const tag = (e.target && e.target.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
   if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
     e.preventDefault();
-    try { console.log('pressed h'); } catch {}
+    console.log('pressed h');
     set(!isOpen);
   }
 };
