@@ -678,60 +678,96 @@ export function createToolsDock(app, theme) {
 
 
 
+
 // ---------- TWEENED OPEN/CLOSE (unify button + 'H') ----------
 const CLOSED_TX = 520;  // px; slide distance
 let isOpen = false;
 
-// place dock on the LEFT once
-styleDockLeft(ui.dock);
+// Wait for UI to be available
+function initializeDock() {
+  // Check if ui is defined and has the required elements
+  if (typeof ui === 'undefined' || !ui.dock || !ui.toggleBtn) {
+    console.warn('UI elements not ready yet, retrying...');
+    setTimeout(initializeDock, 100);
+    return;
+  }
 
-// keep the dock in the DOM; animate transform + opacity
-Object.assign(ui.dock.style, {
-  display: 'block',
-  willChange: 'transform, opacity',
-  transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease'
+  // place dock on the LEFT once
+  styleDockLeft(ui.dock);
+
+  // keep the dock in the DOM; animate transform + opacity
+  Object.assign(ui.dock.style, {
+    display: 'block',
+    willChange: 'transform, opacity',
+    transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease'
+  });
+
+  // helper to apply visual state
+  function applyState(open) {
+    if (open) {
+      ui.dock.style.opacity = '1';
+      ui.dock.style.transform = 'translateX(0)';
+      ui.dock.style.pointerEvents = 'auto';
+      ui.toggleBtn.textContent = 'Close Tools';
+    } else {
+      ui.dock.style.opacity = '0';
+      // negative X = slide off to the left; use +CLOSED_TX if dock anchored right
+      ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
+      ui.dock.style.pointerEvents = 'none';
+      ui.toggleBtn.textContent = 'Open Tools';
+    }
+  }
+
+  function set(open) {
+    const next = !!open;
+    if (next && !isOpen) { 
+      try { 
+        if (typeof explode !== 'undefined' && explode.prepare) {
+          explode.prepare(); 
+        }
+      } catch {} 
+    }
+    isOpen = next;
+    applyState(isOpen);
+  }
+
+  function openDock()  { set(true);  }
+  function closeDock() { set(false); }
+
+  // init hidden (off-screen)
+  applyState(false);
+
+  // Button uses the same setter
+  ui.toggleBtn.addEventListener('click', () => set(!isOpen));
+
+  // 'H' hotkey (inside the same scope → `ui` is defined)
+  const onKeyDownToggleTools = (e) => {
+    if (e.isComposing) return;
+    if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
+      e.preventDefault();
+      set(!isOpen);
+    }
+  };
+  window.addEventListener('keydown', onKeyDownToggleTools, true);
+
+  // Return cleanup function
+  return () => {
+    window.removeEventListener('keydown', onKeyDownToggleTools, true);
+    if (ui.toggleBtn) {
+      ui.toggleBtn.removeEventListener('click', () => set(!isOpen));
+    }
+  };
+}
+
+// Alternative: If you know ui will be available after DOMContentLoaded
+document.addEventListener('DOMContentLoaded', function() {
+  // If ui is defined globally elsewhere, initialize immediately
+  if (typeof ui !== 'undefined' && ui.dock && ui.toggleBtn) {
+    initializeDock();
+  } else {
+    // Otherwise, wait a bit for other scripts to initialize ui
+    setTimeout(initializeDock, 500);
+  }
 });
 
-// helper to apply visual state
-function applyState(open) {
-  if (open) {
-    ui.dock.style.opacity = '1';
-    ui.dock.style.transform = 'translateX(0)';
-    ui.dock.style.pointerEvents = 'auto';
-    ui.toggleBtn.textContent = 'Close Tools';
-  } else {
-    ui.dock.style.opacity = '0';
-    // negative X = slide off to the left; use +CLOSED_TX if dock anchored right
-    ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
-    ui.dock.style.pointerEvents = 'none';
-    ui.toggleBtn.textContent = 'Open Tools';
-  }
-}
-
-function set(open) {
-  const next = !!open;
-  if (next && !isOpen) { try { explode.prepare(); } catch {} }
-  isOpen = next;
-  applyState(isOpen);
-}
-function openDock()  { set(true);  }
-function closeDock() { set(false); }
-
-// init hidden (off-screen)
-applyState(false);
-
-// Button uses the same setter
-ui.toggleBtn.addEventListener('click', () => set(!isOpen));
-
-// 'H' hotkey (inside the same scope → `ui` is defined)
-const onKeyDownToggleTools = (e) => {
-  if (e.isComposing) return;
-  if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
-    e.preventDefault();
-    set(!isOpen);
-  }
-};
-window.addEventListener('keydown', onKeyDownToggleTools, true);
-
-// remember to clean up in destroy():
-// window.removeEventListener('keydown', onKeyDownToggleTools, true);
+// Or if ui is created by another function, call initializeDock after that function
