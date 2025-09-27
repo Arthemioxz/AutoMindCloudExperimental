@@ -495,6 +495,131 @@ export function attachInteraction({
     try { if (selectionHelper) scene.remove(selectionHelper); } catch (_) {}
   }
 
+  /* ---------- Python-to-JS migrated functions ---------- */
+
+  /**
+   * Build mesh cache for isolation functionality
+   * @param {THREE.Object3D} robot - Robot object
+   * @returns {THREE.Mesh[]} - Array of all meshes
+   */
+  function buildMeshCache(robot) {
+    const meshes = [];
+    robot?.traverse?.(object => {
+      if (object.isMesh && object.geometry) {
+        meshes.push(object);
+      }
+    });
+    return meshes;
+  }
+
+  /**
+   * Bulk set visibility for all meshes
+   * @param {THREE.Mesh[]} meshes - Array of meshes
+   * @param {boolean} visible - Visibility state
+   */
+  function bulkSetVisible(meshes, visible) {
+    meshes.forEach(mesh => {
+      mesh.visible = visible;
+    });
+  }
+
+  /**
+   * Set visibility for a subtree
+   * @param {THREE.Object3D} root - Root object
+   * @param {boolean} visible - Visibility state
+   */
+  function setVisibleSubtree(root, visible) {
+    root?.traverse?.(object => {
+      if (object.isMesh) {
+        object.visible = visible;
+      }
+    });
+  }
+
+  /**
+   * Frame an object with smooth animation
+   * @param {THREE.Object3D} object - Object to frame
+   * @param {Object} app - Application instance
+   * @param {number} padding - Padding multiplier
+   * @param {number} duration - Animation duration
+   */
+  function frameObjectAnimated(object, app, padding = 1.2, duration = 700) {
+    const { camera, controls } = app;
+    const box = new THREE.Box3().setFromObject(object);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    
+    const fov = (camera.fov || 60) * Math.PI / 180;
+    const distance = (maxDim * padding) / Math.tan(fov / 2);
+    
+    const current = currentAzimuthElevation(camera, controls.target);
+    const direction = directionFromAzEl(current.az, current.el);
+    const targetPos = center.clone().add(direction.multiplyScalar(distance));
+    
+    tweenOrbits(camera, controls, targetPos, center, duration);
+  }
+
+  // Easing function for smooth animations
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  // Direction from azimuth/elevation
+  function directionFromAzEl(az, el) {
+    return new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az)
+    ).normalize();
+  }
+
+  // Current azimuth/elevation
+  function currentAzimuthElevation(camera, target) {
+    const vector = camera.position.clone().sub(target);
+    const distance = Math.max(1e-9, vector.length());
+    
+    return {
+      az: Math.atan2(vector.z, vector.x),
+      el: Math.asin(vector.y / distance),
+      distance: distance
+    };
+  }
+
+  // Tween orbits function
+  function tweenOrbits(camera, controls, toPos, toTarget = null, duration = 700) {
+    const startPos = camera.position.clone();
+    const startTarget = controls.target.clone();
+    const startTime = performance.now();
+    
+    controls.enabled = false;
+    camera.up.set(0, 1, 0);
+    
+    function animate(currentTime) {
+      const elapsed = currentTime - startTime;
+      const progress = Math.min(1, elapsed / duration);
+      const eased = easeInOutCubic(progress);
+      
+      // Interpolate position
+      camera.position.lerpVectors(startPos, toPos, eased);
+      
+      // Interpolate target if provided
+      if (toTarget) {
+        controls.target.lerpVectors(startTarget, toTarget, eased);
+      }
+      
+      controls.update();
+      
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      } else {
+        controls.enabled = true;
+      }
+    }
+    
+    requestAnimationFrame(animate);
+  }
+
   return {
     setRobot,
     setSelectMode,
@@ -502,135 +627,28 @@ export function attachInteraction({
     selectFromHit,
     isolateCurrent,
     restoreAll,
-    destroy
+    destroy,
+
+    // New utility functions
+    buildMeshCache,
+    bulkSetVisible,
+    setVisibleSubtree,
+    frameObjectAnimated,
+    easeInOutCubic,
+    directionFromAzEl,
+    currentAzimuthElevation,
+    tweenOrbits
   };
 }
 
-// --- Injected from .py (behavior kept identical): Fixed-distance views + isolation by dock selection ---
-export function installFixedDistanceAndIsolation(app){
-  function easeInOutCubic(t){ return t<0.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2; }
-  function dirFromAzEl(az, el){ return new THREE.Vector3(Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)).normalize(); }
-  function currentAzEl(cam, target){ const v=cam.position.clone().sub(target); const len=Math.max(1e-9, v.length()); return { el: Math.asin(v.y/len), az: Math.atan2(v.z, v.x), r: len }; }
-  function tweenOrbits(cam,ctrl,toPos,toTarget=null,ms=700){
-    const p0=cam.position.clone(), t0=ctrl.target.clone(), tStart=performance.now(); ctrl.enabled=false; cam.up.set(0,1,0);
-    const moveTarget = (toTarget!==null);
-    function step(t){ const u=Math.min(1,(t-tStart)/ms), e=easeInOutCubic(u);
-      cam.position.set(p0.x+(toPos.x-p0.x)*e, p0.y+(toPos.y-p0.y)*e, p0.z+(toPos.z-p0.z)*e);
-      if(moveTarget) ctrl.target.set(t0.x+(toTarget.x-t0.x)*e, t0.y+(toTarget.y-t0.y)*e, t0.z+(toTarget.z-t0.z)*e);
-      ctrl.update(); app.renderer.render(app.scene, cam);
-      if(u<1) requestAnimationFrame(step); else ctrl.enabled=true; }
-    requestAnimationFrame(step);
-  }
-
-  let FIXED_DISTANCE = null;
-  const INIT = app.__INIT || { az: Math.PI*0.25, el: Math.PI*0.138, topEps:1e-3 };
-
-  function calculateFixedDistance(robot){
-    const box = new THREE.Box3().setFromObject(robot);
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const fov = (app.camera.fov || 60) * Math.PI / 180;
-    FIXED_DISTANCE = (maxDim * 0.8) / Math.tan(fov / 2);
-    return FIXED_DISTANCE;
-  }
-
-  function navigateToViewFixedDistance(viewType, ms=700){
-    const cam = app.camera, ctrl = app.controls;
-    const box = new THREE.Box3().setFromObject(app.robot);
-    const center = box.getCenter(new THREE.Vector3());
-    if (!FIXED_DISTANCE) calculateFixedDistance(app.robot);
-
-    let targetAz, targetEl;
-    switch(String(viewType||'').toLowerCase()){
-      case 'iso': targetAz = INIT.az; targetEl = INIT.el; break;
-      case 'top': targetAz = 0; targetEl = Math.PI/2 - INIT.topEps; break;
-      case 'front': targetAz = Math.PI/2; targetEl = 0; break;
-      case 'right': targetAz = 0; targetEl = 0; break;
-      default: targetAz = INIT.az; targetEl = INIT.el;
-    }
-
-    const direction = dirFromAzEl(targetAz, targetEl);
-    const targetPos = center.clone().add(direction.multiplyScalar(FIXED_DISTANCE));
-    tweenOrbits(cam, ctrl, targetPos, center, ms);
-  }
-
-  let isolating = false;
-  let originalCameraState = null;
-  let isolatedComponent = null;
-  let allMeshes = [];
-
-  function buildMeshCache(){
-    allMeshes = [];
-    app.robot.traverse(o => { if(o.isMesh && o.geometry) allMeshes.push(o); });
-  }
-
-  function getSelectedComponent(){
-    const selectedRows = document.querySelectorAll('.viewer-dock-fix tr.selected, .viewer-dock-fix tr[style*="background"]');
-    if(selectedRows.length === 0) return null;
-    const row = selectedRows[0];
-    const linkName = row.cells[0]?.textContent?.trim();
-    if(!linkName) return null;
-    let targetComponent = null;
-    app.robot.traverse(obj => { if(obj.name === linkName || obj.userData.linkName === linkName){ targetComponent = obj; } });
-    return targetComponent;
-  }
-
-  function bulkSetVisible(visible){
-    if(!allMeshes.length) buildMeshCache();
-    for(let i=0; i<allMeshes.length; i++) allMeshes[i].visible = visible;
-  }
-
-  function setVisibleSubtree(root, visible){ root.traverse(o => { if(o.isMesh) o.visible = visible; }); }
-
-  function frameObjectAnimatedSmooth(obj, pad=1.2, ms=700){
-    const cam = app.camera, ctrl = app.controls;
-    const box = new THREE.Box3().setFromObject(obj);
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const fov = (cam.fov || 60) * Math.PI / 180;
-    const distance = (maxDim * pad) / Math.tan(fov / 2);
-    const v=cam.position.clone().sub(ctrl.target.clone()); const dir=v.lengthSq()>1e-12?v.clone().normalize():new THREE.Vector3(1,0.7,1).normalize();
-    const targetPos = center.clone().add(dir.multiplyScalar(distance));
-    (function tween(){ tweenOrbits(cam, ctrl, targetPos, center, ms); })();
-  }
-
-  function isolateSelectedComponent(){
-    if(isolating) return restoreView();
-    const selectedComp = getSelectedComponent();
-    if(!selectedComp){ console.log('No hay componente seleccionado'); return; }
-
-    originalCameraState = { position: app.camera.position.clone(), target: app.controls.target.clone() };
-    bulkSetVisible(false);
-    setVisibleSubtree(selectedComp, true);
-    frameObjectAnimatedSmooth(selectedComp, 1.3, 800);
-    isolating = true;
-    isolatedComponent = selectedComp;
-  }
-
-  function restoreView(){
-    if(!isolating || !originalCameraState) return;
-    bulkSetVisible(true);
-    const cam=app.camera, ctrl=app.controls;
-    const pos=originalCameraState.position, tgt=originalCameraState.target;
-    originalCameraState=null; isolating=false; isolatedComponent=null;
-    (function tween(){ // same tween back
-      const p0=cam.position.clone(), t0=ctrl.target.clone(); const tStart=performance.now();
-      function ease(t){ return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2; }
-      ctrl.enabled=false;
-      (function step(ts){ const u=Math.min(1,(ts-tStart)/800), e=ease(u);
-        cam.position.set(p0.x+(pos.x-p0.x)*e, p0.y+(pos.y-p0.y)*e, p0.z+(pos.z-p0.z)*e);
-        ctrl.target.set(t0.x+(tgt.x-t0.x)*e, t0.y+(tgt.y-t0.y)*e, t0.z+(tgt.z-t0.z)*e);
-        ctrl.update(); if(u<1) requestAnimationFrame(step); else ctrl.enabled=true; })(performance.now());
-    })();
-  }
-
-  // expose on app (used by other modules)
-  app.calculateFixedDistance = calculateFixedDistance;
-  app.navigateToViewFixedDistance = navigateToViewFixedDistance;
-  app.isolateSelectedComponent = isolateSelectedComponent;
-  app.restoreView = restoreView;
-
-  // init like the original .py
-  setTimeout(()=>{ if(app.robot){ try{ calculateFixedDistance(app.robot); navigateToViewFixedDistance('iso', 650); }catch(_){ } } }, 260);
-}
+// Export utility functions
+export { 
+  buildMeshCache, 
+  bulkSetVisible, 
+  setVisibleSubtree,
+  frameObjectAnimated,
+  easeInOutCubic,
+  directionFromAzEl,
+  currentAzimuthElevation,
+  tweenOrbits 
+};
