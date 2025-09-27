@@ -33,16 +33,26 @@ export async function latest(repo, branch) {
 }
 
 
-export async function loadScript(url) {
-  return new Promise((res, rej) => {
-    const s = document.createElement('script');
-    s.src = url;
-    s.defer = true;
-    s.onload = () => res(url);
-    s.onerror = () => rej(new Error('load fail: ' + url));
-    document.head.appendChild(s);
-  });
+// /viewer/urdf_viewer_main.js
+
+export function attachSizeHandler(container) {
+  // define helper
+  const sizeContainer = () => {
+    container.style.width = (window.innerWidth || 1) + 'px';
+    container.style.height = (window.innerHeight || 1) + 'px';
+  };
+
+  // llama una vez al iniciar
+  sizeContainer();
+
+  // y conecta al resize
+  window.addEventListener('resize', sizeContainer);
+
+  // devuelve un "cleanup" por si quieres quitar el handler
+  return () => window.removeEventListener('resize', sizeContainer);
 }
+
+
 export function render(opts = {}) {
   const {
     container,
