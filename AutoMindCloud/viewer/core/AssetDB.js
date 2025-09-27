@@ -1,4 +1,3 @@
-
 // /viewer/core/AssetDB.js
 // Build a normalized in-memory asset DB and a URDFLoader-compatible loadMeshCb.
 // Three r132 + urdf-loader 0.12.6
@@ -56,7 +55,7 @@ function variantsFor(path) {
   out.add(pkg);
   out.add(base);
 
-  // tambiÃ©n probamos sin el primer segmento (por si hay carpeta "meshes/")
+  // también probamos sin el primer segmento (por si hay carpeta "meshes/")
   const parts = pkg.split('/');
   for (let i = 1; i < parts.length; i++) {
     out.add(parts.slice(i).join('/'));
@@ -71,7 +70,7 @@ function dataURLFor(ext, b64) {
 
 const textDecoder = new TextDecoder();
 function b64ToUint8(b64) {
-  // atob â†’ bytes
+  // atob → bytes
   const bin = atob(String(b64 || ''));
   const len = bin.length;
   const out = new Uint8Array(len);
@@ -85,8 +84,8 @@ function b64ToText(b64) {
 /* ---------- public: buildAssetDB ---------- */
 
 /**
- * Normaliza claves y crea Ã­ndices de bÃºsqueda.
- * @param {Object.<string,string>} meshDB  â€” mapa key(base/path) â†’ base64
+ * Normaliza claves y crea índices de búsqueda.
+ * @param {Object.<string,string>} meshDB  — mapa key(base/path) → base64
  * @returns {{
  *   byKey: Object.<string,string>,
  *   byBase: Map<string, string[]>,
@@ -99,7 +98,7 @@ export function buildAssetDB(meshDB = {}) {
   const byKey = {};
   const byBase = new Map();
 
-  // 1) Normaliza y duplica entradas Ãºtiles (sin package://)
+  // 1) Normaliza y duplica entradas útiles (sin package://)
   Object.keys(meshDB).forEach((rawKey) => {
     const b64 = meshDB[rawKey];
     if (!b64) return;
@@ -114,7 +113,7 @@ export function buildAssetDB(meshDB = {}) {
     // Registra variante sin package://
     if (kNoPkg !== k && !byKey[kNoPkg]) byKey[kNoPkg] = b64;
 
-    // TambiÃ©n permite lookup por basename (no exclusivo; puede haber duplicados)
+    // También permite lookup por basename (no exclusivo; puede haber duplicados)
     const arr = byBase.get(base) || [];
     arr.push(k);               // guardamos la key "completa" como referencia principal
     if (kNoPkg !== k) arr.push(kNoPkg);
@@ -133,7 +132,7 @@ export function buildAssetDB(meshDB = {}) {
       for (const k of ks) {
         if (byKey[k]) return byKey[k];
       }
-      // Ãºltimo recurso: basename
+      // último recurso: basename
       const base = basenameNoQuery(key);
       const arr = byBase.get(base) || [];
       for (const k of arr) {
@@ -148,7 +147,7 @@ export function buildAssetDB(meshDB = {}) {
 /* ---------- internal: choose best asset among candidates ---------- */
 
 function pickBestKey(tryKeys, assetDB) {
-  // Agrupa por basename y elige por prioridad de extensiÃ³n y tamaÃ±o aprox
+  // Agrupa por basename y elige por prioridad de extensión y tamaño aprox
   const groups = new Map();
   for (const kk of tryKeys) {
     const k = normKey(kk);
@@ -220,7 +219,7 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         return;
       }
 
-      // STEP/STP no se soporta en Three sin parser extra â€” devolvemos placeholder
+      // STEP/STP no se soporta en Three sin parser extra — devolvemos placeholder
       if (ext === 'step' || ext === 'stp') {
         onComplete(makeEmpty());
         return;
