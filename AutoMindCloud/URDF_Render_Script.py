@@ -1,4 +1,4 @@
-# urdf_render_fixed.py — Full-screen, always-fit viewer (minimal, fixed braces)
+# urdf_render_fixed.py — Full-screen, always-fit viewer (minimal) + latest-commit loader
 import base64, re, os, json, shutil, zipfile
 from IPython.display import HTML
 import gdown
@@ -35,8 +35,13 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 def URDF_Render(folder_path="Model",
                 select_mode="link",
                 background=0xffffff,
-                entry_js_url="https://cdn.jsdelivr.net/gh/ArtemioA/AutoMindCloudExperimental@main/AutoMindCloud/viewer/urdf_viewer_main.js"):
+                # —— NEW: dynamic loader from latest commit (repo/branch/file) ——
+                repo="ArtemioA/AutoMindCloudExperimental",
+                branch="main",
+                compFile="AutoMindCloud/viewer/urdf_viewer_main.js"):
+    """Render a full-screen URDF viewer. Loads entry JS from the latest commit (SHA short) with branch fallback."""
 
+    # ---- Find /urdf + /meshes and build mesh DB ----
     def find_dirs(root):
         u, m = os.path.join(root, "urdf"), os.path.join(root, "meshes")
         if os.path.isdir(u) and os.path.isdir(m): return u, m
@@ -109,6 +114,7 @@ def URDF_Render(folder_path="Model",
         if bn.endswith((".png", ".jpg", ".jpeg")) and bn not in mesh_db:
             add_entry(bn, p)
 
+    # ---- HTML payload ----
     esc = lambda s: (s.replace('\\','\\\\').replace('`','\\`').replace('$','\\$').replace("</script>","<\\/script>"))
     urdf_js, mesh_js = esc(urdf_raw), json.dumps(mesh_db)
     bg_js, sel_js = 'null' if (background is None) else str(int(background)), json.dumps(select_mode)
@@ -132,12 +138,6 @@ def URDF_Render(folder_path="Model",
 <body>
 <div id="app"></div>
 
-<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
-
 <script>
 function setColabHeight(){{
   const h = Math.max(320, window.innerHeight||600);
@@ -146,53 +146,104 @@ function setColabHeight(){{
 window.addEventListener('resize', setColabHeight); setColabHeight();
 </script>
 
+<!-- UMD deps (Three + loaders + URDFLoader) -->
+<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
+
 <script type="module">
-import * as Main from "{entry_js_url}";
-const opts = {{
-  container: document.getElementById('app'),
-  urdfContent: `{urdf_js}`,
-  meshDB: {mesh_js},
-  selectMode: {sel_js},
-  background: {bg_js}
-}};
-if(Main && typeof Main.render==="function"){{
-  const app = Main.render(opts);
-  function currentAzEl(cam, target){{
-    const v=cam.position.clone().sub(target);
-    const len=Math.max(1e-9,v.length());
-    return {{ el: Math.asin(v.y/len), az: Math.atan2(v.z,v.x), r: len }};
+  // —— Latest commit loader → dynamic ESM import (with branch fallback) ——
+  const repo = {json.dumps(repo)};
+  const branch = {json.dumps(branch)};
+  const compFile = {json.dumps(compFile)};
+
+  async function latest(){{
+    try {{
+      const api = 'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
+      const r = await fetch(api, {{ headers: {{ 'Accept':'application/vnd.github+json' }}, cache:'no-store' }});
+      if (!r.ok) throw 0;
+      const j = await r.json();
+      return (j.sha || '').slice(0, 7) || branch;
+    }} catch (_e) {{
+      return branch;
+    }}
   }}
-  function dirFromAzEl(az,el){{
-    return new THREE.Vector3(Math.cos(el)*Math.cos(az),Math.sin(el),Math.cos(el)*Math.sin(az)).normalize();
+
+  // Wait a tick so UMD globals are ready
+  await new Promise(r => setTimeout(r, 50));
+
+  const SELECT_MODE = {sel_js};
+  const BACKGROUND  = {bg_js};
+
+  // Build opts
+  const opts = {{
+    container: document.getElementById('app'),
+    urdfContent: `{urdf_js}`,
+    meshDB: {mesh_js},
+    selectMode: SELECT_MODE,
+    background: BACKGROUND
+  }};
+
+  // Import entry module from latest short SHA (fallback to branch)
+  let mod = null;
+  try {{
+    const ver = await latest();
+    const base = 'https://cdn.jsdelivr.net/gh/' + repo + '@' + ver + '/';
+    mod = await import(base + compFile + '?v=' + Date.now());
+  }} catch (_e) {{
+    mod = await import('https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now());
   }}
-  function fitWhole() {{
-    const box=new THREE.Box3().setFromObject(app.robot);
-    const center=box.getCenter(new THREE.Vector3());
-    const size=box.getSize(new THREE.Vector3());
-    const maxDim=Math.max(size.x,size.y,size.z)||1;
-    const fov=(app.camera.fov||60)*Math.PI/180;
-    const dist=(maxDim*1.25)/Math.tan(fov/2);
-    const cur=currentAzEl(app.camera,app.controls.target);
-    const pos=center.clone().add(dirFromAzEl(cur.az,cur.el).multiplyScalar(dist));
-    app.controls.target.copy(center);
-    app.camera.position.copy(pos);
-    app.camera.near=Math.max(0.01,dist/1000);
-    app.camera.far=dist*1000;
-    app.camera.updateProjectionMatrix();
-    app.controls.update();
+
+  if (!mod || typeof mod.render !== 'function') {{
+    console.error('[URDF] No se pudo cargar el módulo de entrada o no expone render()');
+  }} else {{
+    const app = mod.render(opts);
+
+    // Always fit whole model to viewport and keep it on resize
+    function currentAzEl(cam, target){{
+      const v = cam.position.clone().sub(target);
+      const len = Math.max(1e-9, v.length());
+      return {{ el: Math.asin(v.y/len), az: Math.atan2(v.z, v.x), r: len }};
+    }}
+    function dirFromAzEl(az, el){{
+      return new THREE.Vector3(Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)).normalize();
+    }}
+    function fitWhole() {{
+      if (!app?.robot) return;
+      const box   = new THREE.Box3().setFromObject(app.robot);
+      const c     = box.getCenter(new THREE.Vector3());
+      const size  = box.getSize(new THREE.Vector3());
+      const maxD  = Math.max(size.x, size.y, size.z) || 1;
+      const fov   = (app.camera.fov || 60) * Math.PI / 180;
+      const dist  = (maxD * 1.25) / Math.tan(fov / 2);
+      const cur   = currentAzEl(app.camera, app.controls.target);
+      const pos   = c.clone().add(dirFromAzEl(cur.az, cur.el).multiplyScalar(dist));
+
+      app.controls.target.copy(c);
+      app.camera.position.copy(pos);
+      app.camera.near = Math.max(0.01, dist/1000);
+      app.camera.far  = dist * 1000;
+      app.camera.updateProjectionMatrix();
+      app.controls.update();
+      app.renderer.setSize(window.innerWidth, window.innerHeight, false);
+    }}
+
+    window.addEventListener('resize', () => {{
+      if (!app) return;
+      app.camera.aspect = (window.innerWidth || 1) / (window.innerHeight || 1);
+      app.camera.updateProjectionMatrix();
+      app.renderer.setSize(window.innerWidth || 1, window.innerHeight || 1, false);
+      fitWhole();
+    }});
+
+    // First fit (after scene builds)
+    const kick = () => fitWhole();
+    if (app?.robot) kick(); else setTimeout(kick, 250);
   }}
-  window.addEventListener('resize',()=>{{
-    app.renderer.setSize(window.innerWidth,window.innerHeight,false);
-    app.camera.aspect=window.innerWidth/window.innerHeight;
-    app.camera.updateProjectionMatrix();
-    fitWhole();
-  }});
-  fitWhole();
-}}
 </script>
 </body>
 </html>
 """
     return HTML(html)
-
-
