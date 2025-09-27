@@ -742,10 +742,12 @@ const onKeyDownToggleTools = (e) => {
   if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
   if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
     e.preventDefault();
+    console.log('pressed hh');
     try { console.log('pressed h'); } catch {}
     set(!isOpen);
   }
 };
+
 window.addEventListener('keydown', onKeyDownToggleTools);
 
 // (Add this to your destroy() at the end of the file)
