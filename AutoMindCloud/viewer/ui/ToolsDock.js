@@ -47,3 +47,4 @@ export function createToolsDock(app, theme){
   function destroy(){ try{ ui.root.remove(); }catch(_){ } }
   return { set, destroy };
 }
+
