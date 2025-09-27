@@ -18,6 +18,9 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
  * @param {number|null} [opts.background=THEME.bgCanvas]
  * @param {string|null} [opts.clickAudioDataURL] â€” optional UI SFX (not required)
  */
+
+function loadScript(url){{return new Promise((res,rej)=>{{const s=document.createElement('script'); s.src=url; s.defer=true; s.onload=()=>res(url); s.onerror=()=>rej(new Error('load fail: '+url)); document.head.appendChild(s);}});}}
+
 export function render(opts = {}) {
   const {
     container,
