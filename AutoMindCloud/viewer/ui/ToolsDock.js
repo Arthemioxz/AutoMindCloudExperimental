@@ -652,23 +652,7 @@ export function createToolsDock(app, theme) {
   // Start closed
   set(false);
 
-  // Public API
-  function destroy() {
-    try { ui.toggleBtn.remove(); } catch (_) {}
-    try { ui.dock.remove(); } catch (_) {}
-    try { ui.root.remove(); } catch (_) {}
-    try {
-      app.renderer.localClippingEnabled = false;
-      app.renderer.clippingPlanes = [];
-      if (secVisual) app.scene.remove(secVisual);
-    } catch (_) {}
-    explode.destroy();
-  }
-
-  \\
-
-    // ======== 'h' hotkey: translational slide tween (right-to-left) ========
-  // Keep this INSIDE createToolsDock so it can see `ui`, `explode`, and `styleDockLeft`.
+    // ---------- 'h' hotkey INSIDE factory (uses `ui` in scope) ----------
   const _onKeyDownToggleTools = (e) => {
     const tag = (e.target && e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
@@ -680,28 +664,26 @@ export function createToolsDock(app, theme) {
       const isOpen = ui.dock.style.display !== 'none';
       const CLOSED_TX = 520; // px, slide distance
 
-      // Ensure the dock is styled on the left (matches your preference)
+      // Ensure dock is on the LEFT before tween (your requested layout)
       styleDockLeft(ui.dock);
 
       if (!isOpen) {
-        // Opening tween
+        // Opening tween: from off-screen (left) to 0
         ui.dock.style.display = 'block';
         ui.dock.style.willChange = 'transform, opacity';
         ui.dock.style.transition = 'none';
         ui.dock.style.opacity = '0';
-        // slide from left (negative X hides to the left; positive X hides to the right)
         ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
-
         requestAnimationFrame(() => {
           ui.toggleBtn.textContent = 'Close Tools';
-          try { explode.prepare(); } catch (_) {}
+          try { explode.prepare(); } catch(_) {}
           ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
           ui.dock.style.opacity = '1';
           ui.dock.style.transform = 'translateX(0px)';
           setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
         });
       } else {
-        // Closing tween
+        // Closing tween: slide left then hide
         ui.dock.style.willChange = 'transform, opacity';
         ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
         ui.dock.style.opacity = '0';
@@ -716,19 +698,21 @@ export function createToolsDock(app, theme) {
       }
     }
   };
-
-  // Register when the dock is created:
   document.addEventListener('keydown', _onKeyDownToggleTools, true);
-
-  // Extend destroy() to remove the listener:
-  const _destroyOrig = destroy;
-  destroy = function () {
-    try { document.removeEventListener('keydown', _onKeyDownToggleTools, true); } catch (_) {}
-    _destroyOrig();
-  };
-
-
   \\
+  // Public API
+  function destroy() {
+    try { ui.toggleBtn.remove(); } catch (_) {}
+    try { ui.dock.remove(); } catch (_) {}
+    try { ui.root.remove(); } catch (_) {}
+    try {
+      app.renderer.localClippingEnabled = false;
+      app.renderer.clippingPlanes = [];
+      if (secVisual) app.scene.remove(secVisual);
+    } catch (_) {}
+    explode.destroy();
+  }
+
   return { open: openDock, close: closeDock, set, destroy };
 }
 
