@@ -4,37 +4,13 @@
 /* global THREE */
 
 import { THEME } from './Theme.js';
-import { createViewer } from './core/ViewerCore.js';
+import { createViewer, calculateFixedDistance, directionFromAzEl, currentAzimuthElevation, easeInOutCubic } from './core/ViewerCore.js';
 import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
-import { attachInteraction } from './interaction/SelectionAndDrag.js';
+import { attachInteraction, buildMeshCache, bulkSetVisible, setVisibleSubtree, frameObjectAnimated } from './interaction/SelectionAndDrag.js';
 
 // IMPORTANT: import UI modules as namespaces to avoid unbound identifiers
 import * as ToolsDock from './ui/ToolsDock.js';
 import * as ComponentsPanel from './ui/ComponentsPanel.js';
-
-// Utility functions (re-exported later)
-import {
-  calculateFixedDistance,
-  directionFromAzEl,
-  currentAzimuthElevation,
-  easeInOutCubic
-} from './core/ViewerCore.js';
-
-import {
-  // We'll reference via namespace (ToolsDock.*) with fallbacks,
-  // but keep the named imports available if your bundler supports them.
-  // navigateToFixedDistanceView,
-  // tweenOrbits
-} from './ui/ToolsDock.js';
-
-import {
-  // buildMeshCache etc. will be referenced from SelectionAndDrag.js namespace at runtime,
-  // but we use direct imports here for type/IDE help. The actual calls below are local funcs.
-  // buildMeshCache,
-  // bulkSetVisible,
-  // setVisibleSubtree,
-  // frameObjectAnimated
-} from './interaction/SelectionAndDrag.js';
 
 /**
  * Public entry: render the URDF viewer.
@@ -45,6 +21,9 @@ import {
  * @param {'link'|'mesh'} [opts.selectMode='link']
  * @param {number|null} [opts.background=THEME.bgCanvas]
  * @param {string|null} [opts.clickAudioDataURL] — optional UI SFX (not required)
+ * @param {number} [opts.initAzDeg]
+ * @param {number} [opts.initElDeg]
+ * @param {number} [opts.initZoomOut]
  */
 export function render(opts = {}) {
   const {
@@ -53,15 +32,28 @@ export function render(opts = {}) {
     meshDB = {},
     selectMode = 'link',
     background = THEME.bgCanvas || 0xffffff,
-    clickAudioDataURL = null
+    clickAudioDataURL = null,
+    initAzDeg,
+    initElDeg,
+    initZoomOut
   } = opts;
 
   if (!container) throw new Error('[render] container is required');
 
-  // 1) Core viewer
-  const core = createViewer({ container, background });
+  // Early guard: give feedback if no URDF content
+  if (!urdfContent || typeof urdfContent !== 'string' || !urdfContent.trim()) {
+    const msg = '[URDF Viewer] Model not found: urdfContent is empty.';
+    console.error(msg);
+    try {
+      container.innerHTML = `<div style="color:#f55;padding:12px;font:14px/1.4 monospace">${msg}</div>`;
+    } catch (_) {}
+    throw new Error('Model not found');
+  }
 
-  // Be cautious with THREE usage—prefer the global installed by ViewerCore.
+  // 1) Core viewer
+  const core = createViewer({ container, background, initAzDeg, initElDeg, initZoomOut });
+
+  // Prefer the global installed by ViewerCore
   const _THREE = (typeof THREE !== 'undefined' ? THREE : (typeof window !== 'undefined' ? window.THREE : null));
 
   // 2) Asset DB + loadMeshCb with onMeshTag hook to index meshes by assetKey
@@ -75,11 +67,30 @@ export function render(opts = {}) {
         if (o && o.isMesh && o.geometry) list.push(o);
       });
       assetToMeshes.set(assetKey, list);
+      // tag on userData to help offscreen clone map
+      obj.userData = obj.userData || {};
+      obj.userData.__assetKey = assetKey;
     }
   });
 
   // 3) Load URDF (this triggers tagging via `onMeshTag`)
-  const robot = core.loadURDF(urdfContent, { loadMeshCb });
+  let robot;
+  try {
+    robot = core.loadURDF(urdfContent, { loadMeshCb });
+  } catch (e) {
+    const msg = `[URDF Viewer] Failed to parse URDF: ${e?.message || e}`;
+    console.error(msg);
+    try {
+      container.innerHTML = `<div style="color:#f55;padding:12px;font:14px/1.4 monospace">${msg}</div>`;
+    } catch (_) {}
+    throw e;
+  }
+  if (!robot) {
+    const msg = '[URDF Viewer] Robot not created from URDF.';
+    console.error(msg);
+    try { container.innerHTML = `<div style="color:#f55;padding:12px;font:14px/1.4 monospace">${msg}</div>`; } catch (_){}
+    throw new Error('Model not found');
+  }
 
   // 4) Build an offscreen renderer for thumbnails (after robot exists)
   const off = buildOffscreenForThumbnails(core, assetToMeshes, _THREE);
@@ -126,22 +137,16 @@ export function render(opts = {}) {
   };
 
   // 8) UI modules with safe fallbacks
-  const createToolsDock =
-    ToolsDock?.createToolsDock ||
-    (/* fallback: no-op dock */ function () {
-      console.warn('[viewer] ToolsDock.createToolsDock not found; using no-op.');
-      return { set() {}, open() {}, close() {}, destroy() {} };
-    });
+  const makeToolsDock = ToolsDock?.createToolsDock;
+  const makeCompsPanel = ComponentsPanel?.createComponentsPanel;
 
-  const createComponentsPanel =
-    ComponentsPanel?.createComponentsPanel ||
-    (/* fallback: no-op panel */ function () {
-      console.warn('[viewer] ComponentsPanel.createComponentsPanel not found; using no-op.');
-      return { destroy() {} };
-    });
+  const tools = (typeof makeToolsDock === 'function')
+    ? makeToolsDock(app, THEME)
+    : (console.warn('[viewer] ToolsDock.createToolsDock not found; using no-op.'), { set(){}, open(){}, close(){}, destroy(){} });
 
-  const tools = createToolsDock(app, THEME);
-  const comps = createComponentsPanel(app, THEME);
+  const comps = (typeof makeCompsPanel === 'function')
+    ? makeCompsPanel(app, THEME)
+    : (console.warn('[viewer] ComponentsPanel.createComponentsPanel not found; using no-op.'), { destroy(){} });
 
   // Optional click SFX for UI (kept minimal; UI modules do not depend on it)
   if (clickAudioDataURL) {
@@ -236,38 +241,15 @@ function createViewManager(app, robot, THREEref) {
 
   const tweenOrbits =
     (ToolsDock && ToolsDock.tweenOrbits) ||
-    function (cam, ctrls, pos, tgt, ms) {
-      // basic immediate set fallback
+    function (cam, ctrls, pos, tgt /*, ms*/) {
       cam.position.copy(pos);
       ctrls.target.copy(tgt);
       ctrls.update();
     };
 
-  // Selection helpers imported by name in original code;
-  // using window-exposed functions (same file exports) or local fallbacks.
-  const _bulkSetVisible =
-    (typeof bulkSetVisible === 'function' ? bulkSetVisible :
-      (arr, vis) => { arr.forEach(m => { if (m?.visible !== undefined) m.visible = !!vis; }); });
-
-  const _setVisibleSubtree =
-    (typeof setVisibleSubtree === 'function' ? setVisibleSubtree :
-      (node, vis) => { node?.traverse?.(o => { if (o.isMesh && o.geometry) o.visible = !!vis; }); });
-
-  const _frameObjectAnimated =
-    (typeof frameObjectAnimated === 'function' ? frameObjectAnimated :
-      (obj, appRef) => { appRef.fitAndCenter(obj, 1.06); });
-
-  const _buildMeshCache =
-    (typeof buildMeshCache === 'function' ? buildMeshCache :
-      (root) => {
-        const meshes = [];
-        root?.traverse?.(o => { if (o.isMesh && o.geometry) meshes.push(o); });
-        return meshes;
-      });
-
   function initialize() {
     if (robot) {
-      allMeshes = _buildMeshCache(robot);
+      allMeshes = buildMeshCache(robot);
       fixedDistance = calculateFixedDistance(robot, app.camera, 1.9);
     }
   }
@@ -290,9 +272,9 @@ function createViewManager(app, robot, THREEref) {
       target: app.controls.target.clone()
     };
 
-    _bulkSetVisible(allMeshes, false);
-    _setVisibleSubtree(component, true);
-    _frameObjectAnimated(component, app, 1.3, 800);
+    bulkSetVisible(allMeshes, false);
+    setVisibleSubtree(component, true);
+    frameObjectAnimated(component, app, 1.3, 800);
 
     isolating = true;
     isolatedComponent = component;
@@ -301,7 +283,7 @@ function createViewManager(app, robot, THREEref) {
   function restoreView() {
     if (!isolating || !originalCameraState) return;
 
-    _bulkSetVisible(allMeshes, true);
+    bulkSetVisible(allMeshes, true);
     tweenOrbits(app.camera, app.controls, originalCameraState.position, originalCameraState.target, 800);
 
     isolating = false;
@@ -597,20 +579,3 @@ export const navigateToFixedDistanceView =
 export const tweenOrbits =
   (ToolsDock && ToolsDock.tweenOrbits) ? ToolsDock.tweenOrbits :
   function () { console.warn('[viewer] tweenOrbits not available'); };
-
-// Forward interaction helpers if present (optional)
-export const buildMeshCache =
-  (typeof window !== 'undefined' && window.buildMeshCache) ? window.buildMeshCache :
-  (typeof buildMeshCache === 'function' ? buildMeshCache : undefined);
-
-export const bulkSetVisible =
-  (typeof window !== 'undefined' && window.bulkSetVisible) ? window.bulkSetVisible :
-  (typeof bulkSetVisible === 'function' ? bulkSetVisible : undefined);
-
-export const setVisibleSubtree =
-  (typeof window !== 'undefined' && window.setVisibleSubtree) ? window.setVisibleSubtree :
-  (typeof setVisibleSubtree === 'function' ? setVisibleSubtree : undefined);
-
-export const frameObjectAnimated =
-  (typeof window !== 'undefined' && window.frameObjectAnimated) ? window.frameObjectAnimated :
-  (typeof frameObjectAnimated === 'function' ? frameObjectAnimated : undefined);
