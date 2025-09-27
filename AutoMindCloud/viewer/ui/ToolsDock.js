@@ -668,10 +668,3 @@ export function createToolsDock(app, theme) {
   return { open: openDock, close: closeDock, set, destroy };
 }
 
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'k' || e.key === 'K' || e.code === 'KeyK') {
-    console.log('key pressed');
-  }
-});
-
