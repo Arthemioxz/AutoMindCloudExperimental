@@ -1,7 +1,7 @@
-# Write the user's original "first system" ESM entry to ensure imports are present.
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-code = """\
+p = Path("/mnt/data/urdf_viewer_main.js")
+p.write_text("""\
 // /viewer/urdf_viewer_main.js
 // Entrypoint that composes ViewerCore + AssetDB + Selection & Drag + UI (Tools & Components)
 
@@ -96,7 +96,7 @@ export function render(opts = {}) {
 
   // Optional click SFX for UI (kept minimal; UI modules do not depend on it)
   if (clickAudioDataURL) {
-    try { installClickSound(clickAudioDataURL); } catch (_) {}
+     try { installClickSound(clickAudioDataURL); } catch (_) {}
   }
 
   // Public destroy
@@ -318,6 +318,5 @@ function installClickSound(dataURL) {
 if (typeof window !== 'undefined') {
   window.URDFViewer = { render };
 }
-"""
-Path("/mnt/data/urdf_viewer_main.js").write_text(code, encoding="utf-8")
-print("/mnt/data/urdf_viewer_main.js written")
+""")
+str(p)
