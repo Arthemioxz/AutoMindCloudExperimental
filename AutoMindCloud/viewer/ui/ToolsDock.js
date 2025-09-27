@@ -652,54 +652,6 @@ export function createToolsDock(app, theme) {
   // Start closed
   set(false);
 
-    // ---------- 'h' hotkey INSIDE factory (uses `ui` in scope) ----------
-  const _onKeyDownToggleTools = (e) => {
-    const tag = (e.target && e.target.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
-
-    if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
-      e.preventDefault();
-      try { console.log('pressed h'); } catch {}
-
-      const isOpen = ui.dock.style.display !== 'none';
-      const CLOSED_TX = 520; // px, slide distance
-
-      // Ensure dock is on the LEFT before tween (your requested layout)
-      styleDockLeft(ui.dock);
-
-      if (!isOpen) {
-        // Opening tween: from off-screen (left) to 0
-        ui.dock.style.display = 'block';
-        ui.dock.style.willChange = 'transform, opacity';
-        ui.dock.style.transition = 'none';
-        ui.dock.style.opacity = '0';
-        ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
-        requestAnimationFrame(() => {
-          ui.toggleBtn.textContent = 'Close Tools';
-          try { explode.prepare(); } catch(_) {}
-          ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
-          ui.dock.style.opacity = '1';
-          ui.dock.style.transform = 'translateX(0px)';
-          setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
-        });
-      } else {
-        // Closing tween: slide left then hide
-        ui.dock.style.willChange = 'transform, opacity';
-        ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
-        ui.dock.style.opacity = '0';
-        ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
-        const onEnd = () => {
-          ui.dock.style.display = 'none';
-          ui.dock.style.willChange = 'auto';
-          ui.toggleBtn.textContent = 'Open Tools';
-          ui.dock.removeEventListener('transitionend', onEnd);
-        };
-        ui.dock.addEventListener('transitionend', onEnd);
-      }
-    }
-  };
-  document.addEventListener('keydown', _onKeyDownToggleTools, true);
-  \\
   // Public API
   function destroy() {
     try { ui.toggleBtn.remove(); } catch (_) {}
