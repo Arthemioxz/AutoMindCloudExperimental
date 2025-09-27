@@ -413,7 +413,7 @@ export function attachInteraction({
   function onPointerMove(e) {
     lastMoveEvt = e;
     // track last hover mesh for isolation
-    // (reuse raycaster path â€“ separate quick pass for cursor pos)
+    // (reuse raycaster path – separate quick pass for cursor pos)
     try {
       getPointerFromEvent(e);
       raycaster.setFromCamera(pointer, camera);
@@ -435,7 +435,7 @@ export function attachInteraction({
     const hits = raycaster.intersectObjects(pickables, true);
 
     if (!hits.length) {
-      // Clicked empty space â†’ clear selection
+      // Clicked empty space → clear selection
       setSelectedMeshes([]);
       return;
     }
@@ -505,3 +505,4 @@ export function attachInteraction({
     destroy
   };
 }
+
