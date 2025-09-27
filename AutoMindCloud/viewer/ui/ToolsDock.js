@@ -683,13 +683,15 @@ export function createToolsDock(app, theme) {
 
 
 
-
  // ======== 'h' hotkey: translational slide tween (right-to-left) ========
   const _onKeyDownToggleTools = (e) => {
     const tag = (e.target && e.target.tagName || '').toLowerCase();
+    console.log('pressed 3');
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+    console.log('pressed 2');
     if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
       e.preventDefault();
+      console.log('pressed 1');
       try { console.log('pressed h'); } catch {}
       const isOpen = ui.dock.style.display !== 'none';
       const CLOSED_TX = 520; // px, slide distance
@@ -726,5 +728,6 @@ export function createToolsDock(app, theme) {
       }
     }
   };
+
   document.addEventListener('keydown', _onKeyDownToggleTools, true);
   // ======== End hotkey ========
