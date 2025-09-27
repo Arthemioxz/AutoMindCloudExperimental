@@ -1,11 +1,10 @@
 // /viewer/interaction/SelectionAndDrag.js
-// Hover + selection + joint dragging + 'i' focus/iso (selected), fixed-distance tween
+// Hover + selection + joint dragging + 'i' isolate/restore
 /* global THREE */
 
 const HOVER_COLOR = 0x0ea5a6;
 const HOVER_OPACITY = 0.28;
 
-// ===== Utils =====
 function isMovable(j) {
   const t = (j?.jointType || '').toString().toLowerCase();
   return !!t && t !== 'fixed';
@@ -85,12 +84,27 @@ function markLinksAndJoints(robot) {
         (typeof j.child === 'string' && j.child) ||
         (typeof j.child_link === 'string' && j.child_link) || null;
       if (!childLinkObj && childName && linkBy[childName]) childLinkObj = linkBy[childName];
-      if (childLinkObj && (j.jointType || '').toLowerCase() !== 'fixed') childLinkObj.userData.__joint = j;
+      if (!childLinkObj && childName && j.children && j.children.length) {
+        const stack = j.children.slice();
+        while (stack.length) {
+          const n = stack.pop(); if (!n) continue;
+          if (n.name === childName) { childLinkObj = n; break; }
+          const kids = n.children ? n.children.slice() : [];
+          for (let i = 0; i < kids.length; i++) stack.push(kids[i]);
+        }
+      }
+      if (childLinkObj && isMovable(j)) childLinkObj.userData.__joint = j;
     } catch (_) {}
   });
   return linkSet;
 }
-function findAncestorLink(o, linkSet) { while (o) { if (linkSet && linkSet.has(o)) return o; o = o.parent; } return null; }
+function findAncestorLink(o, linkSet) {
+  while (o) {
+    if (linkSet && linkSet.has(o)) return o;
+    o = o.parent;
+  }
+  return null;
+}
 function findAncestorJoint(o) {
   while (o) {
     if (o.jointType && (o.jointType || '').toLowerCase() !== 'fixed') return o;
@@ -100,66 +114,20 @@ function findAncestorJoint(o) {
   return null;
 }
 
-// ===== Camera tween helpers (fixed distance) =====
-function tweenOrbits(camera, controls, toPos, toTarget, ms = 700) {
-  const start = performance.now();
-  const p0 = camera.position.clone();
-  const t0 = (controls?.target?.clone ? controls.target.clone() : new THREE.Vector3());
-  const t1 = toTarget ? toTarget.clone() : t0.clone();
-  const p1 = toPos ? toPos.clone() : p0.clone();
-
-  function easeOutQuint(x){ return 1 - Math.pow(1 - x, 5); }
-  function step(now) {
-    const k = Math.min(1, (now - start) / ms);
-    const e = easeOutQuint(k);
-    camera.position.lerpVectors(p0, p1, e);
-    if (controls?.target) controls.target.lerpVectors(t0, t1, e);
-    camera.updateProjectionMatrix?.();
-    controls?.update?.();
-    if (k < 1) requestAnimationFrame(step);
-  }
-  requestAnimationFrame(step);
-}
-
-function getRobotBounds(robot) {
-  const box = new THREE.Box3().setFromObject(robot);
-  const sphere = box.getBoundingSphere(new THREE.Sphere());
-  return { box, sphere };
-}
-function viewFrom(dir, robot, FIX_DIST = 2.2) {
-  const { sphere } = getRobotBounds(robot);
-  const target = sphere.center.clone();
-  const radius = sphere.radius > 1e-6 ? sphere.radius : 1.0;
-  // Distancia fija proporcional al tamaño del robot
-  const dist = FIX_DIST * radius;
-  const n = dir.clone().normalize();
-  const pos = target.clone().add(n.multiplyScalar(dist));
-  return { pos, target };
-}
-function isoDir() { return new THREE.Vector3(1,1,1).normalize(); }
-function frontDir() { return new THREE.Vector3(0,0,1); }
-function rightDir() { return new THREE.Vector3(1,0,0); }
-function topDir() { return new THREE.Vector3(0,1,0); }
-
-// ===== Main attach =====
 export function attachInteraction({
   scene, camera, renderer, controls, robot, selectMode = 'link'
 }) {
   if (!scene || !camera || !renderer || !controls) throw new Error('[SelectionAndDrag] Missing required core objects');
 
-  // Current robot & link set
   let robotModel = robot || null;
   let linkSet = robotModel ? markLinksAndJoints(robotModel) : new Set();
 
-  // Ray + pointer
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
 
-  // Hover overlay
   const hover = buildHoverOverlay();
   let lastHoverKey = null;
 
-  // Selection
   let selectedMeshes = [];
   let selectionHelper = null;
   function ensureSelectionHelper() {
@@ -187,7 +155,6 @@ export function attachInteraction({
     } else setSelectedMeshes([meshHit]);
   }
 
-  // Joint dragging
   let dragState = null;
   const ROT_PER_PIXEL = 0.01, PRISM_PER_PIXEL = 0.003;
 
@@ -250,7 +217,6 @@ export function attachInteraction({
     dragState = null;
   }
 
-  // Picking
   function hitTest(ev) {
     const r = renderer.domElement.getBoundingClientRect();
     pointer.x = ((ev.clientX - r.left) / r.width) * 2 - 1;
@@ -280,7 +246,6 @@ export function attachInteraction({
     if (joint && isMovable(joint)) {
       getPointerFromEvent(ev); startJointDrag(joint, ev);
     } else {
-      // Selection by click
       if (hit) selectFromHit(hit);
       else setSelectedMeshes([]);
     }
@@ -289,48 +254,77 @@ export function attachInteraction({
   renderer.domElement.addEventListener('pointerup', endJointDrag);
   renderer.domElement.addEventListener('pointerleave', endJointDrag);
 
-  // ===== 'i' key: focus selected (first press) / back to ISO (second press) =====
-  let focusToggled = false;
-  const FIX_DIST = 2.2; // distancia fija (multiplicador del radio del robot)
-  function getSelectionCenter() {
-    const box = computeUnionBox(selectedMeshes);
-    if (!box) return null;
-    return box.getCenter(new THREE.Vector3());
+  // --- 'i' focus selected with tween; second press -> ISO (fixed distance)
+  let __focusToggled = false;
+  function easeOutQuint(x){ return 1 - Math.pow(1 - x, 5); }
+  function tweenOrbits(toPos, toTarget, ms=750){
+    const p0 = camera.position.clone();
+    const t0 = controls.target.clone();
+    const p1 = toPos.clone();
+    const t1 = toTarget.clone();
+    const tStart = performance.now();
+    function step(now){
+      const k=Math.min(1,(now-tStart)/ms), e=easeOutQuint(k);
+      camera.position.lerpVectors(p0,p1,e);
+      controls.target.lerpVectors(t0,t1,e);
+      camera.updateProjectionMatrix?.(); controls.update?.();
+      if(k<1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
   }
-  function goIso() {
-    const { pos, target } = viewFrom(isoDir(), robotModel, FIX_DIST);
-    tweenOrbits(camera, controls, pos, target, 750);
+  function getRobotBounds(){ const box=new THREE.Box3().setFromObject(robotModel||scene); const sphere=box.getBoundingSphere(new THREE.Sphere()); return {box,sphere}; }
+  const FIX_DIST = 2.2;
+  function isoDir(){ return new THREE.Vector3(1,1,1).normalize(); }
+  function viewFrom(dir){
+    const {sphere}=getRobotBounds();
+    const target=sphere.center.clone();
+    const r=Math.max(1e-3, sphere.radius);
+    const d=FIX_DIST*r;
+    const pos=target.clone().add(dir.clone().normalize().multiplyScalar(d));
+    return {pos,target};
   }
-  function goFocusSelected() {
-    const center = getSelectionCenter();
-    if (!center) { goIso(); return; }
-    const { sphere } = getRobotBounds(robotModel);
-    const radius = Math.max(1e-3, sphere.radius);
-    const dist = FIX_DIST * radius;
-    // Mira desde la dirección actual de la cámara, manteniendo distancia fija a la selección
+  function getSelectionBox(){
+    if (!selectedMeshes.length) return null;
+    const box = new THREE.Box3(); const tmp=new THREE.Box3(); let has=false;
+    for(const m of selectedMeshes){ if(!m) continue; tmp.setFromObject(m); if(!has){box.copy(tmp); has=true;} else box.union(tmp); }
+    return has?box:null;
+  }
+  function focusSelection(){
+    const box=getSelectionBox();
+    if(!box){ const v=viewFrom(isoDir()); tweenOrbits(v.pos,v.target); return; }
+    const center=box.getCenter(new THREE.Vector3());
+    const size=box.getSize(new THREE.Vector3()).length();
+    const {sphere}=getRobotBounds(); const r=Math.max(1e-3, sphere.radius);
+    const dist=FIX_DIST*r;
     const dir = center.clone().sub(camera.position).normalize().multiplyScalar(-1);
     const pos = center.clone().add(dir.multiplyScalar(dist));
-    tweenOrbits(camera, controls, pos, center, 750);
+    tweenOrbits(pos, center);
+  }
+  function goIso(){ const v=viewFrom(isoDir()); tweenOrbits(v.pos,v.target); }
+
+  function onKeyDown(e){
+    const k=(e.key||'').toLowerCase();
+    if(k==='i'){
+      e.preventDefault();
+      if(!__focusToggled){ focusSelection(); __focusToggled=true; }
+      else { goIso(); __focusToggled=false; }
+    }
   }
 
-  const onKeyDownI = (e) => {
-    const tag = (e.target && e.target.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
-    if (e.key === 'i' || e.key === 'I' || e.code === 'KeyI') {
-      e.preventDefault();
-      try { console.log('pressed i'); } catch {}
-      if (!focusToggled) { goFocusSelected(); focusToggled = true; }
-      else { goIso(); focusToggled = false; }
-    }
-  };
-  document.addEventListener('keydown', onKeyDownI, true);
+  renderer.domElement.addEventListener('keydown', onKeyDown, true);
 
-  // Public small API (if needed elsewhere)
+  function destroy() {
+    try { hover.clear(); } catch (_) {}
+    try { selectionHelper?.parent?.remove(selectionHelper); } catch (_) {}
+  }
+
   return {
-    setSelectedMeshes,
-    destroy() {
-      try { hover.clear(); } catch (_) {}
-      try { document.removeEventListener('keydown', onKeyDownI, true); } catch (_) {}
-    }
+    setRobot(){},
+    setSelectMode(){},
+    clearSelection(){ selectedMeshes=[]; refreshSelectionMarker(); },
+    selectFromHit,
+    isolateCurrent(){},
+    restoreAll(){},
+    destroy
   };
 }
