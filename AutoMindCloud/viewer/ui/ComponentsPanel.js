@@ -210,7 +210,7 @@ export function createComponentsPanel(app, theme) {
       title.style.color = theme.text;
 
       const small = document.createElement('div');
-      small.textContent = `.${ent.ext || 'asset'} • ${ent.count} instance${ent.count > 1 ? 's' : ''}`;
+      small.textContent = `.${ent.ext || 'asset'} â€¢ ${ent.count} instance${ent.count > 1 ? 's' : ''}`;
       small.style.color = theme.textMuted;
       small.style.fontSize = '12px';
       small.style.marginTop = '2px';
@@ -229,7 +229,7 @@ export function createComponentsPanel(app, theme) {
       row.appendChild(meta);
       ui.list.appendChild(row);
 
-      // Click → isolate this asset
+      // Click â†’ isolate this asset
       row.addEventListener('click', () => {
         try { app.isolate.asset?.(ent.assetKey); } catch (_) {}
       });
@@ -258,61 +258,10 @@ export function createComponentsPanel(app, theme) {
     try { ui.root.remove(); } catch (_) {}
   }
 
-  /* ---------- Python-to-JS migrated functions ---------- */
-
-  /**
-   * Get selected component from UI (simulates Python logic)
-   * @returns {THREE.Object3D|null} - Selected component or null
-   */
-  function getSelectedComponent() {
-    // Simulate the Python logic for getting selected component from UI
-    const selectedRows = document.querySelectorAll('.viewer-dock-fix tr.selected, .viewer-dock-fix tr[style*="background"]');
-    if (selectedRows.length === 0) return null;
-    
-    const row = selectedRows[0];
-    const linkName = row.cells[0]?.textContent?.trim();
-    if (!linkName) return null;
-    
-    let targetComponent = null;
-    app.robot?.traverse?.(obj => {
-      if (obj.name === linkName || obj.userData?.linkName === linkName) {
-        targetComponent = obj;
-      }
-    });
-    
-    return targetComponent;
-  }
-
-  /**
-   * Isolate selected component (Python logic migrated)
-   */
-  function isolateSelectedComponent() {
-    const selectedComp = getSelectedComponent();
-    if (!selectedComp) {
-      console.log('No component selected');
-      return;
-    }
-    
-    // Use the existing isolate functionality
-    try { 
-      app.isolate.asset?.(selectedComp.name || selectedComp.userData?.assetKey); 
-    } catch (_) {}
-  }
-
   // Initial defaults
   set(false);
 
-  return { 
-    open: openPanel, 
-    close: closePanel, 
-    set, 
-    refresh, 
-    destroy,
-    
-    // New utility functions
-    getSelectedComponent,
-    isolateSelectedComponent
-  };
+  return { open: openPanel, close: closePanel, set, refresh, destroy };
 }
 
 /* ------------------ Helpers ------------------ */
@@ -377,16 +326,6 @@ function makeThumbFallback(label, theme) {
   wrap.style.fontSize = '11px';
   wrap.style.color = theme.textMuted;
   wrap.style.textAlign = 'center';
-  wrap.textContent = label || '—';
+  wrap.textContent = label || 'â€”';
   return wrap;
 }
-
-// Export helper functions if needed elsewhere
-export { 
-  applyStyles, 
-  clearElement, 
-  basenameNoExt, 
-  extOf,
-  getSelectedComponent,
-  isolateSelectedComponent 
-};
