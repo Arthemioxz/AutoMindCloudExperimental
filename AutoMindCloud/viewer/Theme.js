@@ -3,6 +3,21 @@
 // Paleta base (teal/white) y tokens de UI.
 // Exporta nombrado (THEME) y por defecto (default).
 
+// /viewer/Theme.js
+
+
+ // ---- UI Enhancer: etiqueta botones/controles ----
+// Make sure it's exported
+export function enhanceUI(root) {
+  root = root || document;
+  const btns = root.querySelectorAll('button');
+  btns.forEach(b => b.classList.add('am-btn'));
+  const sels = root.querySelectorAll('select, input[type="text"]');
+  sels.forEach(el => el.classList.add('am-input'));
+}
+
+
+
 export const THEME = {
   colors: {
     teal: '#0ea5a6',
@@ -53,5 +68,5 @@ export function injectCssVars(theme = THEME) {
   document.head.appendChild(style);
 }
 
-// Export por defecto también (para compatibilidad)
+// Export por defecto tambiÃ©n (para compatibilidad)
 export default THEME;
