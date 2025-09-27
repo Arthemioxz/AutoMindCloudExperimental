@@ -1,31 +1,39 @@
 // /viewer/urdf_viewer_main.js
 // Entrypoint that composes ViewerCore + AssetDB + Selection & Drag + UI (Tools & Components)
 
+/* global THREE */
+
 import { THEME } from './Theme.js';
 import { createViewer } from './core/ViewerCore.js';
 import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
 import { attachInteraction } from './interaction/SelectionAndDrag.js';
-import { createToolsDock } from './ui/ToolsDock.js';
-import { createComponentsPanel } from './ui/ComponentsPanel.js';
 
-// Import utility functions
-import { 
-  calculateFixedDistance, 
-  directionFromAzEl, 
+// IMPORTANT: import UI modules as namespaces to avoid unbound identifiers
+import * as ToolsDock from './ui/ToolsDock.js';
+import * as ComponentsPanel from './ui/ComponentsPanel.js';
+
+// Utility functions (re-exported later)
+import {
+  calculateFixedDistance,
+  directionFromAzEl,
   currentAzimuthElevation,
-  easeInOutCubic 
+  easeInOutCubic
 } from './core/ViewerCore.js';
 
-import { 
-  navigateToFixedDistanceView,
-  tweenOrbits 
+import {
+  // We'll reference via namespace (ToolsDock.*) with fallbacks,
+  // but keep the named imports available if your bundler supports them.
+  // navigateToFixedDistanceView,
+  // tweenOrbits
 } from './ui/ToolsDock.js';
 
-import { 
-  buildMeshCache, 
-  bulkSetVisible, 
-  setVisibleSubtree,
-  frameObjectAnimated 
+import {
+  // buildMeshCache etc. will be referenced from SelectionAndDrag.js namespace at runtime,
+  // but we use direct imports here for type/IDE help. The actual calls below are local funcs.
+  // buildMeshCache,
+  // bulkSetVisible,
+  // setVisibleSubtree,
+  // frameObjectAnimated
 } from './interaction/SelectionAndDrag.js';
 
 /**
@@ -48,8 +56,13 @@ export function render(opts = {}) {
     clickAudioDataURL = null
   } = opts;
 
+  if (!container) throw new Error('[render] container is required');
+
   // 1) Core viewer
   const core = createViewer({ container, background });
+
+  // Be cautious with THREE usage—prefer the global installed by ViewerCore.
+  const _THREE = (typeof THREE !== 'undefined' ? THREE : (typeof window !== 'undefined' ? window.THREE : null));
 
   // 2) Asset DB + loadMeshCb with onMeshTag hook to index meshes by assetKey
   const assetDB = buildAssetDB(meshDB);
@@ -69,7 +82,7 @@ export function render(opts = {}) {
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
   // 4) Build an offscreen renderer for thumbnails (after robot exists)
-  const off = buildOffscreenForThumbnails(core, assetToMeshes);
+  const off = buildOffscreenForThumbnails(core, assetToMeshes, _THREE);
 
   // 5) Interaction (hover, select, drag joints, key 'i')
   const inter = attachInteraction({
@@ -82,7 +95,7 @@ export function render(opts = {}) {
   });
 
   // 6) Enhanced view manager
-  const viewManager = createViewManager(core, robot);
+  const viewManager = createViewManager(core, robot, _THREE);
 
   // 7) Facade "app" that is passed to UI components
   const app = {
@@ -98,12 +111,12 @@ export function render(opts = {}) {
 
     // --- Isolate / restore ---
     isolate: {
-      asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey),
-      clear: () => showAll(core)
+      asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey, _THREE),
+      clear: () => showAll(core, _THREE)
     },
 
     // --- Show all ---
-    showAll: () => showAll(core),
+    showAll: () => showAll(core, _THREE),
 
     // --- View Manager ---
     viewManager,
@@ -112,7 +125,21 @@ export function render(opts = {}) {
     openTools(open = true) { tools.set(!!open); }
   };
 
-  // 8) UI modules
+  // 8) UI modules with safe fallbacks
+  const createToolsDock =
+    ToolsDock?.createToolsDock ||
+    (/* fallback: no-op dock */ function () {
+      console.warn('[viewer] ToolsDock.createToolsDock not found; using no-op.');
+      return { set() {}, open() {}, close() {}, destroy() {} };
+    });
+
+  const createComponentsPanel =
+    ComponentsPanel?.createComponentsPanel ||
+    (/* fallback: no-op panel */ function () {
+      console.warn('[viewer] ComponentsPanel.createComponentsPanel not found; using no-op.');
+      return { destroy() {} };
+    });
+
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
@@ -125,13 +152,13 @@ export function render(opts = {}) {
   function setupEnhancedShortcuts() {
     function handleEnhancedKeys(e) {
       const key = (e.key || '').toLowerCase();
-      
+
       // 'i' for isolation
       if (key === 'i') {
         e.preventDefault();
         viewManager.isolateSelectedComponent();
       }
-      
+
       // 'h' for toggle dock
       if (key === 'h') {
         e.preventDefault();
@@ -139,7 +166,7 @@ export function render(opts = {}) {
         if (dock) dock.classList.toggle('collapsed');
       }
     }
-    
+
     container.addEventListener('keydown', handleEnhancedKeys, true);
     core.renderer.domElement.addEventListener('keydown', handleEnhancedKeys, true);
   }
@@ -149,7 +176,7 @@ export function render(opts = {}) {
     document.addEventListener('click', (ev) => {
       const button = ev.target.closest('button');
       if (!button) return;
-      
+
       const label = (button.textContent || '').trim().toLowerCase();
       if (['iso', 'top', 'front', 'right'].includes(label)) {
         ev.preventDefault();
@@ -165,7 +192,7 @@ export function render(opts = {}) {
       viewManager.initialize();
       setupEnhancedShortcuts();
       setupEnhancedViewButtons();
-      
+
       // Initial navigation to ISO view
       setTimeout(() => {
         viewManager.navigateToView('iso');
@@ -191,87 +218,127 @@ export function render(opts = {}) {
 /**
  * Create enhanced view management with fixed distance and isolation
  */
-function createViewManager(app, robot) {
+function createViewManager(app, robot, THREEref) {
+  const THREEok = THREEref || (typeof THREE !== 'undefined' ? THREE : (typeof window !== 'undefined' ? window.THREE : null));
   let fixedDistance = null;
   let allMeshes = [];
   let isolating = false;
   let originalCameraState = null;
   let isolatedComponent = null;
-  
+
+  // ToolsDock helpers (with fallbacks)
+  const navigateToFixedDistanceView =
+    (ToolsDock && ToolsDock.navigateToFixedDistanceView) ||
+    function (viewType, appRef, dist, ms) {
+      console.warn('[viewer] ToolsDock.navigateToFixedDistanceView not found; falling back to fitAndCenter.');
+      appRef.fitAndCenter(appRef.robot, 1.06);
+    };
+
+  const tweenOrbits =
+    (ToolsDock && ToolsDock.tweenOrbits) ||
+    function (cam, ctrls, pos, tgt, ms) {
+      // basic immediate set fallback
+      cam.position.copy(pos);
+      ctrls.target.copy(tgt);
+      ctrls.update();
+    };
+
+  // Selection helpers imported by name in original code;
+  // using window-exposed functions (same file exports) or local fallbacks.
+  const _bulkSetVisible =
+    (typeof bulkSetVisible === 'function' ? bulkSetVisible :
+      (arr, vis) => { arr.forEach(m => { if (m?.visible !== undefined) m.visible = !!vis; }); });
+
+  const _setVisibleSubtree =
+    (typeof setVisibleSubtree === 'function' ? setVisibleSubtree :
+      (node, vis) => { node?.traverse?.(o => { if (o.isMesh && o.geometry) o.visible = !!vis; }); });
+
+  const _frameObjectAnimated =
+    (typeof frameObjectAnimated === 'function' ? frameObjectAnimated :
+      (obj, appRef) => { appRef.fitAndCenter(obj, 1.06); });
+
+  const _buildMeshCache =
+    (typeof buildMeshCache === 'function' ? buildMeshCache :
+      (root) => {
+        const meshes = [];
+        root?.traverse?.(o => { if (o.isMesh && o.geometry) meshes.push(o); });
+        return meshes;
+      });
+
   function initialize() {
     if (robot) {
-      allMeshes = buildMeshCache(robot);
+      allMeshes = _buildMeshCache(robot);
       fixedDistance = calculateFixedDistance(robot, app.camera, 1.9);
     }
   }
-  
+
   function navigateToView(viewType) {
     if (!fixedDistance) initialize();
     navigateToFixedDistanceView(viewType, app, fixedDistance, 750);
   }
-  
+
   function isolateComponent(component) {
     if (isolating) return restoreView();
-    
+
     if (!component) {
       console.warn('No component provided for isolation');
       return;
     }
-    
+
     originalCameraState = {
       position: app.camera.position.clone(),
       target: app.controls.target.clone()
     };
-    
-    bulkSetVisible(allMeshes, false);
-    setVisibleSubtree(component, true);
-    frameObjectAnimated(component, app, 1.3, 800);
-    
+
+    _bulkSetVisible(allMeshes, false);
+    _setVisibleSubtree(component, true);
+    _frameObjectAnimated(component, app, 1.3, 800);
+
     isolating = true;
     isolatedComponent = component;
   }
-  
+
   function restoreView() {
     if (!isolating || !originalCameraState) return;
-    
-    bulkSetVisible(allMeshes, true);
+
+    _bulkSetVisible(allMeshes, true);
     tweenOrbits(app.camera, app.controls, originalCameraState.position, originalCameraState.target, 800);
-    
+
     isolating = false;
     isolatedComponent = null;
   }
-  
+
   function getSelectedComponent() {
-    // Implementation depends on your selection system
+    // Example lookup via components table selection
     const selectedRows = document.querySelectorAll('.viewer-dock-fix tr.selected');
     if (selectedRows.length === 0) return null;
-    
+
     const row = selectedRows[0];
     const linkName = row.cells[0]?.textContent?.trim();
     if (!linkName) return null;
-    
+
     let targetComponent = null;
     robot.traverse(obj => {
       if (obj.name === linkName || obj.userData?.linkName === linkName) {
         targetComponent = obj;
       }
     });
-    
+
     return targetComponent;
   }
-  
+
   function isolateSelectedComponent() {
     if (isolating) return restoreView();
-    
+
     const selectedComp = getSelectedComponent();
     if (!selectedComp) {
       console.log('No component selected');
       return;
     }
-    
+
     isolateComponent(selectedComp);
   }
-  
+
   function destroy() {
     // Cleanup if needed
     allMeshes = [];
@@ -279,12 +346,12 @@ function createViewManager(app, robot) {
     originalCameraState = null;
     isolatedComponent = null;
   }
-  
+
   // Initialize when robot is loaded
   if (robot) {
     setTimeout(initialize, 100);
   }
-  
+
   return {
     initialize,
     navigateToView,
@@ -323,7 +390,7 @@ function splitName(key) {
   };
 }
 
-function isolateAsset(core, assetToMeshes, assetKey) {
+function isolateAsset(core, assetToMeshes, assetKey, THREEref) {
   const meshes = assetToMeshes.get(assetKey) || [];
   // Hide everything
   if (core.robot) {
@@ -333,20 +400,26 @@ function isolateAsset(core, assetToMeshes, assetKey) {
   meshes.forEach(m => { m.visible = true; });
 
   // Frame selection
-  frameMeshes(core, meshes);
+  frameMeshes(core, meshes, THREEref);
 }
 
-function showAll(core) {
+function showAll(core /*, THREEref */) {
   if (core.robot) {
     core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = true; });
     core.fitAndCenter(core.robot, 1.06);
   }
 }
 
-function frameMeshes(core, meshes) {
+function frameMeshes(core, meshes, THREEref) {
+  const THREEok = THREEref || (typeof THREE !== 'undefined' ? THREE : (typeof window !== 'undefined' ? window.THREE : null));
+  if (!THREEok) {
+    console.warn('[viewer] THREE not available for frameMeshes.');
+    return;
+  }
   if (!meshes || meshes.length === 0) return;
-  const box = new THREE.Box3();
-  const tmp = new THREE.Box3();
+
+  const box = new THREEok.Box3();
+  const tmp = new THREEok.Box3();
   let has = false;
   meshes.forEach(m => {
     if (!m) return;
@@ -354,8 +427,8 @@ function frameMeshes(core, meshes) {
     if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
   });
   if (!has) return;
-  const center = box.getCenter(new THREE.Vector3());
-  const size   = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREEok.Vector3());
+  const size   = box.getSize(new THREEok.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
 
   const cam = core.camera, ctrl = core.controls;
@@ -365,13 +438,13 @@ function frameMeshes(core, meshes) {
     cam.near = Math.max(maxDim / 1000, 0.001);
     cam.far = Math.max(maxDim * 1500, 1500);
     cam.updateProjectionMatrix();
-    const dir = new THREE.Vector3(1, 0.7, 1).normalize();
+    const dir = new THREEok.Vector3(1, 0.7, 1).normalize();
     cam.position.copy(center.clone().add(dir.multiplyScalar(dist)));
   } else {
     cam.left = -maxDim; cam.right = maxDim; cam.top = maxDim; cam.bottom = -maxDim;
     cam.near = Math.max(maxDim / 1000, 0.001); cam.far = Math.max(maxDim * 1500, 1500);
     cam.updateProjectionMatrix();
-    cam.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
+    cam.position.copy(center.clone().add(new THREEok.Vector3(maxDim, maxDim * 0.9, maxDim)));
   }
   ctrl.target.copy(center);
   ctrl.update();
@@ -379,8 +452,9 @@ function frameMeshes(core, meshes) {
 
 /* --------------------- Offscreen thumbnails --------------------- */
 
-function buildOffscreenForThumbnails(core, assetToMeshes) {
-  if (!core.robot) return null;
+function buildOffscreenForThumbnails(core, assetToMeshes, THREEref) {
+  const THREEok = THREEref || (typeof THREE !== 'undefined' ? THREE : (typeof window !== 'undefined' ? window.THREE : null));
+  if (!core.robot || !THREEok) return null;
 
   // Offscreen renderer & scene
   const OFF_W = 640, OFF_H = 480;
@@ -388,17 +462,17 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   const canvas = document.createElement('canvas');
   canvas.width = OFF_W; canvas.height = OFF_H;
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+  const renderer = new THREEok.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
   renderer.setSize(OFF_W, OFF_H, false);
 
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xffffff);
+  const scene = new THREEok.Scene();
+  scene.background = new THREEok.Color(0xffffff);
 
-  const amb = new THREE.AmbientLight(0xffffff, 0.95);
-  const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(2.5, 2.5, 2.5);
+  const amb = new THREEok.AmbientLight(0xffffff, 0.95);
+  const d = new THREEok.DirectionalLight(0xffffff, 1.1); d.position.set(2.5, 2.5, 2.5);
   scene.add(amb); scene.add(d);
 
-  const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
+  const camera = new THREEok.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
   // Clone the whole robot to isolate assets per snapshot
   const robotClone = core.robot.clone(true);
@@ -427,8 +501,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     for (const m of meshes) m.visible = true;
 
     // Fit camera to these meshes
-    const box = new THREE.Box3();
-    const tmp = new THREE.Box3();
+    const box = new THREEok.Box3();
+    const tmp = new THREEok.Box3();
     let has = false;
     for (const m of meshes) {
       tmp.setFromObject(m);
@@ -436,8 +510,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
     if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
 
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREEok.Vector3());
+    const size = box.getSize(new THREEok.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
     const dist = maxDim * 2.0;
 
@@ -446,7 +520,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     camera.updateProjectionMatrix();
 
     const az = Math.PI * 0.25, el = Math.PI * 0.18;
-    const dir = new THREE.Vector3(
+    const dir = new THREEok.Vector3(
       Math.cos(el) * Math.cos(az),
       Math.sin(el),
       Math.cos(el) * Math.sin(az)
@@ -506,17 +580,37 @@ if (typeof window !== 'undefined') {
   window.URDFViewer = { render };
 }
 
-// Export utility functions for external use
-export { 
+// Re-export utility functions for external use
+export {
   createViewManager,
   calculateFixedDistance,
   directionFromAzEl,
   currentAzimuthElevation,
-  easeInOutCubic,
-  navigateToFixedDistanceView,
-  tweenOrbits,
-  buildMeshCache,
-  bulkSetVisible,
-  setVisibleSubtree,
-  frameObjectAnimated
+  easeInOutCubic
 };
+
+// Also forward out the tween/navigation helpers if present (keeps API stable)
+export const navigateToFixedDistanceView =
+  (ToolsDock && ToolsDock.navigateToFixedDistanceView) ? ToolsDock.navigateToFixedDistanceView :
+  function () { console.warn('[viewer] navigateToFixedDistanceView not available'); };
+
+export const tweenOrbits =
+  (ToolsDock && ToolsDock.tweenOrbits) ? ToolsDock.tweenOrbits :
+  function () { console.warn('[viewer] tweenOrbits not available'); };
+
+// Forward interaction helpers if present (optional)
+export const buildMeshCache =
+  (typeof window !== 'undefined' && window.buildMeshCache) ? window.buildMeshCache :
+  (typeof buildMeshCache === 'function' ? buildMeshCache : undefined);
+
+export const bulkSetVisible =
+  (typeof window !== 'undefined' && window.bulkSetVisible) ? window.bulkSetVisible :
+  (typeof bulkSetVisible === 'function' ? bulkSetVisible : undefined);
+
+export const setVisibleSubtree =
+  (typeof window !== 'undefined' && window.setVisibleSubtree) ? window.setVisibleSubtree :
+  (typeof setVisibleSubtree === 'function' ? setVisibleSubtree : undefined);
+
+export const frameObjectAnimated =
+  (typeof window !== 'undefined' && window.frameObjectAnimated) ? window.frameObjectAnimated :
+  (typeof frameObjectAnimated === 'function' ? frameObjectAnimated : undefined);
