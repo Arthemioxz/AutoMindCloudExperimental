@@ -255,18 +255,48 @@ export function createToolsDock(app, theme) {
 
   // ---------- Logic ----------
 
-  // Open/close
-  function set(open) {
-    ui.dock.style.display = open ? 'block' : 'none';
-    ui.toggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
-    if (open) {
-      styleDockLeft(ui.dock);
-      explode.prepare(); // refresh when opening
-    }
+// ------------------ CONFIG ------------------
+const CLOSED_TX = -520; // px, off-screen to the left
+let isOpen = false;
+
+// Prepare dock styles once
+Object.assign(ui.dock.style, {
+  display: 'block',
+  willChange: 'transform, opacity',
+  transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
+  transform: `translateX(${CLOSED_TX}px)`,
+  opacity: '0',
+  pointerEvents: 'none'
+});
+
+// ------------------ TWEEN LOGIC ------------------
+function set(open) {
+  isOpen = open;
+
+  if (open) {
+    // OPEN tween
+    ui.dock.style.opacity = '1';
+    ui.dock.style.transform = 'translateX(0)';
+    ui.dock.style.pointerEvents = 'auto';
+    ui.toggleBtn.textContent = 'Close Tools';
+    try { styleDockLeft(ui.dock); } catch(_) {}
+    try { explode.prepare(); } catch(_) {}
+  } else {
+    // CLOSE tween
+    ui.dock.style.opacity = '0';
+    ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
+    ui.dock.style.pointerEvents = 'none';
+    ui.toggleBtn.textContent = 'Open Tools';
   }
-  function openDock() { set(true); }
-  function closeDock() { set(false); }
-  ui.toggleBtn.addEventListener('click', () => set(ui.dock.style.display === 'none'));
+}
+
+// Wrappers
+function openDock()  { set(true);  }
+function closeDock() { set(false); }
+
+// ------------------ EVENT ------------------
+ui.toggleBtn.addEventListener('click', () => set(!isOpen));
+
 
   // Snapshot (header only)
   ui.fitBtn.addEventListener('click', () => {
