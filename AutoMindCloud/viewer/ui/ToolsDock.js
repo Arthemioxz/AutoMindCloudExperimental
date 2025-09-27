@@ -155,10 +155,7 @@ export function createToolsDock(app, theme) {
     boxShadow: theme.shadow,
     pointerEvents: 'auto',
     overflow: 'hidden',
-    display: 'none',
-    opacity: '0',
-    transform: 'translateY(-8px)',
-    transition: 'opacity 180ms ease, transform 180ms ease'
+    display: 'none'
   });
 
   Object.assign(ui.header.style, {
@@ -258,58 +255,59 @@ export function createToolsDock(app, theme) {
 
   // ---------- Logic ----------
 
-  // Small utility so the dock sits nicely when opened
-  function styleDockLeft(dockEl) {
-    dockEl.classList.add('viewer-dock-fix');
-    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
-  }
-
-  // Tweened open/close (minimal change: just animates opacity/translateY)
-  let _open = false;
-  function animateOpen() {
-    ui.dock.style.display = 'block';
-    // reset start state
-    ui.dock.style.transition = 'none';
-    ui.dock.style.opacity = '0';
-    ui.dock.style.transform = 'translateY(-8px)';
-    // next frame -> animate to visible
-    requestAnimationFrame(() => {
-      ui.dock.style.transition = 'opacity 180ms ease, transform 180ms ease';
-      ui.dock.style.opacity = '1';
-      ui.dock.style.transform = 'translateY(0)';
-    });
-  }
-  function animateClose() {
-    // animate to hidden; then display:none when finished
-    ui.dock.style.transition = 'opacity 180ms ease, transform 180ms ease';
-    ui.dock.style.opacity = '0';
-    ui.dock.style.transform = 'translateY(-8px)';
-    const onEnd = () => {
-      ui.dock.style.display = 'none';
-      ui.dock.removeEventListener('transitionend', onEnd);
-    };
-    ui.dock.addEventListener('transitionend', onEnd);
-  }
-
+  // Open/close (original button behavior — unchanged)
   function set(open) {
-    const next = !!open;
-    if (next === _open) return;
-    _open = next;
-    ui.toggleBtn.textContent = _open ? 'Close Tools' : 'Open Tools';
-    if (_open) {
+    ui.dock.style.display = open ? 'block' : 'none';
+    ui.toggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
+    if (open) {
       styleDockLeft(ui.dock);
-      try { explode.prepare(); } catch(_) {}
-      animateOpen();
-    } else {
-      animateClose();
+      explode.prepare(); // refresh when opening
     }
   }
   function openDock() { set(true); }
   function closeDock() { set(false); }
-  function toggle() { set(!_open); }
-  function isOpen() { return _open; }
+  ui.toggleBtn.addEventListener('click', () => set(ui.dock.style.display === 'none'));
 
-  ui.toggleBtn.addEventListener('click', toggle);
+  // ======== Minimal addition: 'h' hotkey with a small tween (button logic intact) ========
+  const _onKeyDownToggleTools = (e) => {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+    if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
+      e.preventDefault();
+      try { console.log('pressed h'); } catch {}
+      const isOpen = ui.dock.style.display !== 'none';
+      if (!isOpen) {
+        ui.dock.style.display = 'block';
+        ui.dock.style.willChange = 'opacity, transform';
+        ui.dock.style.transition = 'none';
+        ui.dock.style.opacity = '0';
+        ui.dock.style.transform = 'translateY(-8px)';
+        requestAnimationFrame(() => {
+          ui.toggleBtn.textContent = 'Close Tools';
+          styleDockLeft(ui.dock);
+          try { explode.prepare(); } catch(_) {}
+          ui.dock.style.transition = 'opacity 180ms ease, transform 180ms ease';
+          ui.dock.style.opacity = '1';
+          ui.dock.style.transform = 'translateY(0)';
+          setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 220);
+        });
+      } else {
+        ui.dock.style.willChange = 'opacity, transform';
+        ui.dock.style.transition = 'opacity 180ms ease, transform 180ms ease';
+        ui.dock.style.opacity = '0';
+        ui.dock.style.transform = 'translateY(-8px)';
+        const onEnd = () => {
+          ui.dock.style.display = 'none';
+          ui.dock.style.willChange = 'auto';
+          ui.toggleBtn.textContent = 'Open Tools';
+          ui.dock.removeEventListener('transitionend', onEnd);
+        };
+        ui.dock.addEventListener('transitionend', onEnd);
+      }
+    }
+  };
+  document.addEventListener('keydown', _onKeyDownToggleTools, true);
+  // ======== End minimal addition ========
 
   // Snapshot (header only)
   ui.fitBtn.addEventListener('click', () => {
@@ -482,15 +480,11 @@ export function createToolsDock(app, theme) {
   togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
   togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
-  // ---------- Explode manager (unchanged behavior) ----------
-  function makeExplodeManager() {
-    // ... (unchanged internal implementation) ...
+  // ---------- Utilities ----------
+  function styleDockLeft(dockEl) {
+    dockEl.classList.add('viewer-dock-fix');
+    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
   }
-  const explode = makeExplodeManager();
-  try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
-  explodeSlider.addEventListener('input', () => {
-    explode.setTarget(Number(explodeSlider.value) || 0);
-  });
 
   // Defaults
   togGrid.cb.checked = false;
@@ -510,8 +504,10 @@ export function createToolsDock(app, theme) {
       app.renderer.clippingPlanes = [];
       if (secVisual) app.scene.remove(secVisual);
     } catch (_) {}
+    // remove hotkey
+    try { document.removeEventListener('keydown', _onKeyDownToggleTools, true); } catch(_) {}
     explode.destroy();
   }
 
-  return { open: openDock, close: closeDock, set, toggle, isOpen, destroy };
+  return { open: openDock, close: closeDock, set, destroy };
 }
