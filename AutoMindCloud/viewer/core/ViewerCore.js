@@ -358,6 +358,66 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
     try { renderer?.dispose?.(); } catch (_) {}
   }
 
+  /* ---------- Python-to-JS migrated functions ---------- */
+
+  /**
+   * Calculate fixed distance for consistent viewing
+   * @param {THREE.Object3D} object - Object to frame
+   * @param {THREE.PerspectiveCamera} camera - Camera to use for calculation
+   * @param {number} padding - Padding multiplier
+   * @returns {number} - Calculated distance
+   */
+  function calculateFixedDistance(object, camera, padding = 1.0) {
+    const box = new THREE.Box3().setFromObject(object);
+    if (box.isEmpty()) return 3.0; // Default distance
+    
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const fov = (camera.fov || 60) * Math.PI / 180;
+    
+    return (maxDim * padding) / Math.tan(fov / 2);
+  }
+
+  /**
+   * Get direction vector from azimuth and elevation
+   * @param {number} az - Azimuth in radians
+   * @param {number} el - Elevation in radians
+   * @returns {THREE.Vector3} - Direction vector
+   */
+  function directionFromAzEl(az, el) {
+    return new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az)
+    ).normalize();
+  }
+
+  /**
+   * Get current camera azimuth and elevation
+   * @param {THREE.Camera} camera - Camera
+   * @param {THREE.Vector3} target - Look-at target
+   * @returns {Object} - {az, el, distance}
+   */
+  function currentAzimuthElevation(camera, target) {
+    const vector = camera.position.clone().sub(target);
+    const distance = Math.max(1e-9, vector.length());
+    
+    return {
+      az: Math.atan2(vector.z, vector.x),
+      el: Math.asin(vector.y / distance),
+      distance: distance
+    };
+  }
+
+  /**
+   * Easing function for smooth animations
+   * @param {number} t - Time parameter (0-1)
+   * @returns {number} - Eased value
+   */
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
   // Public facade
   return {
     // Core Three.js objects
@@ -380,6 +440,20 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
     setBackground,
     setPixelRatio,
     onResize,
-    destroy
+    destroy,
+
+    // New utility functions
+    calculateFixedDistance,
+    directionFromAzEl,
+    currentAzimuthElevation,
+    easeInOutCubic
   };
 }
+
+// Export utility functions separately
+export { 
+  calculateFixedDistance, 
+  directionFromAzEl, 
+  currentAzimuthElevation,
+  easeInOutCubic 
+};
