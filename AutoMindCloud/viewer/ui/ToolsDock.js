@@ -692,55 +692,61 @@ export function createToolsDock(app, theme) {
 
 
 
-// ======== 'h' hotkey: translational slide tween (right-to-left) ========
-const _onKeyDownToggleTools = (e) => {
-  const tag = (e.target && e.target.tagName || '').toLowerCase();
-  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+// ---------- TWEENED OPEN/CLOSE (unify button + 'H') ----------
+const CLOSED_TX = 520;  // px; slide distance
+let isOpen = false;
 
+// place dock on the LEFT once
+styleDockLeft(ui.dock);
+
+// give the dock a permanent transition and keep it in the DOM
+Object.assign(ui.dock.style, {
+  display: 'block',
+  willChange: 'transform, opacity',
+  transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease'
+});
+
+// helper to apply visual state
+function applyState(open) {
+  if (open) {
+    ui.dock.style.opacity = '1';
+    ui.dock.style.transform = 'translateX(0)';
+    ui.dock.style.pointerEvents = 'auto';
+    ui.toggleBtn.textContent = 'Close Tools';
+  } else {
+    ui.dock.style.opacity = '0';
+    // negative X = slide off to the left; use +CLOSED_TX if your dock is on the right
+    ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
+    ui.dock.style.pointerEvents = 'none';
+    ui.toggleBtn.textContent = 'Open Tools';
+  }
+}
+
+function set(open) {
+  const next = !!open;
+  if (next && !isOpen) { try { explode.prepare(); } catch {} }
+  isOpen = next;
+  applyState(isOpen);
+}
+function openDock()  { set(true);  }
+function closeDock() { set(false); }
+
+// init hidden (off-screen)
+applyState(false);
+
+// Button uses the same setter
+ui.toggleBtn.addEventListener('click', () => set(!isOpen));
+
+// 'H' hotkey (no scope issues since we're inside the function)
+const onKeyDownToggleTools = (e) => {
+  if (e.isComposing) return;
   if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
     e.preventDefault();
-    console.log('pressed h');
-
-    const ctx = window.__toolsDockCtx;
-    if (!ctx || !ctx.ui) return;           // createToolsDock not initialized yet
-
-    const { ui, explode, styleDockLeft } = ctx;
-    const CLOSED_TX = 520;
-    const isOpen = ui.dock.style.display !== 'none';
-
-    if (!isOpen) {
-      // Opening
-      ui.dock.style.display = 'block';
-      ui.dock.style.willChange = 'transform, opacity';
-      ui.dock.style.transition = 'none';
-      ui.dock.style.opacity = '0';
-      ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
-      requestAnimationFrame(() => {
-        ui.toggleBtn.textContent = 'Close Tools';
-        styleDockLeft(ui.dock);
-        try { explode.prepare(); } catch(_) {}
-        ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
-        ui.dock.style.opacity = '1';
-        ui.dock.style.transform = 'translateX(0px)';
-        setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
-      });
-    } else {
-      // Closing
-      ui.dock.style.willChange = 'transform, opacity';
-      ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
-      ui.dock.style.opacity = '0';
-      ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
-      const onEnd = () => {
-        ui.dock.style.display = 'none';
-        ui.dock.style.willChange = 'auto';
-        ui.toggleBtn.textContent = 'Open Tools';
-        ui.dock.removeEventListener('transitionend', onEnd);
-      };
-      ui.dock.addEventListener('transitionend', onEnd);
-    }
+    set(!isOpen);
   }
 };
-document.addEventListener('keydown', _onKeyDownToggleTools, true);
-// ======== End hotkey ========
+window.addEventListener('keydown', onKeyDownToggleTools, true);
 
+// remember to clean up in destroy():
+// window.removeEventListener('keydown', onKeyDownToggleTools, true);
 
