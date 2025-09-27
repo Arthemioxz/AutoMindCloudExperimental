@@ -38,7 +38,7 @@ function applyButtonHover(b, theme) {
   b.style.background = panelBg;
   b.style.color = '#000000';
   b.style.border = `1px solid ${teal}`;
-  b.style.cursor = b.style.cursor or 'pointer';
+  b.style.cursor = b.style.cursor || 'pointer';
   b.style.transition = 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, color 120ms ease, border-color 120ms ease';
 
   b.addEventListener('mouseenter', () => {
@@ -142,8 +142,9 @@ export function createComponentsPanel(app, theme) {
 
   applyStyles(ui.root, css.root);
   applyStyles(ui.btn, css.btn);
-  applyStyles(ui.panel, css.panel);
-  applyStyles(ui.header, css.header);
+  \1
+  ui.panel.setAttribute('data-amc-dock','components');
+applyStyles(ui.header, css.header);
   applyStyles(ui.title, css.title);
   applyStyles(ui.showAllBtn, css.showAllBtn);
   applyStyles(ui.list, css.list);
@@ -374,3 +375,4 @@ function makeThumbFallback(label, theme) {
   wrap.textContent = label || '—';
   return wrap;
 }
+
