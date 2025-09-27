@@ -1,7 +1,7 @@
 // /viewer/urdf_viewer_main.js
 /* global THREE */
 
-// --- Imports ---
+// --- Imports (core) ---
 import { THEME } from './Theme.js';
 import {
   createViewer,
@@ -19,24 +19,46 @@ import {
   frameObjectAnimated
 } from './interaction/SelectionAndDrag.js';
 
-// IMPORTANT: import UI modules as namespaces
-import * as ToolsDock from './ui/ToolsDock.js';
-import * as ComponentsPanel from './ui/ComponentsPanel.js';
+// --- Imports (UI) ---
+// 1) Named imports (your old system worked with these)
+import {
+  createToolsDock as createToolsDockNamed,
+  navigateToFixedDistanceView as navigateToFixedDistanceViewNamed,
+  tweenOrbits as tweenOrbitsNamed
+} from './ui/ToolsDock.js';
 
-// ---- Safe shims (avoid ReferenceError even if modules change names) ----
+import {
+  createComponentsPanel as createComponentsPanelNamed
+} from './ui/ComponentsPanel.js';
+
+// 2) Namespace imports (fallbacks)
+import * as ToolsDockNS from './ui/ToolsDock.js';
+import * as ComponentsPanelNS from './ui/ComponentsPanel.js';
+
+// ---- Safe shims (prefer named exports, fallback to namespace) ----
 const createToolsDock =
-  (ToolsDock && typeof ToolsDock.createToolsDock === 'function') ? ToolsDock.createToolsDock : null;
+  (typeof createToolsDockNamed === 'function')
+    ? createToolsDockNamed
+    : (ToolsDockNS && typeof ToolsDockNS.createToolsDock === 'function' ? ToolsDockNS.createToolsDock : null);
+
 const navigateToFixedDistanceView =
-  (ToolsDock && typeof ToolsDock.navigateToFixedDistanceView === 'function')
-    ? ToolsDock.navigateToFixedDistanceView
-    : null;
+  (typeof navigateToFixedDistanceViewNamed === 'function')
+    ? navigateToFixedDistanceViewNamed
+    : (ToolsDockNS && typeof ToolsDockNS.navigateToFixedDistanceView === 'function'
+        ? ToolsDockNS.navigateToFixedDistanceView
+        : null);
+
 const tweenOrbits =
-  (ToolsDock && typeof ToolsDock.tweenOrbits === 'function') ? ToolsDock.tweenOrbits : null;
+  (typeof tweenOrbitsNamed === 'function')
+    ? tweenOrbitsNamed
+    : (ToolsDockNS && typeof ToolsDockNS.tweenOrbits === 'function' ? ToolsDockNS.tweenOrbits : null);
 
 const createComponentsPanel =
-  (ComponentsPanel && typeof ComponentsPanel.createComponentsPanel === 'function')
-    ? ComponentsPanel.createComponentsPanel
-    : null;
+  (typeof createComponentsPanelNamed === 'function')
+    ? createComponentsPanelNamed
+    : (ComponentsPanelNS && typeof ComponentsPanelNS.createComponentsPanel === 'function'
+        ? ComponentsPanelNS.createComponentsPanel
+        : null);
 
 // ----------------------------------------------------------------------
 
@@ -141,7 +163,7 @@ export function render(opts = {}) {
     openTools(open = true) { tools.set(!!open); }
   };
 
-  // 8) UI panels (safe, using shims)
+  // 8) UI panels (prefer named import, fallback to namespace, otherwise no-op)
   const tools = (createToolsDock)
     ? (function() {
         try { return createToolsDock(app, THEME) || { set(){}, open(){}, close(){}, destroy(){} }; }
@@ -406,7 +428,11 @@ function buildOffscreenForThumbnails(core, assetToMeshes, THREEref) {
   const map = new Map();
   robotClone.traverse(o => {
     const k = o?.userData?.__assetKey;
-    if (k && o.isMesh && o.geometry) (map.get(k) || map.set(k, []).get(k)).push(o);
+    if (k && o.isMesh && o.geometry) {
+      let arr = map.get(k);
+      if (!arr) { arr = []; map.set(k, arr); }
+      arr.push(o);
+    }
   });
 
   function snapshotAsset(assetKey) {
