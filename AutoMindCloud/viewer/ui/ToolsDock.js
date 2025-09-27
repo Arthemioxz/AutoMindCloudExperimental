@@ -1,273 +1,795 @@
 // /viewer/ui/ToolsDock.js
-// Tools panel with camera controls, display options, etc.
+// Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
+/* global THREE */
 
-import { createButton, createSlider, createCheckbox, createLabel } from './ui_utils.js';
-
-/**
- * Creates a dockable tools panel
- * @param {Object} app - The main app facade
- * @param {Object} theme - Theme colors
- * @returns {Object} { set(open), destroy() }
- */
 export function createToolsDock(app, theme) {
-  const { container, robot, camera, controls, fitAndCenter } = app;
-  
-  // Create tools container
-  const toolsDiv = document.createElement('div');
-  toolsDiv.className = 'urdf-tools-dock';
-  Object.assign(toolsDiv.style, {
+  if (!app || !app.camera || !app.controls || !app.renderer)
+    throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
+
+  // --- Normalize theme to flat keys (works with your Theme.js nested shape) ---
+  if (theme && theme.colors) {
+    theme.teal       ??= theme.colors.teal;
+    theme.tealSoft   ??= theme.colors.tealSoft;
+    theme.tealFaint  ??= theme.colors.tealFaint;
+    theme.bgPanel    ??= theme.colors.panelBg;
+    theme.bgCanvas   ??= theme.colors.canvasBg;
+    theme.stroke     ??= theme.colors.stroke;
+    theme.text       ??= theme.colors.text;
+    theme.textMuted  ??= theme.colors.textMuted;
+  }
+  if (theme && theme.shadows) {
+    theme.shadow ??= (theme.shadows.lg || theme.shadows.md || theme.shadows.sm);
+  }
+
+  // ---------- DOM ----------
+  const ui = {
+    root: document.createElement('div'),
+    dock: document.createElement('div'),
+    header: document.createElement('div'),
+    title: document.createElement('div'),
+    fitBtn: document.createElement('button'),
+    body: document.createElement('div'),
+    toggleBtn: document.createElement('button')
+  };
+
+  // ---------- Helpers (with hover animations intact) ----------
+  const mkButton = (label) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    Object.assign(b.style, {
+      padding: '8px 12px',
+      borderRadius: '12px',
+      border: `1px solid ${theme.stroke}`,
+      background: theme.bgPanel,
+      color: theme.text,
+      fontWeight: '700',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      boxShadow: theme.shadow,
+      transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
+    });
+    // Hover/active animations (KEEP)
+    b.addEventListener('mouseenter', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.tealFaint;
+      b.style.borderColor = theme.tealSoft ?? theme.teal;
+    });
+    b.addEventListener('mouseleave', () => {
+      b.style.transform = 'none';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.bgPanel;
+      b.style.borderColor = theme.stroke;
+    });
+    b.addEventListener('mousedown', () => {
+      b.style.transform = 'translateY(0) scale(0.99)';
+    });
+    b.addEventListener('mouseup', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+    });
+    return b;
+  };
+
+  const mkRow = (label, child) => {
+    const row = document.createElement('div');
+    Object.assign(row.style, {
+      display: 'grid',
+      gridTemplateColumns: '120px 1fr',
+      gap: '10px',
+      alignItems: 'center',
+      margin: '6px 0'
+    });
+    const l = document.createElement('div');
+    l.textContent = label;
+    Object.assign(l.style, { color: theme.textMuted, fontWeight: '700' });
+    row.appendChild(l);
+    row.appendChild(child);
+    return row;
+  };
+
+  const mkSelect = (options, value) => {
+    const sel = document.createElement('select');
+    options.forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o; opt.textContent = o; sel.appendChild(opt);
+    });
+    sel.value = value;
+    Object.assign(sel.style, {
+      padding: '8px',
+      border: `1px solid ${theme.stroke}`,
+      borderRadius: '10px',
+      pointerEvents: 'auto',
+      background: theme.bgPanel,
+      color: theme.text,
+      transition: 'border-color 120ms ease, box-shadow 120ms ease'
+    });
+    sel.addEventListener('focus', () => {
+      sel.style.borderColor = theme.teal;
+      sel.style.boxShadow = theme.shadow;
+    });
+    sel.addEventListener('blur', () => {
+      sel.style.borderColor = theme.stroke;
+      sel.style.boxShadow = 'none';
+    });
+    return sel;
+  };
+
+  const mkSlider = (min, max, step, value) => {
+    const s = document.createElement('input');
+    s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
+    s.style.width = '100%';
+    s.style.accentColor = theme.teal;
+    return s;
+  };
+
+  const mkToggle = (label) => {
+    const wrap = document.createElement('label');
+    const cb = document.createElement('input'); cb.type = 'checkbox';
+    const span = document.createElement('span'); span.textContent = label;
+    Object.assign(wrap.style, { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', pointerEvents: 'auto' });
+    cb.style.accentColor = theme.teal;
+    Object.assign(span.style, { fontWeight: '700', color: theme.text });
+    wrap.appendChild(cb); wrap.appendChild(span);
+    return { wrap, cb };
+  };
+
+  // Root overlay
+  Object.assign(ui.root.style, {
     position: 'absolute',
-    top: '10px',
-    right: '10px',
-    width: '250px',
-    background: theme.bgPanel || '#ffffff',
-    border: `1px solid ${theme.border || '#cccccc'}`,
-    borderRadius: '8px',
-    padding: '12px',
-    fontFamily: 'Arial, sans-serif',
-    fontSize: '14px',
-    boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
-    zIndex: '1000',
-    transition: 'transform 0.3s ease, opacity 0.3s ease',
-    transform: 'translateX(0)',
-    opacity: '1'
+    left: '0', top: '0',
+    width: '100%', height: '100%',
+    pointerEvents: 'none',
+    zIndex: '9999',
+    fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
   });
 
-  // Close button
-  const closeBtn = document.createElement('button');
-  closeBtn.textContent = '×';
-  closeBtn.title = 'Close tools';
-  Object.assign(closeBtn.style, {
+  // Dock
+  Object.assign(ui.dock.style, {
     position: 'absolute',
-    top: '5px',
-    right: '5px',
-    background: 'none',
-    border: 'none',
-    fontSize: '18px',
-    cursor: 'pointer',
-    width: '24px',
-    height: '24px',
-    borderRadius: '50%',
+    right: '14px',
+    top: '14px',
+    width: '440px',
+    background: theme.bgPanel,
+    border: `1px solid ${theme.stroke}`,
+    borderRadius: '18px',
+    boxShadow: theme.shadow,
+    pointerEvents: 'auto',
+    overflow: 'hidden',
+    display: 'none'
+  });
+
+  Object.assign(ui.header.style, {
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'center'
+    justifyContent: 'space-between',
+    padding: '10px 12px',
+    borderBottom: `1px solid ${theme.stroke}`,
+    background: theme.tealFaint
   });
-  closeBtn.onmouseover = () => closeBtn.style.background = '#f0f0f0';
-  closeBtn.onmouseout = () => closeBtn.style.background = 'none';
-  
-  let isOpen = true;
-  closeBtn.onclick = () => setOpen(false);
 
-  toolsDiv.appendChild(closeBtn);
+  ui.title.textContent = 'Viewer Tools';
+  Object.assign(ui.title.style, { fontWeight: '800', color: theme.text });
 
-  // Title
-  const title = document.createElement('h3');
-  title.textContent = 'Viewer Tools';
-  title.style.margin = '0 0 15px 0';
-  title.style.color = theme.textPrimary || '#333333';
-  toolsDiv.appendChild(title);
+  Object.assign(ui.body.style, { padding: '10px 12px' });
 
-  // Camera Controls Section
-  const camSection = createSection('Camera Controls');
-  toolsDiv.appendChild(camSection);
-
-  // Reset camera button
-  const resetCamBtn = createButton('Reset View', () => {
-    if (robot) fitAndCenter(robot, 1.06);
-    if (window.__urdf_click__) window.__urdf_click__();
+  // Floating toggle button (with hover)
+  ui.toggleBtn.textContent = 'Open Tools';
+  Object.assign(ui.toggleBtn.style, {
+    position: 'absolute',
+    right: '14px',
+    top: '14px',
+    padding: '8px 12px',
+    borderRadius: '12px',
+    border: `1px solid ${theme.stroke}`,
+    background: theme.bgPanel,
+    color: theme.text,
+    fontWeight: '700',
+    boxShadow: theme.shadow,
+    pointerEvents: 'auto',
+    zIndex: '10000',
+    transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
   });
-  camSection.appendChild(resetCamBtn);
-
-  // Camera type toggle
-  const camTypeDiv = document.createElement('div');
-  camTypeDiv.style.marginBottom = '10px';
-  
-  const camLabel = createLabel('Camera:');
-  camTypeDiv.appendChild(camLabel);
-  
-  const camToggle = createCheckbox(camera.isPerspectiveCamera, (checked) => {
-    if (checked) {
-      // Switch to perspective
-      const aspect = camera.aspect || 1;
-      const newCam = new THREE.PerspectiveCamera(60, aspect, 0.01, 10000);
-      newCam.position.copy(camera.position);
-      newCam.quaternion.copy(camera.quaternion);
-      
-      // Replace camera
-      app.camera = newCam;
-      controls.object = newCam;
-      app.setCamera(newCam);
-    } else {
-      // Switch to orthographic
-      const dim = 10;
-      const newCam = new THREE.OrthographicCamera(-dim, dim, dim, -dim, 0.01, 10000);
-      newCam.position.copy(camera.position);
-      newCam.quaternion.copy(camera.quaternion);
-      
-      app.camera = newCam;
-      controls.object = newCam;
-      app.setCamera(newCam);
-    }
-    if (window.__urdf_click__) window.__urdf_click__();
+  ui.toggleBtn.addEventListener('mouseenter', () => {
+    ui.toggleBtn.style.transform = 'translateY(-1px) scale(1.02)';
+    ui.toggleBtn.style.background = theme.tealFaint;
+    ui.toggleBtn.style.borderColor = theme.tealSoft ?? theme.teal;
   });
-  camToggle.textContent = camera.isPerspectiveCamera ? 'Perspective' : 'Orthographic';
-  camTypeDiv.appendChild(camToggle);
-  camSection.appendChild(camTypeDiv);
-
-  // Display Options Section
-  const displaySection = createSection('Display Options');
-  toolsDiv.appendChild(displaySection);
-
-  // Background color
-  const bgDiv = document.createElement('div');
-  bgDiv.style.marginBottom = '10px';
-  
-  const bgLabel = createLabel('Background:');
-  bgDiv.appendChild(bgLabel);
-  
-  const bgInput = document.createElement('input');
-  bgInput.type = 'color';
-  bgInput.value = `#${(theme.bgCanvas || 0xffffff).toString(16).padStart(6, '0')}`;
-  bgInput.style.marginLeft = '10px';
-  bgInput.onchange = (e) => {
-    app.renderer.setClearColor(parseInt(e.target.value.slice(1), 16));
-    if (window.__urdf_click__) window.__urdf_click__();
-  };
-  bgDiv.appendChild(bgInput);
-  displaySection.appendChild(bgDiv);
-
-  // Grid toggle
-  let gridVisible = true;
-  const grid = findGrid(app.scene);
-  
-  const gridToggle = createCheckbox(gridVisible, (checked) => {
-    gridVisible = checked;
-    if (grid) grid.visible = checked;
-    if (window.__urdf_click__) window.__urdf_click__();
+  ui.toggleBtn.addEventListener('mouseleave', () => {
+    ui.toggleBtn.style.transform = 'none';
+    ui.toggleBtn.style.background = theme.bgPanel;
+    ui.toggleBtn.style.borderColor = theme.stroke;
   });
-  gridToggle.textContent = 'Show Grid';
-  displaySection.appendChild(gridToggle);
 
-  // Axes toggle
-  let axesVisible = true;
-  const axes = findAxes(app.scene);
-  
-  const axesToggle = createCheckbox(axesVisible, (checked) => {
-    axesVisible = checked;
-    if (axes) axes.visible = checked;
-    if (window.__urdf_click__) window.__urdf_click__();
-  });
-  axesToggle.textContent = 'Show Axes';
-  displaySection.appendChild(axesToggle);
+  // Header button (Snapshot)
+  ui.fitBtn = mkButton('Snapshot');
+  Object.assign(ui.fitBtn.style, { padding: '6px 10px', borderRadius: '10px' });
 
-  // Animation Section (if robot has joints)
-  const joints = robot ? collectJoints(robot) : [];
-  if (joints.length > 0) {
-    const animSection = createSection('Joint Controls');
-    toolsDiv.appendChild(animSection);
+  ui.header.appendChild(ui.title);
+  ui.header.appendChild(ui.fitBtn);
+  ui.dock.appendChild(ui.header);
+  ui.dock.appendChild(ui.body);
+  ui.root.appendChild(ui.dock);
+  ui.root.appendChild(ui.toggleBtn);
 
-    joints.forEach(joint => {
-      const jointDiv = document.createElement('div');
-      jointDiv.style.marginBottom = '8px';
-      
-      const label = createLabel(`${joint.name}:`);
-      jointDiv.appendChild(label);
-      
-      const slider = createSlider(
-        joint.limit?.lower ?? -Math.PI,
-        joint.limit?.upper ?? Math.PI,
-        joint.angle ?? 0,
-        0.01,
-        (value) => {
-          joint.setAngle(value);
-          if (window.__urdf_click__) window.__urdf_click__();
-        }
-      );
-      jointDiv.appendChild(slider);
-      
-      animSection.appendChild(jointDiv);
-    });
+  // Attach
+  const host = (app?.renderer?.domElement?.parentElement) || document.body;
+  host.appendChild(ui.root);
 
-    // Reset all joints button
-    const resetJointsBtn = createButton('Reset All Joints', () => {
-      joints.forEach(joint => {
-        joint.setAngle(0);
-        // Update sliders if they exist
-        const sliders = animSection.querySelectorAll('input[type="range"]');
-        sliders.forEach(slider => {
-          if (slider.value !== '0') slider.value = 0;
-        });
-      });
-      if (window.__urdf_click__) window.__urdf_click__();
-    });
-    animSection.appendChild(resetJointsBtn);
-  }
+  // ---------- Controls ----------
+  const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
 
-  // Add to container
-  container.appendChild(toolsDiv);
+  // Explode (slider drives a smoothed spring tween; see ExplodeManager below)
+  const explodeSlider = mkSlider(0, 1, 0.01, 0);
 
-  function setOpen(open) {
-    isOpen = open;
+  // Section
+  const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
+  const secDist = mkSlider(-1, 1, 0.001, 0);
+  const secEnable = mkToggle('Enable section');
+  const secShowPlane = mkToggle('Show slice plane');
+
+  // Views row (NO per-row Snapshot button)
+  const rowCam = document.createElement('div');
+  Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
+  const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
+  [bIso, bTop, bFront, bRight].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
+
+  // Projection + Scene toggles
+  const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
+  const togGrid = mkToggle('Grid');
+  const togGround = mkToggle('Ground & shadows');
+  const togAxes = mkToggle('XYZ axes');
+
+  // Assemble rows
+  ui.body.appendChild(mkRow('Render mode', renderModeSel));
+  ui.body.appendChild(mkRow('Explode', explodeSlider));
+  ui.body.appendChild(mkRow('Section axis', axisSel));
+  ui.body.appendChild(mkRow('Section dist', secDist));
+  ui.body.appendChild(mkRow('', secEnable.wrap));
+  ui.body.appendChild(mkRow('', secShowPlane.wrap));
+  ui.body.appendChild(mkRow('Views', rowCam));
+  rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight);
+  ui.body.appendChild(mkRow('Projection', projSel));
+  ui.body.appendChild(mkRow('', togGrid.wrap));
+  ui.body.appendChild(mkRow('', togGround.wrap));
+  ui.body.appendChild(mkRow('', togAxes.wrap));
+
+  // ---------- Logic ----------
+
+  // Open/close
+  function set(open) {
+    ui.dock.style.display = open ? 'block' : 'none';
+    ui.toggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
     if (open) {
-      toolsDiv.style.transform = 'translateX(0)';
-      toolsDiv.style.opacity = '1';
-    } else {
-      toolsDiv.style.transform = 'translateX(300px)';
-      toolsDiv.style.opacity = '0';
+      styleDockLeft(ui.dock);
+      explode.prepare(); // refresh when opening
     }
   }
+  function openDock() { set(true); }
+  function closeDock() { set(false); }
+  ui.toggleBtn.addEventListener('click', () => set(ui.dock.style.display === 'none'));
 
+  // Snapshot (header only)
+  ui.fitBtn.addEventListener('click', () => {
+    try {
+      const url = app.renderer.domElement.toDataURL('image/png');
+      const a = document.createElement('a'); a.href = url; a.download = 'snapshot.png'; a.click();
+    } catch (_) {}
+  });
+
+  // Render mode
+  renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
+  function setRenderMode(mode) {
+    const root = app.robot || app.scene;
+    if (!root) return;
+    root.traverse(o => {
+      if (o.isMesh && o.material) {
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) {
+          m.wireframe = (mode === 'Wireframe');
+          if (mode === 'X-Ray') {
+            m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.depthTest = true;
+          } else if (mode === 'Ghost') {
+            m.transparent = true; m.opacity = 0.70; m.depthWrite = true; m.depthTest = true;
+          } else {
+            m.transparent = false; m.opacity = 1.0; m.depthWrite = true; m.depthTest = true;
+          }
+          m.needsUpdate = true;
+        }
+      }
+    });
+  }
+
+  // ---------- Section plane ----------
+  let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
+  let sectionPlane = null, secVisual = null;
+
+  function ensureSectionVisual() {
+    if (secVisual) return secVisual;
+    secVisual = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1, 1, 1),
+      new THREE.MeshBasicMaterial({
+        color: theme.teal,
+        transparent: true,
+        opacity: 0.4,
+        depthWrite: false,
+        depthTest: false,
+        toneMapped: false,
+        side: THREE.DoubleSide
+      })
+    );
+    secVisual.visible = false;
+    secVisual.renderOrder = 10000;
+    app.scene.add(secVisual);
+    return secVisual;
+  }
+
+  function refreshSectionVisual(maxDim, center) {
+    if (!secVisual) return;
+    const size = Math.max(1e-6, maxDim || 1);
+    secVisual.scale.set(size * 1.2, size * 1.2, 1);
+    if (center) secVisual.position.copy(center);
+  }
+
+  function updateSectionPlane() {
+    const renderer = app.renderer;
+    renderer.clippingPlanes = [];
+    if (!secEnabled || !app.robot) {
+      renderer.localClippingEnabled = false;
+      if (secVisual) secVisual.visible = false;
+      return;
+    }
+
+    const n = new THREE.Vector3(
+      secAxis === 'X' ? 1 : 0,
+      secAxis === 'Y' ? 1 : 0,
+      secAxis === 'Z' ? 1 : 0
+    );
+    const box = new THREE.Box3().setFromObject(app.robot);
+    if (box.isEmpty()) { renderer.localClippingEnabled = false; if (secVisual) secVisual.visible = false; return; }
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const center = box.getCenter(new THREE.Vector3());
+
+    const dist = (Number(secDist.value) || 0) * maxDim * 0.5;
+    const plane = new THREE.Plane(n, -center.dot(n) - dist);
+
+    renderer.localClippingEnabled = true;
+    renderer.clippingPlanes = [plane];
+    sectionPlane = plane;
+
+    ensureSectionVisual();
+    refreshSectionVisual(maxDim, center);
+    secVisual.visible = !!secPlaneVisible;
+
+    // Orient the teal plane to match clipping plane normal
+    const look = new THREE.Vector3().copy(n);
+    const up = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
+    const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0, 0, 0), look, up);
+    const q = new THREE.Quaternion().setFromRotationMatrix(m);
+    secVisual.setRotationFromQuaternion(q);
+    const p0 = n.clone().multiplyScalar(-plane.constant);
+    secVisual.position.copy(p0);
+  }
+
+  axisSel.addEventListener('change', () => { secAxis = axisSel.value; updateSectionPlane(); });
+  secDist.addEventListener('input', () => updateSectionPlane());
+  secEnable.cb.addEventListener('change', () => { secEnabled = !!secEnable.cb.checked; updateSectionPlane(); });
+  secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
+
+  // ---------- Views (animated) ----------
+  const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
+
+  function currentAzEl(cam, target) {
+    const v = cam.position.clone().sub(target);
+    const len = Math.max(1e-9, v.length());
+    return { el: Math.asin(v.y / len), az: Math.atan2(v.z, v.x), r: len };
+  }
+
+  function tweenOrbits(cam, ctrl, toPos, toTarget = null, ms = 700) {
+    const p0 = cam.position.clone(), t0 = ctrl.target.clone(), tStart = performance.now();
+    ctrl.enabled = false; cam.up.set(0, 1, 0);
+    const moveTarget = (toTarget !== null);
+    function step(t) {
+      const u = Math.min(1, (t - tStart) / ms), e = easeInOutCubic(u);
+      cam.position.set(
+        p0.x + (toPos.x - p0.x) * e,
+        p0.y + (toPos.y - p0.y) * e,
+        p0.z + (toPos.z - p0.z) * e
+      );
+      if (moveTarget) ctrl.target.set(
+        t0.x + (toTarget.x - t0.x) * e,
+        t0.y + (toTarget.y - t0.y) * e,
+        t0.z + (toTarget.z - t0.z) * e
+      );
+      ctrl.update(); app.renderer.render(app.scene, cam);
+      if (u < 1) requestAnimationFrame(step); else ctrl.enabled = true;
+    }
+    requestAnimationFrame(step);
+  }
+
+  function viewEndPosition(kind) {
+    const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
+    const cur = currentAzEl(cam, t);
+    let az = cur.az, el = cur.el;
+    const topEps = 1e-3;
+    if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.2; }
+    if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
+    if (kind === 'front') { az = Math.PI / 2; el = 0; }
+    if (kind === 'right') { az = 0; el = 0; }
+    const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(cur.r));
+    return pos;
+  }
+
+  const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
+  bIsoEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
+  bTopEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('top'), null, 750); });
+  bFrontEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
+  bRightEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
+
+  // ---------- Projection ----------
+  projSel.addEventListener('change', () => {
+    const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
+    try { app.setProjection?.(mode); } catch (_) {}
+  });
+
+  // ---------- Scene toggles ----------
+  togGrid.cb.addEventListener('change', () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
+  togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
+  togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
+
+  // ============================================================
+  //                       EXPLODE MANAGER
+  //  Smooth, spring-tweened explode with robust calibration
+  //  - Stable per-part vectors in **parent local space**
+  //  - No double-application on nested meshes
+  //  - Recalibrates baseline when amount≈0 or on demand
+  // ============================================================
+  function makeExplodeManager() {
+    // Internals
+    const registry = []; // { node, baseLocal:Vector3, dirLocal:Vector3 }
+    const marker = new WeakSet(); // mark chosen top parts to avoid nesting
+    let maxDim = 1;
+    let prepared = false;
+
+    // spring state
+    let current = 0;            // current explode amount [0..1]
+    let target = 0;             // target explode amount [0..1]
+    let vel = 0;                // velocity in "amount units / s"
+    let raf = null;
+    let lastT = 0;
+    const stiffness = 18;       // rad/s (ω) — higher snappier
+    const damping   = 2 * Math.sqrt(stiffness); // critical damping
+
+    // recalibration timer when at zero
+    let zeroSince = null;
+
+    function worldDirToParentLocal(parent, dirWorld) {
+      // Convert direction vector from world to parent's local (ignore translation)
+      const m = new THREE.Matrix4().copy(parent.matrixWorld).invert();
+      const n = new THREE.Matrix3().setFromMatrix4(m); // normal matrix
+      return dirWorld.clone().applyMatrix3(n).normalize();
+    }
+
+    function chooseTopPartFor(mesh) {
+      // climb up until we reach a node whose parent either is the robot root
+      // or has already been selected as a part
+      let n = mesh;
+      while (n && n !== app.robot) {
+        if (marker.has(n)) return n; // already chosen
+        if (n.parent === app.robot) return n;
+        n = n.parent;
+      }
+      return mesh.parent || mesh;
+    }
+
+    function computeBounds() {
+      const box = new THREE.Box3().setFromObject(app.robot);
+      if (box.isEmpty()) return null;
+      return { center: box.getCenter(new THREE.Vector3()), size: box.getSize(new THREE.Vector3()) };
+    }
+
+    function prepare() {
+      registry.length = 0;
+      markClear();
+      if (!app.robot) { prepared = false; return; }
+
+      const R = computeBounds();
+      if (!R) { prepared = false; return; }
+      maxDim = Math.max(R.size.x, R.size.y, R.size.z) || 1;
+
+      // collect parts (top-most parents with geometry)
+      const parts = new Set();
+      const seen = new WeakSet();
+      app.robot.traverse((o) => {
+        if (o.isMesh && o.geometry && o.visible && !o.userData.__isHoverOverlay) {
+          const top = chooseTopPartFor(o);
+          if (!seen.has(top)) { parts.add(top); seen.add(top); marker.add(top); }
+        }
+      });
+
+      // capture base & dir in parent local space
+      parts.forEach((node) => {
+        const parent = node.parent || app.robot;
+        const baseLocal = node.position.clone();
+
+        const box = new THREE.Box3().setFromObject(node);
+        if (box.isEmpty()) return;
+        const cWorld = box.getCenter(new THREE.Vector3());
+        const dirWorld = cWorld.sub(R.center).normalize();
+        if (!isFinite(dirWorld.x + dirWorld.y + dirWorld.z)) return;
+
+        const dirLocal = worldDirToParentLocal(parent, dirWorld);
+        // if degenerate, jitter slightly
+        if (!isFinite(dirLocal.x + dirLocal.y + dirLocal.z) || dirLocal.lengthSq() < 1e-12) {
+          dirLocal.set((Math.random()*2-1), (Math.random()*2-1), (Math.random()*2-1)).normalize();
+        }
+
+        registry.push({ node, parent, baseLocal, dirLocal });
+      });
+
+      prepared = true;
+      zeroSince = performance.now(); // fresh baseline considered "zero"
+    }
+
+    function markClear() {
+      // (no-op now, we simply let WeakSets be GC'd)
+    }
+
+    function applyAmount(a01) {
+      if (!prepared) prepare();
+      const f = Math.max(0, Math.min(1, a01 || 0));
+      const maxOffset = maxDim * 0.6;
+
+      for (const rec of registry) {
+        const { node, baseLocal, dirLocal } = rec;
+        node.position.copy(baseLocal).addScaledVector(dirLocal, f * maxOffset);
+      }
+
+      // keep section visuals and other helpers in sync
+      updateSectionPlane?.();
+      // render one frame so it feels responsive even if main loop is paused
+      try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch(_) {}
+    }
+
+    function tickSpring(now) {
+      if (!lastT) lastT = now;
+      const dt = Math.min(0.05, (now - lastT) / 1000); // clamp 50ms for stability
+      lastT = now;
+
+      // critically damped spring to target
+      const x = current, v = vel, xT = target;
+      const a = stiffness * (xT - x) - damping * v;
+      vel = v + a * dt;
+      current = x + vel * dt;
+
+      // snap when close
+      if (Math.abs(current - target) < 0.0005 && Math.abs(vel) < 0.0005) {
+        current = target; vel = 0;
+      }
+
+      applyAmount(current);
+
+      // auto-recalibrate baseline if user keeps it at ~0 for a moment
+      if (current === 0) {
+        zeroSince ??= now;
+        if (now - zeroSince > 300) { // 300ms stable at zero → recapture as new baseline
+          const keepTarget = target; // preserve intent
+          prepare();                 // new base from current joint pose
+          applyAmount(current);      // re-apply exact zero after recalibration
+          target = keepTarget;
+          zeroSince = now;
+        }
+      } else {
+        zeroSince = null;
+      }
+
+      if (current !== target || vel !== 0) {
+        raf = requestAnimationFrame(tickSpring);
+      } else {
+        raf = null; // stop when settled
+      }
+    }
+
+    function setTarget(a01) {
+      target = Math.max(0, Math.min(1, Number(a01) || 0));
+      if (!prepared) prepare();
+      if (!raf) { lastT = 0; raf = requestAnimationFrame(tickSpring); }
+    }
+
+    function immediate(a01) {
+      target = current = Math.max(0, Math.min(1, Number(a01) || 0));
+      vel = 0;
+      if (!prepared) prepare();
+      applyAmount(current);
+    }
+
+    function recalibrate() {
+      // public: recalc baseline to current (useful after big joint moves)
+      prepare();
+      applyAmount(current);
+    }
+
+    function destroy() {
+      if (raf) cancelAnimationFrame(raf);
+      raf = null;
+    }
+
+    return { prepare, setTarget, immediate, recalibrate, destroy };
+  }
+
+  const explode = makeExplodeManager();
+
+  // Expose a hook so other parts (e.g., joint-drag code) can request recalibration:
+  try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
+
+  // Drive explode from slider (smooth spring tween)
+  explodeSlider.addEventListener('input', () => {
+    explode.setTarget(Number(explodeSlider.value) || 0);
+  });
+
+  // Double-click label area to recalibrate baseline instantly (optional UX)
+  // (Assumes the row label is the first child of the row grid)
+  // You can comment this if unwanted.
+  // ui.body.querySelectorAll('div').forEach(div => {
+  //   if (div.textContent === 'Explode') {
+  //     div.addEventListener('dblclick', () => explode.recalibrate());
+  //   }
+  // });
+
+  // ---------- Utilities ----------
+  function styleDockLeft(dockEl) {
+    dockEl.classList.add('viewer-dock-fix');
+    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
+  }
+
+  /* ---------- Python-to-JS migrated functions ---------- */
+
+  /**
+   * Navigate to predefined view with fixed distance
+   * @param {string} viewType - 'iso', 'top', 'front', 'right'
+   * @param {Object} app - Application instance
+   * @param {number} fixedDistance - Fixed camera distance
+   * @param {number} duration - Animation duration in ms
+   */
+  function navigateToFixedDistanceView(viewType, app, fixedDistance, duration = 700) {
+    const { camera, controls, robot } = app;
+    if (!robot) return;
+    
+    const box = new THREE.Box3().setFromObject(robot);
+    const center = box.getCenter(new THREE.Vector3());
+    
+    let targetAz, targetEl;
+    const topEps = 1e-3;
+    
+    switch (viewType.toLowerCase()) {
+      case 'iso':
+        targetAz = Math.PI * 0.25;
+        targetEl = Math.PI * 0.2;
+        break;
+      case 'top':
+        targetAz = 0;
+        targetEl = Math.PI / 2 - topEps;
+        break;
+      case 'front':
+        targetAz = Math.PI / 2;
+        targetEl = 0;
+        break;
+      case 'right':
+        targetAz = 0;
+        targetEl = 0;
+        break;
+      default:
+        targetAz = Math.PI * 0.25;
+        targetEl = Math.PI * 0.2;
+    }
+    
+    const direction = directionFromAzEl(targetAz, targetEl);
+    const targetPos = center.clone().add(direction.multiplyScalar(fixedDistance));
+    
+    tweenOrbits(camera, controls, targetPos, center, duration);
+  }
+
+  /**
+   * Get direction vector from azimuth and elevation
+   * @param {number} az - Azimuth in radians
+   * @param {number} el - Elevation in radians
+   * @returns {THREE.Vector3} - Direction vector
+   */
+  function directionFromAzEl(az, el) {
+    return new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az)
+    ).normalize();
+  }
+
+  /**
+   * Tween camera orbit to new position
+   * @param {THREE.Camera} camera - Camera to animate
+   * @param {THREE.OrbitControls} controls - Controls to update
+   * @param {THREE.Vector3} toPos - Target position
+   * @param {THREE.Vector3|null} toTarget - Target look-at point
+   * @param {number} duration - Animation duration
+   */
+  function tweenOrbits(camera, controls, toPos, toTarget = null, duration = 700) {
+    const startPos = camera.position.clone();
+    const startTarget = controls.target.clone();
+    const startTime = performance.now();
+    
+    controls.enabled = false;
+    camera.up.set(0, 1, 0);
+    
+    function animate(currentTime) {
+      const elapsed = currentTime - startTime;
+      const progress = Math.min(1, elapsed / duration);
+      const eased = easeInOutCubic(progress);
+      
+      // Interpolate position
+      camera.position.lerpVectors(startPos, toPos, eased);
+      
+      // Interpolate target if provided
+      if (toTarget) {
+        controls.target.lerpVectors(startTarget, toTarget, eased);
+      }
+      
+      controls.update();
+      
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      } else {
+        controls.enabled = true;
+      }
+    }
+    
+    requestAnimationFrame(animate);
+  }
+
+  // Easing function
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  // Defaults
+  togGrid.cb.checked = false;
+  togGround.cb.checked = false;
+  togAxes.cb.checked = false;
+
+  // Start closed
+  set(false);
+
+  // Public API
   function destroy() {
-    if (toolsDiv.parentNode) {
-      toolsDiv.parentNode.removeChild(toolsDiv);
-    }
+    try { ui.toggleBtn.remove(); } catch (_) {}
+    try { ui.dock.remove(); } catch (_) {}
+    try { ui.root.remove(); } catch (_) {}
+    try {
+      app.renderer.localClippingEnabled = false;
+      app.renderer.clippingPlanes = [];
+      if (secVisual) app.scene.remove(secVisual);
+    } catch (_) {}
+    explode.destroy();
   }
 
-  // Return public API
-  return {
-    set: setOpen,
-    destroy
+  return { 
+    open: openDock, 
+    close: closeDock, 
+    set, 
+    destroy,
+    
+    // New utility functions
+    navigateToFixedDistanceView,
+    directionFromAzEl,
+    tweenOrbits,
+    easeInOutCubic
   };
 }
 
-function createSection(title) {
-  const section = document.createElement('div');
-  section.style.marginBottom = '20px';
-  
-  const header = document.createElement('h4');
-  header.textContent = title;
-  header.style.margin = '0 0 10px 0';
-  header.style.color = '#666666';
-  header.style.fontSize = '12px';
-  header.style.textTransform = 'uppercase';
-  header.style.letterSpacing = '1px';
-  
-  section.appendChild(header);
-  return section;
-}
-
-function findGrid(scene) {
-  let grid = null;
-  scene.traverse(obj => {
-    if (obj.isGridHelper) grid = obj;
-  });
-  return grid;
-}
-
-function findAxes(scene) {
-  let axes = null;
-  scene.traverse(obj => {
-    if (obj.isAxesHelper) axes = obj;
-  });
-  return axes;
-}
-
-function collectJoints(robot) {
-  const joints = [];
-  robot.traverse(obj => {
-    if (obj.jointType !== undefined && obj.setAngle) {
-      joints.push(obj);
-    }
-  });
-  return joints;
-}
+// Export utility functions
+export { 
+  navigateToFixedDistanceView,
+  directionFromAzEl,
+  tweenOrbits,
+  easeInOutCubic
+};
