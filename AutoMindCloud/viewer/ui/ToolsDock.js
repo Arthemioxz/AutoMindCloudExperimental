@@ -473,12 +473,19 @@ function ensureDefaultRadius() {
 ensureDefaultRadius();
 
 // ---------- View destination using the fixed default distance ----------
-function viewEndPosition(kind) {
-  const cam  = app.camera;
-  const ctrl = app.controls;
-  const t = ctrl.target.clone();
+// Store default distance once (at init)
+let DEFAULT_RADIUS = null;
 
-  const cur = currentAzEl(cam, t); // your existing utility
+function initDefaultRadius(app) {
+  const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
+  const cur = currentAzEl(cam, t);
+  DEFAULT_RADIUS = cur.r;   // save the startup distance
+}
+
+// -------------------------------
+function viewEndPosition(kind) {
+  const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
+  const cur = currentAzEl(cam, t);
   let az = cur.az, el = cur.el;
 
   const topEps = 1e-3;
@@ -487,9 +494,12 @@ function viewEndPosition(kind) {
   if (kind === 'front') { az = Math.PI / 2; el = 0; }
   if (kind === 'right') { az = 0; el = 0; }
 
-  const r = ensureDefaultRadius(); // <- fixed, cached default
-  return t.clone().add(dirFromAzEl(az, el).multiplyScalar(r)); // your existing utility
+  // ---- use fixed system default radius ----
+  const r = DEFAULT_RADIUS ?? cur.r;  // fallback if not initialized
+  const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(r));
+  return pos;
 }
+
 
 
   const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
