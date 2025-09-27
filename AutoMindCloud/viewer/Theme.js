@@ -22,4 +22,36 @@ export const THEME = {
   fonts: {
     ui: "Inter, 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif",
   },
-  sizes: 
+  sizes: {
+    radiusSm: '8px',
+    radiusMd: '12px',
+    radiusLg: '18px',
+    paddingSm: '6px',
+    paddingMd: '8px',
+    paddingLg: '12px',
+  },
+};
+
+// Helper opcional: inyecta variables CSS globales para paneles HTML
+export function injectCssVars(theme = THEME) {
+  const { colors, shadows } = theme;
+  const css = `
+  :root {
+    --teal: ${colors.teal};
+    --teal-soft: ${colors.tealSoft};
+    --teal-faint: ${colors.tealFaint};
+    --text: ${colors.text};
+    --text-muted: ${colors.textMuted};
+    --panel-bg: ${colors.panelBg};
+    --stroke: ${colors.stroke};
+    --shadow: ${shadows.md};
+    --shadow-lg: ${shadows.lg};
+  }`;
+  const style = document.createElement('style');
+  style.setAttribute('data-amc-theme', 'true');
+  style.textContent = css;
+  document.head.appendChild(style);
+}
+
+// Export por defecto también (para compatibilidad)
+export default THEME;
