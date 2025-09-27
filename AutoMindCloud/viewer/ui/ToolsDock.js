@@ -683,58 +683,84 @@ export function createToolsDock(app, theme) {
 
 
 
-// ======== 'H' hotkey & tween (global block at end of file) ========
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ======== 'H' hotkey & tween (global, safe: no bare `ui`) ========
 (() => {
-  const CLOSED_TX = 520; // slide distance (px)
+  const CLOSED_TX = 520; // px
 
-  const onKeyDownToggleTools = (e) => {
+  function ensureBaseStyles(ctx) {
+    const d = ctx.ui?.dock;
+    if (!d) return;
+    // Set placement left; safe to reapply
+    try { ctx.styleDockLeft?.(d); } catch {}
+    d.style.display = 'block';
+    d.style.willChange = 'transform, opacity';
+    d.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
+  }
+
+  function openDock(ctx) {
+    const { ui, explode } = ctx;
+    ensureBaseStyles(ctx);
+    ui.dock.style.opacity = '0';
+    ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`; // off-screen left
+    requestAnimationFrame(() => {
+      ui.toggleBtn.textContent = 'Close Tools';
+      try { explode?.prepare?.(); } catch {}
+      ui.dock.style.opacity = '1';
+      ui.dock.style.transform = 'translateX(0)';
+      setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
+    });
+  }
+
+  function closeDock(ctx) {
+    const { ui } = ctx;
+    ensureBaseStyles(ctx);
+    ui.dock.style.willChange = 'transform, opacity';
+    ui.dock.style.opacity = '0';
+    ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
+    const onEnd = () => {
+      ui.dock.style.display = 'none';
+      ui.dock.style.willChange = 'auto';
+      ui.toggleBtn.textContent = 'Open Tools';
+      ui.dock.removeEventListener('transitionend', onEnd);
+    };
+    ui.dock.addEventListener('transitionend', onEnd);
+  }
+
+  function onKeyDownToggleTools(e) {
     const ctx = window.__toolsDockCtx;
-    if (!ctx) return; // createToolsDock hasn't run yet
-
-    const { ui, explode, styleDockLeft } = ctx;
+    if (!ctx || !ctx.ui || !ctx.ui.dock) return; // not initialized yet
 
     const tag = (e.target && e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
 
     if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
       e.preventDefault();
-      console.log('pressed h');
-
-      // ensure placement and base transition (safe to reapply)
-      styleDockLeft(ui.dock);
-      ui.dock.style.display = 'block';
-      ui.dock.style.willChange = 'transform, opacity';
-      ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
-
-      const isOpen = (ui.dock.style.opacity === '1');
-
-      if (!isOpen) {
-        // OPEN: from off-screen to 0
-        ui.dock.style.opacity = '0';
-        ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
-        requestAnimationFrame(() => {
-          ui.toggleBtn.textContent = 'Close Tools';
-          try { explode.prepare(); } catch(_) {}
-          ui.dock.style.opacity = '1';
-          ui.dock.style.transform = 'translateX(0)';
-          setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
-        });
-      } else {
-        // CLOSE: slide out, then hide
-        ui.dock.style.willChange = 'transform, opacity';
-        ui.dock.style.opacity = '0';
-        ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
-        const onEnd = () => {
-          ui.dock.style.display = 'none';
-          ui.dock.style.willChange = 'auto';
-          ui.toggleBtn.textContent = 'Open Tools';
-          ui.dock.removeEventListener('transitionend', onEnd);
-        };
-        ui.dock.addEventListener('transitionend', onEnd);
-      }
+      try { console.log('pressed h'); } catch {}
+      const open = !!ctx.isOpen?.();
+      if (open) closeDock(ctx); else openDock(ctx);
     }
-  };
+  }
 
+  // Single global listener; capturing=true avoids getting blocked by focus traps
   document.addEventListener('keydown', onKeyDownToggleTools, true);
 })();
 
