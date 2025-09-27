@@ -413,7 +413,7 @@ export function attachInteraction({
   function onPointerMove(e) {
     lastMoveEvt = e;
     // track last hover mesh for isolation
-    // (reuse raycaster path – separate quick pass for cursor pos)
+    // (reuse raycaster path â€“ separate quick pass for cursor pos)
     try {
       getPointerFromEvent(e);
       raycaster.setFromCamera(pointer, camera);
@@ -435,7 +435,7 @@ export function attachInteraction({
     const hits = raycaster.intersectObjects(pickables, true);
 
     if (!hits.length) {
-      // Clicked empty space → clear selection
+      // Clicked empty space â†’ clear selection
       setSelectedMeshes([]);
       return;
     }
@@ -495,131 +495,6 @@ export function attachInteraction({
     try { if (selectionHelper) scene.remove(selectionHelper); } catch (_) {}
   }
 
-  /* ---------- Python-to-JS migrated functions ---------- */
-
-  /**
-   * Build mesh cache for isolation functionality
-   * @param {THREE.Object3D} robot - Robot object
-   * @returns {THREE.Mesh[]} - Array of all meshes
-   */
-  function buildMeshCache(robot) {
-    const meshes = [];
-    robot?.traverse?.(object => {
-      if (object.isMesh && object.geometry) {
-        meshes.push(object);
-      }
-    });
-    return meshes;
-  }
-
-  /**
-   * Bulk set visibility for all meshes
-   * @param {THREE.Mesh[]} meshes - Array of meshes
-   * @param {boolean} visible - Visibility state
-   */
-  function bulkSetVisible(meshes, visible) {
-    meshes.forEach(mesh => {
-      mesh.visible = visible;
-    });
-  }
-
-  /**
-   * Set visibility for a subtree
-   * @param {THREE.Object3D} root - Root object
-   * @param {boolean} visible - Visibility state
-   */
-  function setVisibleSubtree(root, visible) {
-    root?.traverse?.(object => {
-      if (object.isMesh) {
-        object.visible = visible;
-      }
-    });
-  }
-
-  /**
-   * Frame an object with smooth animation
-   * @param {THREE.Object3D} object - Object to frame
-   * @param {Object} app - Application instance
-   * @param {number} padding - Padding multiplier
-   * @param {number} duration - Animation duration
-   */
-  function frameObjectAnimated(object, app, padding = 1.2, duration = 700) {
-    const { camera, controls } = app;
-    const box = new THREE.Box3().setFromObject(object);
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    
-    const fov = (camera.fov || 60) * Math.PI / 180;
-    const distance = (maxDim * padding) / Math.tan(fov / 2);
-    
-    const current = currentAzimuthElevation(camera, controls.target);
-    const direction = directionFromAzEl(current.az, current.el);
-    const targetPos = center.clone().add(direction.multiplyScalar(distance));
-    
-    tweenOrbits(camera, controls, targetPos, center, duration);
-  }
-
-  // Easing function for smooth animations
-  function easeInOutCubic(t) {
-    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  }
-
-  // Direction from azimuth/elevation
-  function directionFromAzEl(az, el) {
-    return new THREE.Vector3(
-      Math.cos(el) * Math.cos(az),
-      Math.sin(el),
-      Math.cos(el) * Math.sin(az)
-    ).normalize();
-  }
-
-  // Current azimuth/elevation
-  function currentAzimuthElevation(camera, target) {
-    const vector = camera.position.clone().sub(target);
-    const distance = Math.max(1e-9, vector.length());
-    
-    return {
-      az: Math.atan2(vector.z, vector.x),
-      el: Math.asin(vector.y / distance),
-      distance: distance
-    };
-  }
-
-  // Tween orbits function
-  function tweenOrbits(camera, controls, toPos, toTarget = null, duration = 700) {
-    const startPos = camera.position.clone();
-    const startTarget = controls.target.clone();
-    const startTime = performance.now();
-    
-    controls.enabled = false;
-    camera.up.set(0, 1, 0);
-    
-    function animate(currentTime) {
-      const elapsed = currentTime - startTime;
-      const progress = Math.min(1, elapsed / duration);
-      const eased = easeInOutCubic(progress);
-      
-      // Interpolate position
-      camera.position.lerpVectors(startPos, toPos, eased);
-      
-      // Interpolate target if provided
-      if (toTarget) {
-        controls.target.lerpVectors(startTarget, toTarget, eased);
-      }
-      
-      controls.update();
-      
-      if (progress < 1) {
-        requestAnimationFrame(animate);
-      } else {
-        controls.enabled = true;
-      }
-    }
-    
-    requestAnimationFrame(animate);
-  }
-
   return {
     setRobot,
     setSelectMode,
@@ -627,28 +502,6 @@ export function attachInteraction({
     selectFromHit,
     isolateCurrent,
     restoreAll,
-    destroy,
-
-    // New utility functions
-    buildMeshCache,
-    bulkSetVisible,
-    setVisibleSubtree,
-    frameObjectAnimated,
-    easeInOutCubic,
-    directionFromAzEl,
-    currentAzimuthElevation,
-    tweenOrbits
+    destroy
   };
 }
-
-// Export utility functions
-export { 
-  buildMeshCache, 
-  bulkSetVisible, 
-  setVisibleSubtree,
-  frameObjectAnimated,
-  easeInOutCubic,
-  directionFromAzEl,
-  currentAzimuthElevation,
-  tweenOrbits 
-};
