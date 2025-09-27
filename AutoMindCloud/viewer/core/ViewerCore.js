@@ -384,3 +384,4 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
     destroy
   };
 }
+
