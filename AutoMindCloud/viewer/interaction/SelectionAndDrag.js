@@ -1,10 +1,11 @@
 // /viewer/interaction/SelectionAndDrag.js
-// Hover + selection + joint dragging + 'i' isolate/restore
+// Hover + selection + joint dragging + 'i' focus/iso (selected), fixed-distance tween
 /* global THREE */
 
 const HOVER_COLOR = 0x0ea5a6;
 const HOVER_OPACITY = 0.28;
 
+// ===== Utils =====
 function isMovable(j) {
   const t = (j?.jointType || '').toString().toLowerCase();
   return !!t && t !== 'fixed';
@@ -30,14 +31,11 @@ function setJointValue(robot, j, v) {
 }
 
 function computeUnionBox(meshes) {
-  const box = new THREE.Box3();
-  let has = false;
-  const tmp = new THREE.Box3();
+  const box = new THREE.Box3(); let has = false; const tmp = new THREE.Box3();
   for (const m of meshes || []) {
     if (!m) continue;
     tmp.setFromObject(m);
-    if (!has) { box.copy(tmp); has = true; }
-    else box.union(tmp);
+    if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
   }
   return has ? box : null;
 }
@@ -55,51 +53,25 @@ function collectMeshesInLink(linkObj) {
 
 function buildHoverOverlay({ color = HOVER_COLOR, opacity = HOVER_OPACITY } = {}) {
   const overlays = [];
-  function clear() {
-    for (const o of overlays) { if (o?.parent) o.parent.remove(o); }
-    overlays.length = 0;
-  }
+  function clear() { for (const o of overlays) { if (o?.parent) o.parent.remove(o); } overlays.length = 0; }
   function overlayFor(mesh) {
     if (!mesh || !mesh.isMesh || !mesh.geometry) return null;
     const m = new THREE.Mesh(
       mesh.geometry,
       new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity,
-        depthTest: false,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: 1
+        color, transparent: true, opacity,
+        depthTest: false, depthWrite: false,
+        polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: 1
       })
     );
     m.renderOrder = 999; m.userData.__isHoverOverlay = true; return m;
   }
-  function showMesh(mesh) {
-    const ov = overlayFor(mesh);
-    if (ov) { mesh.add(ov); overlays.push(ov); }
-  }
-  function showLink(link) {
-    const arr = collectMeshesInLink(link);
-    for (const m of arr) {
-      const ov = overlayFor(m);
-      if (ov) { m.add(ov); overlays.push(ov); }
-    }
-  }
+  function showMesh(mesh) { const ov = overlayFor(mesh); if (ov) { mesh.add(ov); overlays.push(ov); } }
+  function showLink(link) { for (const m of collectMeshesInLink(link)) { const ov = overlayFor(m); if (ov) { m.add(ov); overlays.push(ov); } } }
   return { clear, showMesh, showLink };
 }
 
-function findAncestorJoint(o) {
-  while (o) {
-    if (o.jointType && isMovable(o)) return o;
-    if (o.userData && o.userData.__joint && isMovable(o.userData.__joint)) return o.userData.__joint;
-    o = o.parent;
-  }
-  return null;
-}
 function markLinksAndJoints(robot) {
-  // Build a Set of link Object3Ds and propagate child-link joint references
   const linkSet = new Set(Object.values(robot.links || {}));
   const joints = Object.values(robot.joints || {});
   const linkBy = robot.links || {};
@@ -113,38 +85,67 @@ function markLinksAndJoints(robot) {
         (typeof j.child === 'string' && j.child) ||
         (typeof j.child_link === 'string' && j.child_link) || null;
       if (!childLinkObj && childName && linkBy[childName]) childLinkObj = linkBy[childName];
-      if (!childLinkObj && childName && j.children && j.children.length) {
-        const stack = j.children.slice();
-        while (stack.length) {
-          const n = stack.pop(); if (!n) continue;
-          if (n.name === childName) { childLinkObj = n; break; }
-          const kids = n.children ? n.children.slice() : [];
-          for (let i = 0; i < kids.length; i++) stack.push(kids[i]);
-        }
-      }
-      if (childLinkObj && isMovable(j)) childLinkObj.userData.__joint = j;
+      if (childLinkObj && (j.jointType || '').toLowerCase() !== 'fixed') childLinkObj.userData.__joint = j;
     } catch (_) {}
   });
   return linkSet;
 }
-function findAncestorLink(o, linkSet) {
+function findAncestorLink(o, linkSet) { while (o) { if (linkSet && linkSet.has(o)) return o; o = o.parent; } return null; }
+function findAncestorJoint(o) {
   while (o) {
-    if (linkSet && linkSet.has(o)) return o;
+    if (o.jointType && (o.jointType || '').toLowerCase() !== 'fixed') return o;
+    if (o.userData && o.userData.__joint && (o.userData.__joint.jointType || '').toLowerCase() !== 'fixed') return o.userData.__joint;
     o = o.parent;
   }
   return null;
 }
 
+// ===== Camera tween helpers (fixed distance) =====
+function tweenOrbits(camera, controls, toPos, toTarget, ms = 700) {
+  const start = performance.now();
+  const p0 = camera.position.clone();
+  const t0 = (controls?.target?.clone ? controls.target.clone() : new THREE.Vector3());
+  const t1 = toTarget ? toTarget.clone() : t0.clone();
+  const p1 = toPos ? toPos.clone() : p0.clone();
+
+  function easeOutQuint(x){ return 1 - Math.pow(1 - x, 5); }
+  function step(now) {
+    const k = Math.min(1, (now - start) / ms);
+    const e = easeOutQuint(k);
+    camera.position.lerpVectors(p0, p1, e);
+    if (controls?.target) controls.target.lerpVectors(t0, t1, e);
+    camera.updateProjectionMatrix?.();
+    controls?.update?.();
+    if (k < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+function getRobotBounds(robot) {
+  const box = new THREE.Box3().setFromObject(robot);
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  return { box, sphere };
+}
+function viewFrom(dir, robot, FIX_DIST = 2.2) {
+  const { sphere } = getRobotBounds(robot);
+  const target = sphere.center.clone();
+  const radius = sphere.radius > 1e-6 ? sphere.radius : 1.0;
+  // Distancia fija proporcional al tamaño del robot
+  const dist = FIX_DIST * radius;
+  const n = dir.clone().normalize();
+  const pos = target.clone().add(n.multiplyScalar(dist));
+  return { pos, target };
+}
+function isoDir() { return new THREE.Vector3(1,1,1).normalize(); }
+function frontDir() { return new THREE.Vector3(0,0,1); }
+function rightDir() { return new THREE.Vector3(1,0,0); }
+function topDir() { return new THREE.Vector3(0,1,0); }
+
+// ===== Main attach =====
 export function attachInteraction({
-  scene,
-  camera,
-  renderer,
-  controls,
-  robot,
-  selectMode = 'link' // 'link'|'mesh'
+  scene, camera, renderer, controls, robot, selectMode = 'link'
 }) {
-  if (!scene || !camera || !renderer || !controls)
-    throw new Error('[SelectionAndDrag] Missing required core objects');
+  if (!scene || !camera || !renderer || !controls) throw new Error('[SelectionAndDrag] Missing required core objects');
 
   // Current robot & link set
   let robotModel = robot || null;
@@ -163,41 +164,27 @@ export function attachInteraction({
   let selectionHelper = null;
   function ensureSelectionHelper() {
     if (!selectionHelper) {
-      const box = new THREE.Box3(
-        new THREE.Vector3(-0.5, -0.5, -0.5),
-        new THREE.Vector3(0.5, 0.5, 0.5)
-      );
+      const box = new THREE.Box3(new THREE.Vector3(-0.5,-0.5,-0.5), new THREE.Vector3(0.5,0.5,0.5));
       selectionHelper = new THREE.Box3Helper(box, new THREE.Color(HOVER_COLOR));
-      selectionHelper.visible = false;
-      selectionHelper.renderOrder = 10001;
-      scene.add(selectionHelper);
+      selectionHelper.visible = false; selectionHelper.renderOrder = 10001; scene.add(selectionHelper);
     }
     return selectionHelper;
   }
   function refreshSelectionMarker() {
     ensureSelectionHelper();
-    if (!robotModel || !selectedMeshes.length) {
-      selectionHelper.visible = false; return;
-    }
+    if (!robotModel || !selectedMeshes.length) { selectionHelper.visible = false; return; }
     const box = computeUnionBox(selectedMeshes);
     if (!box) { selectionHelper.visible = false; return; }
-    selectionHelper.box.copy(box);
-    selectionHelper.updateMatrixWorld(true);
-    selectionHelper.visible = true;
+    selectionHelper.box.copy(box); selectionHelper.updateMatrixWorld(true); selectionHelper.visible = true;
   }
-  function setSelectedMeshes(meshes) {
-    selectedMeshes = (meshes || []).filter(Boolean);
-    refreshSelectionMarker();
-  }
+  function setSelectedMeshes(meshes) { selectedMeshes = (meshes || []).filter(Boolean); refreshSelectionMarker(); }
   function selectFromHit(meshHit) {
     if (!meshHit) { setSelectedMeshes([]); return; }
     if (selectMode === 'link') {
       const link = findAncestorLink(meshHit, linkSet);
       const meshes = link ? collectMeshesInLink(link) : [meshHit];
       setSelectedMeshes(meshes);
-    } else {
-      setSelectedMeshes([meshHit]);
-    }
+    } else setSelectedMeshes([meshHit]);
   }
 
   // Joint dragging
@@ -213,32 +200,21 @@ export function attachInteraction({
   function startJointDrag(joint, ev) {
     const originW = joint.getWorldPosition(new THREE.Vector3());
     const qWorld = joint.getWorldQuaternion(new THREE.Quaternion());
-    const axisW = (joint.axis || new THREE.Vector3(1, 0, 0)).clone().normalize().applyQuaternion(qWorld).normalize();
+    const axisW = (joint.axis || new THREE.Vector3(1,0,0)).clone().normalize().applyQuaternion(qWorld).normalize();
     const dragPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(axisW.clone(), originW);
 
     raycaster.setFromCamera(pointer, camera);
-    const p0 = new THREE.Vector3();
-    let r0 = null;
+    const p0 = new THREE.Vector3(); let r0 = null;
     if (raycaster.ray.intersectPlane(dragPlane, p0)) {
-      r0 = p0.clone().sub(originW);
-      if (r0.lengthSq() > 1e-12) r0.normalize(); else r0 = null;
+      r0 = p0.clone().sub(originW); if (r0.lengthSq() > 1e-12) r0.normalize(); else r0 = null;
     }
 
-    dragState = {
-      joint, originW, axisW, dragPlane, r0,
-      value: getJointValue(joint),
-      lastClientX: ev.clientX, lastClientY: ev.clientY
-    };
-    controls.enabled = false;
-    renderer.domElement.style.cursor = 'grabbing';
-    renderer.domElement.setPointerCapture?.(ev.pointerId);
+    dragState = { joint, originW, axisW, dragPlane, r0, value: getJointValue(joint), lastClientX: ev.clientX, lastClientY: ev.clientY };
+    controls.enabled = false; renderer.domElement.style.cursor = 'grabbing'; renderer.domElement.setPointerCapture?.(ev.pointerId);
   }
-
   function updateJointDrag(ev) {
     const ds = dragState; if (!ds) return;
-    const fine = ev.shiftKey ? 0.35 : 1.0;
-    getPointerFromEvent(ev); raycaster.setFromCamera(pointer, camera);
-
+    const fine = ev.shiftKey ? 0.35 : 1.0; getPointerFromEvent(ev); raycaster.setFromCamera(pointer, camera);
     const dX = (ev.clientX - (ds.lastClientX ?? ev.clientX));
     const dY = (ev.clientY - (ds.lastClientY ?? ev.clientY));
     ds.lastClientX = ev.clientX; ds.lastClientY = ev.clientY;
@@ -248,9 +224,7 @@ export function attachInteraction({
       if (raycaster.ray.intersectPlane(ds.dragPlane, hit)) {
         const t1 = hit.clone().sub(ds.originW).dot(ds.axisW);
         delta = (t1 - (ds.lastT ?? t1)); ds.lastT = t1;
-      } else {
-        delta = -(dY * PRISM_PER_PIXEL);
-      }
+      } else delta = -(dY * PRISM_PER_PIXEL);
       ds.value += delta * fine; setJointValue(robotModel, ds.joint, ds.value); refreshSelectionMarker(); return;
     }
 
@@ -268,241 +242,95 @@ export function attachInteraction({
         setJointValue(robotModel, ds.joint, ds.value); applied = true; refreshSelectionMarker();
       }
     }
-    if (!applied) {
-      const delta = (dX * ROT_PER_PIXEL) * fine;
-      ds.value += delta; setJointValue(robotModel, ds.joint, ds.value); refreshSelectionMarker();
-    }
+    if (!applied) { const delta = (dX * ROT_PER_PIXEL) * fine; ds.value += delta; setJointValue(robotModel, ds.joint, ds.value); refreshSelectionMarker(); }
+  }
+  function endJointDrag() {
+    if (!dragState) return;
+    controls.enabled = true; renderer.domElement.style.cursor = '';
+    dragState = null;
   }
 
-  function endJointDrag(ev) {
-    if (dragState) { renderer.domElement.releasePointerCapture?.(ev.pointerId); }
-    dragState = null; controls.enabled = true; renderer.domElement.style.cursor = 'auto';
-  }
-
-  // Hover processing (throttled via RAF)
-  let hoverRafPending = false, lastMoveEvt = null;
-  function scheduleHover() {
-    if (hoverRafPending) return;
-    hoverRafPending = true;
-    requestAnimationFrame(() => {
-      hoverRafPending = false;
-      if (!lastMoveEvt) return;
-      processHover(lastMoveEvt);
-    });
-  }
-  function hoverKeyFor(meshHit) {
-    if (!meshHit) return null;
-    if (selectMode === 'link') {
-      const link = findAncestorLink(meshHit, linkSet);
-      return link ? ('link#' + link.id) : ('mesh#' + meshHit.id);
-    }
-    return 'mesh#' + meshHit.id;
-  }
-  function processHover(e) {
-    if (!robotModel) {
-      hover.clear();
-      renderer.domElement.style.cursor = 'auto';
-      return;
-    }
-    getPointerFromEvent(e);
-    if (dragState) { updateJointDrag(e); return; }
+  // Picking
+  function hitTest(ev) {
+    const r = renderer.domElement.getBoundingClientRect();
+    pointer.x = ((ev.clientX - r.left) / r.width) * 2 - 1;
+    pointer.y = -((ev.clientY - r.top) / r.height) * 2 + 1;
 
     raycaster.setFromCamera(pointer, camera);
-    const pickables = [];
-    robotModel.traverse(o => { if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
-    const hits = raycaster.intersectObjects(pickables, true);
+    const hits = raycaster.intersectObjects([robotModel], true);
+    return (hits && hits[0] && hits[0].object) || null;
+  }
 
-    let newKey = null;
-    let meshHit = null;
-    if (hits.length) {
-      meshHit = hits[0].object;
-      newKey = hoverKeyFor(meshHit);
-    }
-
-    if (newKey !== lastHoverKey) {
+  renderer.domElement.addEventListener('pointermove', (ev) => {
+    const mesh = hitTest(ev);
+    const link = mesh ? findAncestorLink(mesh, linkSet) : null;
+    const key = link || mesh;
+    if (key !== lastHoverKey) {
       hover.clear();
-      if (newKey && meshHit) {
-        if (selectMode === 'link') {
-          const link = findAncestorLink(meshHit, linkSet);
-          if (link) hover.showLink(link); else hover.showMesh(meshHit);
-        } else hover.showMesh(meshHit);
-      }
-      lastHoverKey = newKey;
+      if (link) hover.showLink(link);
+      else if (mesh) hover.showMesh(mesh);
+      lastHoverKey = key;
     }
+  });
 
-    const joint = meshHit ? findAncestorJoint(meshHit) : null;
-    renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
-  }
-
-  // Isolation (key 'i')
-  const ray = new THREE.Raycaster();
-  const centerPointer = new THREE.Vector2(0, 0);
-  let allMeshes = [];
-  function rebuildMeshCache() {
-    allMeshes.length = 0;
-    robotModel?.traverse(o => { if (o.isMesh && o.geometry) allMeshes.push(o); });
-  }
-  rebuildMeshCache();
-
-  let lastHoverMesh = null, isolating = false, isolatedRoot = null;
-  let savedPos = null, savedTarget = null;
-
-  function centerPick() {
-    if (!robotModel) return null;
-    ray.setFromCamera(centerPointer, camera);
-    const hits = ray.intersectObjects(allMeshes, true);
-    return hits.length ? hits[0].object : null;
-  }
-  function getLinkRoot(mesh) {
-    if (!mesh) return null; let n = mesh;
-    while (n && n !== robotModel) { if ((n.children || []).some(ch => ch.isMesh)) return n; n = n.parent; }
-    return mesh || robotModel;
-  }
-  function bulkSetVisible(v) {
-    if (!allMeshes.length) rebuildMeshCache();
-    for (let i = 0; i < allMeshes.length; i++) allMeshes[i].visible = v;
-  }
-  function setVisibleSubtree(root, v) {
-    root?.traverse(o => { if (o.isMesh) o.visible = v; });
-  }
-
-  function isolateCurrent() {
-    const target = getLinkRoot(lastHoverMesh || centerPick());
-    if (!target) return false;
-
-    if (!isolating) {
-      savedPos = camera.position.clone();
-      savedTarget = controls.target.clone();
-    }
-
-    bulkSetVisible(false);
-    setVisibleSubtree(target, true);
-
-    // Quick frame (no custom tween here; delegate to upper UI tween if needed)
-    const box = new THREE.Box3().setFromObject(target);
-    const c = box.getCenter(new THREE.Vector3());
-    const s = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(s.x, s.y, s.z) || 1;
-    if (camera.isPerspectiveCamera) {
-      const fov = (camera.fov || 60) * Math.PI / 180;
-      const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
-      camera.position.copy(c.clone().add(new THREE.Vector3(1, 0.7, 1).normalize().multiplyScalar(dist)));
+  renderer.domElement.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    const hit = hitTest(ev);
+    const joint = hit ? findAncestorJoint(hit) : null;
+    if (joint && isMovable(joint)) {
+      getPointerFromEvent(ev); startJointDrag(joint, ev);
     } else {
-      camera.left = -maxDim; camera.right = maxDim; camera.top = maxDim; camera.bottom = -maxDim;
-      camera.near = Math.max(maxDim / 1000, 0.001); camera.far = Math.max(maxDim * 1500, 1500);
-      camera.updateProjectionMatrix();
-      camera.position.copy(c.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
+      // Selection by click
+      if (hit) selectFromHit(hit);
+      else setSelectedMeshes([]);
     }
-    controls.target.copy(c); controls.update();
-
-    isolating = true; isolatedRoot = target;
-    return true;
-  }
-
-  function restoreAll() {
-    bulkSetVisible(true);
-    if (savedPos && savedTarget) {
-      camera.position.copy(savedPos);
-      controls.target.copy(savedTarget);
-      controls.update();
-    }
-    isolating = false; isolatedRoot = null;
-  }
-
-  // Events
-  function onPointerMove(e) {
-    lastMoveEvt = e;
-    // track last hover mesh for isolation
-    // (reuse raycaster path – separate quick pass for cursor pos)
-    try {
-      getPointerFromEvent(e);
-      raycaster.setFromCamera(pointer, camera);
-      const pickables = [];
-      robotModel?.traverse(o => { if (o.isMesh && o.geometry && o.visible) pickables.push(o); });
-      const hits = raycaster.intersectObjects(pickables, true);
-      lastHoverMesh = hits.length ? hits[0].object : null;
-    } catch (_) {}
-    scheduleHover();
-  }
-
-  function onPointerDown(e) {
-    if (!robotModel || e.button !== 0) return;
-    getPointerFromEvent(e);
-    raycaster.setFromCamera(pointer, camera);
-
-    const pickables = [];
-    robotModel.traverse(o => { if (o.isMesh && o.geometry && !o.userData.__isHoverOverlay && o.visible) pickables.push(o); });
-    const hits = raycaster.intersectObjects(pickables, true);
-
-    if (!hits.length) {
-      // Clicked empty space → clear selection
-      setSelectedMeshes([]);
-      return;
-    }
-
-    const meshHit = hits[0].object;
-    selectFromHit(meshHit);
-
-    // Start drag if joint present
-    const joint = findAncestorJoint(meshHit);
-    if (joint && isMovable(joint)) startJointDrag(joint, e);
-  }
-
-  // Keyboard 'i' to isolate/restore (listen on canvas + container owner)
-  function onKeyDown(e) {
-    const k = (e.key || '').toLowerCase();
-    if (k === 'i') {
-      e.preventDefault();
-      if (isolating) restoreAll();
-      else isolateCurrent();
-    }
-  }
-
-  renderer.domElement.addEventListener('pointermove', onPointerMove, { passive: true });
-  renderer.domElement.addEventListener('pointerdown', onPointerDown, { passive: false });
+  });
+  renderer.domElement.addEventListener('pointermove', (ev) => { if (dragState) updateJointDrag(ev); });
   renderer.domElement.addEventListener('pointerup', endJointDrag);
   renderer.domElement.addEventListener('pointerleave', endJointDrag);
-  renderer.domElement.addEventListener('pointercancel', endJointDrag);
-  renderer.domElement.addEventListener('keydown', onKeyDown, true);
-  // try also the document (useful if canvas doesn't keep focus)
-  document.addEventListener('keydown', onKeyDown, true);
 
-  function setRobot(newRobot) {
-    robotModel = newRobot || null;
-    linkSet = robotModel ? markLinksAndJoints(robotModel) : new Set();
-    setSelectedMeshes([]);
-    rebuildMeshCache();
+  // ===== 'i' key: focus selected (first press) / back to ISO (second press) =====
+  let focusToggled = false;
+  const FIX_DIST = 2.2; // distancia fija (multiplicador del radio del robot)
+  function getSelectionCenter() {
+    const box = computeUnionBox(selectedMeshes);
+    if (!box) return null;
+    return box.getCenter(new THREE.Vector3());
   }
-  function setSelectMode(mode) {
-    selectMode = (mode === 'mesh') ? 'mesh' : 'link';
-    refreshSelectionMarker();
+  function goIso() {
+    const { pos, target } = viewFrom(isoDir(), robotModel, FIX_DIST);
+    tweenOrbits(camera, controls, pos, target, 750);
   }
-  function clearSelection() {
-    setSelectedMeshes([]);
-  }
-
-  function destroy() {
-    try {
-      renderer.domElement.removeEventListener('pointermove', onPointerMove);
-      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
-      renderer.domElement.removeEventListener('pointerup', endJointDrag);
-      renderer.domElement.removeEventListener('pointerleave', endJointDrag);
-      renderer.domElement.removeEventListener('pointercancel', endJointDrag);
-      renderer.domElement.removeEventListener('keydown', onKeyDown, true);
-      document.removeEventListener('keydown', onKeyDown, true);
-    } catch (_) {}
-    try { hover.clear(); } catch (_) {}
-    try { if (selectionHelper) scene.remove(selectionHelper); } catch (_) {}
+  function goFocusSelected() {
+    const center = getSelectionCenter();
+    if (!center) { goIso(); return; }
+    const { sphere } = getRobotBounds(robotModel);
+    const radius = Math.max(1e-3, sphere.radius);
+    const dist = FIX_DIST * radius;
+    // Mira desde la dirección actual de la cámara, manteniendo distancia fija a la selección
+    const dir = center.clone().sub(camera.position).normalize().multiplyScalar(-1);
+    const pos = center.clone().add(dir.multiplyScalar(dist));
+    tweenOrbits(camera, controls, pos, center, 750);
   }
 
+  const onKeyDownI = (e) => {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+    if (e.key === 'i' || e.key === 'I' || e.code === 'KeyI') {
+      e.preventDefault();
+      try { console.log('pressed i'); } catch {}
+      if (!focusToggled) { goFocusSelected(); focusToggled = true; }
+      else { goIso(); focusToggled = false; }
+    }
+  };
+  document.addEventListener('keydown', onKeyDownI, true);
+
+  // Public small API (if needed elsewhere)
   return {
-    setRobot,
-    setSelectMode,
-    clearSelection,
-    selectFromHit,
-    isolateCurrent,
-    restoreAll,
-    destroy
+    setSelectedMeshes,
+    destroy() {
+      try { hover.clear(); } catch (_) {}
+      try { document.removeEventListener('keydown', onKeyDownI, true); } catch (_) {}
+    }
   };
 }
-
