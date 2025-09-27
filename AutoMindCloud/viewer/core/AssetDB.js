@@ -308,4 +308,3 @@ export const ALLOWED_EXTS = {
   mesh: ALLOWED_MESH_EXTS,
   tex: ALLOWED_TEX_EXTS
 };
-
