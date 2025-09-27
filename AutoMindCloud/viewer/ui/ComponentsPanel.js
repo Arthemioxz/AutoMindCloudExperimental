@@ -329,4 +329,3 @@ function makeThumbFallback(label, theme) {
   wrap.textContent = label || '—';
   return wrap;
 }
-
