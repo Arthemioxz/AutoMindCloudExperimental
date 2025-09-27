@@ -32,25 +32,18 @@ export async function latest(repo, branch) {
   }
 }
 
-
 // /viewer/urdf_viewer_main.js
 
-export function attachSizeHandler(container) {
-  // define helper
-  const sizeContainer = () => {
-    container.style.width = (window.innerWidth || 1) + 'px';
-    container.style.height = (window.innerHeight || 1) + 'px';
-  };
-
-  // llama una vez al iniciar
-  sizeContainer();
-
-  // y conecta al resize
-  window.addEventListener('resize', sizeContainer);
-
-  // devuelve un "cleanup" por si quieres quitar el handler
-  return () => window.removeEventListener('resize', sizeContainer);
+/**
+ * Adjusts the container size to always fit the window.
+ * @param {HTMLElement} container 
+ */
+export function sizeContainer(container) {
+  if (!container) return;
+  container.style.width  = (window.innerWidth  || 1) + 'px';
+  container.style.height = (window.innerHeight || 1) + 'px';
 }
+
 
 
 export function render(opts = {}) {
