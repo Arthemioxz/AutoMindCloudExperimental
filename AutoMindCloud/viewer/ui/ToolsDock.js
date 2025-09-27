@@ -673,6 +673,62 @@ export function createToolsDock(app, theme) {
 
 
 
+// ---------- TWEENED OPEN/CLOSE (unify button + 'H') ----------
+const CLOSED_TX = 520;  // px; slide distance
+let isOpen = false;
+
+// place dock on the LEFT once (use +CLOSED_TX if you want it off-screen right side)
+styleDockLeft(ui.dock);
+
+// give the dock a permanent transition and keep it in the DOM
+Object.assign(ui.dock.style, {
+  display: 'block',
+  willChange: 'transform, opacity',
+  transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease'
+});
+
+// helper to apply visual state
+function applyState(open) {
+  if (open) {
+    ui.dock.style.opacity = '1';
+    ui.dock.style.transform = 'translateX(0)';
+    ui.dock.style.pointerEvents = 'auto';
+    ui.toggleBtn.textContent = 'Close Tools';
+  } else {
+    ui.dock.style.opacity = '0';
+    ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`; // slide left
+    ui.dock.style.pointerEvents = 'none';
+    ui.toggleBtn.textContent = 'Open Tools';
+  }
+}
+
+function set(open) {
+  const next = !!open;
+  if (next && !isOpen) { try { explode.prepare(); } catch {} }
+  isOpen = next;
+  applyState(isOpen);
+}
+function openDock()  { set(true);  }
+function closeDock() { set(false); }
+
+// init hidden (off-screen)
+applyState(false);
+
+// Button uses the same setter
+ui.toggleBtn.addEventListener('click', () => set(!isOpen));
+
+// 'H' hotkey (now inside the same scope, so `ui` is defined)
+const onKeyDownToggleTools = (e) => {
+  if (e.isComposing) return;
+  if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
+    e.preventDefault();
+    set(!isOpen);
+  }
+};
+window.addEventListener('keydown', onKeyDownToggleTools, true);
+
+// cleanup inside destroy():
+// window.removeEventListener('keydown', onKeyDownToggleTools, true);
 
 
 
