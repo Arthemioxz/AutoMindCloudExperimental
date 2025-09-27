@@ -1,7 +1,3 @@
-from pathlib import Path, PurePosixPath
-
-p = Path("/mnt/data/urdf_viewer_main.js")
-p.write_text("""\
 // /viewer/urdf_viewer_main.js
 // Entrypoint that composes ViewerCore + AssetDB + Selection & Drag + UI (Tools & Components)
 
@@ -65,7 +61,7 @@ export function render(opts = {}) {
     selectMode
   });
 
-  // 6) Facade “app” that is passed to UI components
+  // 6) Facade "app" that is passed to UI components
   const app = {
     // Expose core bits
     ...core,
@@ -318,5 +314,3 @@ function installClickSound(dataURL) {
 if (typeof window !== 'undefined') {
   window.URDFViewer = { render };
 }
-""")
-str(p)
