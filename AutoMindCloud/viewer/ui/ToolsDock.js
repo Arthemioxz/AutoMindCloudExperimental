@@ -668,9 +668,13 @@ export function createToolsDock(app, theme) {
   return { open: openDock, close: closeDock, set, destroy };
 }
 
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'k' || e.key === 'K' || e.code === 'KeyK') {
+
+// --- Hotkey K (minimal) ---
+const onK = (e) => {
+  if (e.key === 'k' || e.code === 'KeyK') {
     console.log('key pressed');
   }
-});
+};
+window.addEventListener('keydown', onK, true); // capture=true = more reliable
+
 
