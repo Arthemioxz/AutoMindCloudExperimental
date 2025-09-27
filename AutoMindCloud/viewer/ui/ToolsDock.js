@@ -2,41 +2,6 @@
 // Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
 /* global THREE */
 
-
-// === Unified teal-white hover helper (applied to all buttons) ===
-function applyButtonHover(b, theme) {
-  if (!b) return;
-  const teal = (theme.colors?.teal) || theme.teal || '#0ea5a6';
-  const panelBg = (theme.colors?.panelBg) || theme.bgPanel || '#ffffff';
-  const stroke = (theme.colors?.teal) || theme.teal || '#0ea5a6';
-  const shadow = theme.shadow || (theme.shadows?.md) || '0 8px 24px rgba(0,0,0,0.12)';
-  b.style.background = panelBg;
-  b.style.color = '#000000';
-  b.style.border = `1px solid ${teal}`;
-  b.style.cursor = b.style.cursor || 'pointer';
-  b.style.transition = 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, color 120ms ease, border-color 120ms ease';
-
-  b.addEventListener('mouseenter', () => {
-    b.style.transform = 'translateY(-1px) scale(1.02)';
-    b.style.background = teal;
-    b.style.color = '#ffffff';
-    b.style.borderColor = teal;
-    b.style.boxShadow = shadow;
-  });
-  b.addEventListener('mouseleave', () => {
-    b.style.transform = 'none';
-    b.style.background = panelBg;
-    b.style.color = '#000000';
-    b.style.borderColor = teal;
-    b.style.boxShadow = shadow;
-  });
-  b.addEventListener('mousedown', () => {
-    b.style.transform = 'translateY(0) scale(0.97)';
-  });
-  b.addEventListener('mouseup', () => {
-    b.style.transform = 'translateY(-1px) scale(1.02)';
-  });
-}
 export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer)
     throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
@@ -68,17 +33,40 @@ export function createToolsDock(app, theme) {
   };
 
   // ---------- Helpers (with hover animations intact) ----------
-  
   const mkButton = (label) => {
     const b = document.createElement('button');
     b.textContent = label;
     Object.assign(b.style, {
       padding: '8px 12px',
       borderRadius: '12px',
+      border: `1px solid ${theme.stroke}`,
+      background: theme.bgPanel,
+      color: theme.text,
       fontWeight: '700',
+      cursor: 'pointer',
       pointerEvents: 'auto',
+      boxShadow: theme.shadow,
+      transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
     });
-    applyButtonHover(b, theme);
+    // Hover/active animations (KEEP)
+    b.addEventListener('mouseenter', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.tealFaint;
+      b.style.borderColor = theme.tealSoft ?? theme.teal;
+    });
+    b.addEventListener('mouseleave', () => {
+      b.style.transform = 'none';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.bgPanel;
+      b.style.borderColor = theme.stroke;
+    });
+    b.addEventListener('mousedown', () => {
+      b.style.transform = 'translateY(0) scale(0.99)';
+    });
+    b.addEventListener('mouseup', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+    });
     return b;
   };
 
@@ -156,9 +144,21 @@ export function createToolsDock(app, theme) {
   });
 
   // Dock
-  \1
-  ui.dock.setAttribute('data-amc-dock','tools');
-Object.assign(ui.header.style, {
+  Object.assign(ui.dock.style, {
+    position: 'absolute',
+    right: '14px', // Mantenemos a la derecha como solicitaste
+    top: '14px',
+    width: '440px',
+    background: theme.bgPanel,
+    border: `1px solid ${theme.stroke}`,
+    borderRadius: '18px',
+    boxShadow: theme.shadow,
+    pointerEvents: 'auto',
+    overflow: 'hidden',
+    display: 'none'
+  });
+
+  Object.assign(ui.header.style, {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -189,9 +189,7 @@ Object.assign(ui.header.style, {
     zIndex: '10000',
     transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
   });
-  
-  applyButtonHover(ui.toggleBtn, theme);
-ui.toggleBtn.addEventListener('mouseenter', () => {
+  ui.toggleBtn.addEventListener('mouseenter', () => {
     ui.toggleBtn.style.transform = 'translateY(-1px) scale(1.02)';
     ui.toggleBtn.style.background = theme.tealFaint;
     ui.toggleBtn.style.borderColor = theme.tealSoft ?? theme.teal;
@@ -262,7 +260,6 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
     ui.dock.style.display = open ? 'block' : 'none';
     ui.toggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
     if (open) {
-      styleDockLeft(ui.dock);
       explode.prepare(); // refresh when opening
     }
   }
@@ -348,56 +345,107 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
   secEnable.cb.addEventListener('change', () => { secEnabled = !!secEnable.cb.checked; updateSectionPlane(); });
   secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
 
-  // ---------- Views (animated) ----------
+  // ---------- Views (con distancia fija) ----------
   const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
 
-  function currentAzEl(cam, target) {
-    const v = cam.position.clone().sub(target);
-    const len = Math.max(1e-9, v.length());
-    return { el: Math.asin(v.y / len), az: Math.atan2(v.z, v.x), r: len };
+  function getRobotBounds() {
+    if (!app.robot) return null;
+    const box = new THREE.Box3().setFromObject(app.robot);
+    if (box.isEmpty()) return null;
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    return { center, size, maxDim };
   }
 
-  function tweenOrbits(cam, ctrl, toPos, toTarget = null, ms = 700) {
-    const p0 = cam.position.clone(), t0 = ctrl.target.clone(), tStart = performance.now();
-    ctrl.enabled = false; cam.up.set(0, 1, 0);
-    const moveTarget = (toTarget !== null);
+  function tweenToView(targetPos, targetLookAt, duration = 700) {
+    const cam = app.camera;
+    const ctrl = app.controls;
+    const p0 = cam.position.clone();
+    const t0 = ctrl.target.clone();
+    const tStart = performance.now();
+    
+    ctrl.enabled = false;
+    
     function step(t) {
-      const u = Math.min(1, (t - tStart) / ms), e = easeInOutCubic(u);
+      const u = Math.min(1, (t - tStart) / duration);
+      const e = easeInOutCubic(u);
+      
       cam.position.set(
-        p0.x + (toPos.x - p0.x) * e,
-        p0.y + (toPos.y - p0.y) * e,
-        p0.z + (toPos.z - p0.z) * e
+        p0.x + (targetPos.x - p0.x) * e,
+        p0.y + (targetPos.y - p0.y) * e,
+        p0.z + (targetPos.z - p0.z) * e
       );
-      if (moveTarget) ctrl.target.set(
-        t0.x + (toTarget.x - t0.x) * e,
-        t0.y + (toTarget.y - t0.y) * e,
-        t0.z + (toTarget.z - t0.z) * e
+      
+      ctrl.target.set(
+        t0.x + (targetLookAt.x - t0.x) * e,
+        t0.y + (targetLookAt.y - t0.y) * e,
+        t0.z + (targetLookAt.z - t0.z) * e
       );
-      ctrl.update(); app.renderer.render(app.scene, cam);
-      if (u < 1) requestAnimationFrame(step); else ctrl.enabled = true;
+      
+      ctrl.update();
+      app.renderer.render(app.scene, cam);
+      
+      if (u < 1) {
+        requestAnimationFrame(step);
+      } else {
+        ctrl.enabled = true;
+      }
     }
+    
     requestAnimationFrame(step);
   }
 
-  function viewEndPosition(kind) {
-    const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
-    const cur = currentAzEl(cam, t);
-    let az = cur.az, el = cur.el;
-    const topEps = 1e-3;
-    if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.2; }
-    if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
-    if (kind === 'front') { az = Math.PI / 2; el = 0; }
-    if (kind === 'right') { az = 0; el = 0; }
-    const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(cur.r));
-    return pos;
+  function getViewPosition(viewType) {
+    const bounds = getRobotBounds();
+    if (!bounds) return { pos: new THREE.Vector3(0, 0, 5), target: new THREE.Vector3(0, 0, 0) };
+    
+    const { center, maxDim } = bounds;
+    const DISTANCE_FACTOR = 2.0; // Distancia fija desde el robot
+    
+    let direction;
+    switch (viewType) {
+      case 'iso':
+        direction = new THREE.Vector3(1, 0.7, 1).normalize();
+        break;
+      case 'top':
+        direction = new THREE.Vector3(0, 1, 0).normalize();
+        break;
+      case 'front':
+        direction = new THREE.Vector3(0, 0, 1).normalize();
+        break;
+      case 'right':
+        direction = new THREE.Vector3(1, 0, 0).normalize();
+        break;
+      default:
+        direction = new THREE.Vector3(1, 0.7, 1).normalize();
+    }
+    
+    const distance = maxDim * DISTANCE_FACTOR;
+    const pos = center.clone().add(direction.multiplyScalar(distance));
+    
+    return { pos, target: center.clone() };
   }
 
-  const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
-  bIsoEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
-  bTopEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('top'), null, 750); });
-  bFrontEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
-  bRightEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
+  bIso.addEventListener('click', () => {
+    const view = getViewPosition('iso');
+    tweenToView(view.pos, view.target, 750);
+  });
+  
+  bTop.addEventListener('click', () => {
+    const view = getViewPosition('top');
+    tweenToView(view.pos, view.target, 750);
+  });
+  
+  bFront.addEventListener('click', () => {
+    const view = getViewPosition('front');
+    tweenToView(view.pos, view.target, 750);
+  });
+  
+  bRight.addEventListener('click', () => {
+    const view = getViewPosition('right');
+    tweenToView(view.pos, view.target, 750);
+  });
 
   // ---------- Projection ----------
   projSel.addEventListener('change', () => {
@@ -411,8 +459,8 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
   togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
   // ============================================================
-  //                       EXPLODE MANAGER
-  //  Smooth, spring-tweened explode with robust calibration
+  //                       EXPLODE MANAGER FIXED
+  //  Ahora siempre recalibra al abrir el panel y al volver a 0
   // ============================================================
   function makeExplodeManager() {
     // Internals
@@ -428,10 +476,7 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
     let raf = null;
     let lastT = 0;
     const stiffness = 18;       // rad/s
-    const damping   = 2 * Math.sqrt(stiffness); // critical
-
-    // recalibration timer when at zero
-    let zeroSince = null;
+    const damping   = 2 * Math.sqrt(stiffment); // critical
 
     function worldDirToParentLocal(parent, dirWorld) {
       const m = new THREE.Matrix4().copy(parent.matrixWorld).invert();
@@ -457,6 +502,7 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
 
     function prepare() {
       registry.length = 0;
+      marker.clear();
       if (!app.robot) { prepared = false; return; }
 
       const R = computeBounds();
@@ -491,7 +537,6 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
       });
 
       prepared = true;
-      zeroSince = performance.now();
     }
 
     function applyAmount(a01) {
@@ -518,22 +563,15 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
 
       if (Math.abs(current - target) < 0.0005 && Math.abs(vel) < 0.0005) {
         current = target; vel = 0;
+        
+        // FIX: Siempre recalibrar cuando llegamos a 0
+        if (current === 0) {
+          prepare(); // Recalibrar posiciones base
+          applyAmount(0); // Aplicar posición 0 con nuevas bases
+        }
       }
 
       applyAmount(current);
-
-      if (current === 0) {
-        zeroSince ??= now;
-        if (now - zeroSince > 300) {
-          const keepTarget = target;
-          prepare();
-          applyAmount(current);
-          target = keepTarget;
-          zeroSince = now;
-        }
-      } else {
-        zeroSince = null;
-      }
 
       if (current !== target || vel !== 0) {
         raf = requestAnimationFrame(tickSpring);
@@ -555,7 +593,14 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
       applyAmount(current);
     }
 
-    function recalibrate() { prepare(); applyAmount(current); }
+    function recalibrate() { 
+      prepare(); 
+      // Reset a 0 con las nuevas posiciones base
+      target = current = 0;
+      vel = 0;
+      applyAmount(0);
+    }
+    
     function destroy() { if (raf) cancelAnimationFrame(raf); raf = null; }
 
     return { prepare, setTarget, immediate, recalibrate, destroy };
@@ -563,15 +608,23 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
 
   const explode = makeExplodeManager();
   try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
+  
+  // FIX: Reset explode slider cuando se abre el panel
+  const originalSet = set;
+  set = function(open) {
+    originalSet(open);
+    if (open) {
+      // Resetear explode a 0 y recalibrar
+      explodeSlider.value = 0;
+      explode.recalibrate();
+    }
+  };
+  
   explodeSlider.addEventListener('input', () => {
     explode.setTarget(Number(explodeSlider.value) || 0);
   });
 
   // ---------- Utilities ----------
-  function styleDockLeft(dockEl) {
-    dockEl.classList.add('viewer-dock-fix');
-    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
-  }
 
   // Defaults
   togGrid.cb.checked = false;
@@ -587,7 +640,6 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
     if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
       e.preventDefault();
-      try { console.log('pressed h'); } catch {}
       const isOpen = ui.dock.style.display !== 'none';
       const CLOSED_TX = 520; // px, slide distance
 
@@ -600,7 +652,6 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
         ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
         requestAnimationFrame(() => {
           ui.toggleBtn.textContent = 'Close Tools';
-          styleDockLeft(ui.dock);
           try { explode.prepare(); } catch(_) {}
           ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
           ui.dock.style.opacity = '1';
@@ -642,4 +693,3 @@ ui.toggleBtn.addEventListener('mouseenter', () => {
 
   return { open: openDock, close: closeDock, set, destroy };
 }
-
