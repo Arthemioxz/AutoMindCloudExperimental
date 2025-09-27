@@ -683,14 +683,14 @@ export function createToolsDock(app, theme) {
 
 
 
-// ======== 'h' hotkey (global, at end of file) ========
-(function(){
-  const CLOSED_TX = 520;
-  let isOpen = false;
+// ======== 'H' hotkey & tween (global block at end of file) ========
+(() => {
+  const CLOSED_TX = 520; // slide distance (px)
 
   const onKeyDownToggleTools = (e) => {
     const ctx = window.__toolsDockCtx;
-    if (!ctx) return; // not initialized yet
+    if (!ctx) return; // createToolsDock hasn't run yet
+
     const { ui, explode, styleDockLeft } = ctx;
 
     const tag = (e.target && e.target.tagName || '').toLowerCase();
@@ -700,28 +700,30 @@ export function createToolsDock(app, theme) {
       e.preventDefault();
       console.log('pressed h');
 
-      const CLOSED = `translateX(${CLOSED_TX}px)`;
-      const isCurrentlyOpen = ui.dock.style.opacity === '1';
+      // ensure placement and base transition (safe to reapply)
+      styleDockLeft(ui.dock);
+      ui.dock.style.display = 'block';
+      ui.dock.style.willChange = 'transform, opacity';
+      ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
 
-      if (!isCurrentlyOpen) {
-        ui.dock.style.display = 'block';
-        ui.dock.style.willChange = 'transform, opacity';
-        ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
+      const isOpen = (ui.dock.style.opacity === '1');
+
+      if (!isOpen) {
+        // OPEN: from off-screen to 0
         ui.dock.style.opacity = '0';
-        ui.dock.style.transform = CLOSED;
+        ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
         requestAnimationFrame(() => {
           ui.toggleBtn.textContent = 'Close Tools';
-          styleDockLeft(ui.dock);
           try { explode.prepare(); } catch(_) {}
           ui.dock.style.opacity = '1';
-          ui.dock.style.transform = 'translateX(0px)';
+          ui.dock.style.transform = 'translateX(0)';
           setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
         });
       } else {
+        // CLOSE: slide out, then hide
         ui.dock.style.willChange = 'transform, opacity';
-        ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
         ui.dock.style.opacity = '0';
-        ui.dock.style.transform = CLOSED;
+        ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
         const onEnd = () => {
           ui.dock.style.display = 'none';
           ui.dock.style.willChange = 'auto';
@@ -735,5 +737,4 @@ export function createToolsDock(app, theme) {
 
   document.addEventListener('keydown', onKeyDownToggleTools, true);
 })();
-
 
