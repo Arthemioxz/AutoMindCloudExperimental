@@ -19,7 +19,19 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
  * @param {string|null} [opts.clickAudioDataURL] â€” optional UI SFX (not required)
  */
 
-export async function loadScript(url){{return new Promise((res,rej)=>{{const s=document.createElement('script'); s.src=url; s.defer=true; s.onload=()=>res(url); s.onerror=()=>rej(new Error('load fail: '+url)); document.head.appendChild(s);}});}}
+// /viewer/urdf_viewer_main.js
+
+/** Carga un <script> UMD (Three, Orbit, STL, etc.) antes de usar el viewer */
+export async function loadScript(url) {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.defer = true;
+    s.onload = () => res(url);
+    s.onerror = () => rej(new Error('load fail: ' + url));
+    document.head.appendChild(s);
+  });
+}
 
 export function render(opts = {}) {
   const {
