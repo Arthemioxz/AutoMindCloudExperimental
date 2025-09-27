@@ -314,4 +314,3 @@ function installClickSound(dataURL) {
 if (typeof window !== 'undefined') {
   window.URDFViewer = { render };
 }
-
