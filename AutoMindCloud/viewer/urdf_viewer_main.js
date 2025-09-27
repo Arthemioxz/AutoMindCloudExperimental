@@ -12,24 +12,24 @@ export function render(opts = {}) {
   const {
     container,
     urdfContent,
-    meshDB,
+    meshDB = {},
     selectMode = 'link',
     background = THEME.colors?.canvasBg ?? 0xf6fbfb,
     clickAudioDataURL = null
   } = opts || {};
   if (!container) throw new Error('[urdf_viewer_main] container required');
 
-  // Viewer core
-  const app = createViewer({ container, background, clickAudioDataURL });
+  // 1) Viewer core
+  const app = createViewer({ container, background });
 
-  // Assets
-  const assets = buildAssetDB(meshDB || {});
-  app.setLoadMeshCallback(createLoadMeshCb(assets));
+  // 2) Asset DB y callback para URDFLoader (NO existe app.setLoadMeshCallback)
+  const assetDB = buildAssetDB(meshDB);
+  const loadMeshCb = createLoadMeshCb(assetDB);
 
-  // Load URDF
-  if (urdfContent) app.loadURDF(urdfContent);
+  // 3) Cargar URDF pasando el callback correcto
+  if (urdfContent) app.loadURDF(urdfContent, { loadMeshCb });
 
-  // Interaction (selection, drag, key 'i' focus/iso)
+  // 4) Interacción (selección/arrastre + tecla 'i' focus/iso con distancia fija)
   attachInteraction({
     scene: app.scene,
     camera: app.camera,
@@ -39,11 +39,35 @@ export function render(opts = {}) {
     selectMode
   });
 
-  // UI: Tools (derecha) + Components (izquierda)
+  // 5) UI: Tools (derecha, hotkey 'h') + Components (izquierda, hotkey 'c')
   const tools = createToolsDock(app, THEME);
   const components = createComponentsPanel(app, THEME);
 
-  // Exponer por si necesitas desde fuera
+  // 6) (Opcional) sonido de click de UI
+  setupClickSfx(clickAudioDataURL);
+
+  // Exponer por si lo necesitas desde fuera
   return { app, tools, components };
 }
 
+/* --------------------- SFX opcional --------------------- */
+function setupClickSfx(dataURL) {
+  if (!dataURL || typeof window === 'undefined') {
+    window.__urdf_click__ = () => {};
+    return;
+  }
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  fetch(dataURL).then(r => r.arrayBuffer()).then(buf => ctx.decodeAudioData(buf)).then(audioBuf => {
+    window.__urdf_click__ = () => {
+      const src = ctx.createBufferSource();
+      src.buffer = audioBuf;
+      src.connect(ctx.destination);
+      try { src.start(0); } catch (_) {}
+    };
+  }).catch(() => { window.__urdf_click__ = () => {}; });
+}
+
+/* --------------------- Global UMD-style hook -------------------- */
+if (typeof window !== 'undefined') {
+  window.URDFViewer = { render };
+}
