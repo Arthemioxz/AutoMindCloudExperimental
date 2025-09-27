@@ -32,8 +32,152 @@ export function createToolsDock(app, theme) {
     toggleBtn: document.createElement('button')
   };
 
-  // ---------- Helpers (with hover animations intact) ----------
-  const mkButton = (label) => {
+  ui.root.className = 'tools-root';
+  ui.dock.className = 'tools-dock';
+  ui.body.className = 'tools-body';
+  ui.toggleBtn.className = 'tools-toggle';
+
+  Object.assign(ui.root.style, {
+    position: 'absolute',
+    inset: '0',
+    pointerEvents: 'none',
+    zIndex: 20
+  });
+
+  Object.assign(ui.dock.style, {
+    position: 'absolute',
+    right: '14px',
+    top: '14px',
+    width: '440px',
+    background: theme.bgPanel,
+    border: `1px solid ${theme.stroke}`,
+    borderRadius: '16px',
+    boxShadow: theme.shadow,
+    overflow: 'hidden',
+    pointerEvents: 'auto',
+    transformOrigin: '100% 0%',
+    willChange: 'transform, opacity'
+  });
+  // initial hidden position for tween
+  ui.dock.style.transform = 'translateX(480px)';
+  ui.dock.style.opacity = '0';
+  ui.dock.style.display = 'none';
+
+  Object.assign(ui.header.style, {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '10px 12px',
+    borderBottom: `1px solid ${theme.stroke}`,
+    background: theme.bgPanel
+  });
+
+  Object.assign(ui.title.style, {
+    fontSize: '14px',
+    fontWeight: '700',
+    color: theme.text,
+    flex: '1'
+  });
+  ui.title.textContent = 'Viewer Tools';
+
+  Object.assign(ui.fitBtn.style, {
+    fontSize: '12px',
+    padding: '6px 10px',
+    borderRadius: '10px',
+    background: theme.tealSoft,
+    border: `1px solid ${theme.teal}`,
+    color: theme.text,
+    cursor: 'pointer'
+  });
+  ui.fitBtn.textContent = 'Snapshot';
+
+  Object.assign(ui.body.style, {
+    display: 'grid',
+    gridTemplateColumns: '1fr',
+    gap: '8px',
+    padding: '12px'
+  });
+
+  Object.assign(ui.toggleBtn.style, {
+    position: 'absolute',
+    right: '16px',
+    top: '16px',
+    padding: '8px 12px',
+    borderRadius: '12px',
+    border: `1px solid ${theme.stroke}`,
+    background: theme.bgPanel,
+    color: theme.text,
+    fontWeight: '700',
+    cursor: 'pointer',
+    pointerEvents: 'auto',
+    boxShadow: theme.shadow,
+    transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
+  });
+  // Hover/active animations (KEEP)
+  ui.toggleBtn.addEventListener('mouseenter', () => {
+    ui.toggleBtn.style.transform = 'translateY(-1px)';
+  });
+  ui.toggleBtn.addEventListener('mouseleave', () => {
+    ui.toggleBtn.style.transform = 'translateY(0)';
+  });
+
+  ui.header.appendChild(ui.title);
+  ui.header.appendChild(ui.fitBtn);
+  ui.dock.appendChild(ui.header);
+  ui.dock.appendChild(ui.body);
+  ui.root.appendChild(ui.dock);
+  ui.root.appendChild(ui.toggleBtn);
+  app.container.appendChild(ui.root);
+
+  // ---------- Helpers ----------
+  function mkSection(label) {
+    const wrap = document.createElement('div');
+    const h = document.createElement('div');
+    Object.assign(h.style, {
+      fontSize: '11px',
+      textTransform: 'uppercase',
+      letterSpacing: '0.06em',
+      color: theme.textMuted,
+      padding: '4px 2px'
+    });
+    h.textContent = label;
+    wrap.appendChild(h);
+    return { wrap, header: h };
+  }
+
+  function mkRow(label, content) {
+    const row = document.createElement('div');
+    Object.assign(row.style, {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: '10px'
+    });
+    if (label) {
+      const l = document.createElement('div');
+      l.textContent = label;
+      Object.assign(l.style, { fontSize: '13px', color: theme.text });
+      row.appendChild(l);
+    }
+    row.appendChild(content);
+    return row;
+  }
+
+  function mkToggle(label, onChange) {
+    const wrap = document.createElement('div');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    const lab = document.createElement('label');
+    lab.textContent = label;
+    Object.assign(lab.style, { fontSize: '13px', color: theme.text });
+    Object.assign(wrap.style, { display: 'flex', alignItems: 'center', gap: '8px' });
+    cb.addEventListener('change', () => onChange(!!cb.checked));
+    wrap.appendChild(cb);
+    wrap.appendChild(lab);
+    return { wrap, cb };
+  }
+
+  function mkButton(label, onClick) {
     const b = document.createElement('button');
     b.textContent = label;
     Object.assign(b.style, {
@@ -50,591 +194,232 @@ export function createToolsDock(app, theme) {
     });
     // Hover/active animations (KEEP)
     b.addEventListener('mouseenter', () => {
-      b.style.transform = 'translateY(-1px) scale(1.02)';
-      b.style.boxShadow = theme.shadow;
-      b.style.background = theme.tealFaint;
-      b.style.borderColor = theme.tealSoft ?? theme.teal;
+      b.style.transform = 'translateY(-1px)';
+      b.style.boxShadow = '0 6px 16px rgba(0,0,0,0.12)';
     });
     b.addEventListener('mouseleave', () => {
-      b.style.transform = 'none';
+      b.style.transform = 'translateY(0)';
       b.style.boxShadow = theme.shadow;
-      b.style.background = theme.bgPanel;
-      b.style.borderColor = theme.stroke;
     });
-    b.addEventListener('mousedown', () => {
-      b.style.transform = 'translateY(0) scale(0.99)';
-    });
-    b.addEventListener('mouseup', () => {
-      b.style.transform = 'translateY(-1px) scale(1.02)';
-    });
+    b.addEventListener('click', onClick);
     return b;
-  };
-
-  const mkRow = (label, child) => {
-    const row = document.createElement('div');
-    Object.assign(row.style, {
-      display: 'grid',
-      gridTemplateColumns: '120px 1fr',
-      gap: '10px',
-      alignItems: 'center',
-      margin: '6px 0'
-    });
-    const l = document.createElement('div');
-    l.textContent = label;
-    Object.assign(l.style, { color: theme.textMuted, fontWeight: '700' });
-    row.appendChild(l);
-    row.appendChild(child);
-    return row;
-  };
-
-  const mkSelect = (options, value) => {
-    const sel = document.createElement('select');
-    options.forEach(o => {
-      const opt = document.createElement('option');
-      opt.value = o; opt.textContent = o; sel.appendChild(opt);
-    });
-    sel.value = value;
-    Object.assign(sel.style, {
-      padding: '8px',
-      border: `1px solid ${theme.stroke}`,
-      borderRadius: '10px',
-      pointerEvents: 'auto',
-      background: theme.bgPanel,
-      color: theme.text,
-      transition: 'border-color 120ms ease, box-shadow 120ms ease'
-    });
-    sel.addEventListener('focus', () => {
-      sel.style.borderColor = theme.teal;
-      sel.style.boxShadow = theme.shadow;
-    });
-    sel.addEventListener('blur', () => {
-      sel.style.borderColor = theme.stroke;
-      sel.style.boxShadow = 'none';
-    });
-    return sel;
-  };
-
-  const mkSlider = (min, max, step, value) => {
-    const s = document.createElement('input');
-    s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
-    s.style.width = '100%';
-    s.style.accentColor = theme.teal;
-    return s;
-  };
-
-  const mkToggle = (label) => {
-    const wrap = document.createElement('label');
-    const cb = document.createElement('input'); cb.type = 'checkbox';
-    const span = document.createElement('span'); span.textContent = label;
-    Object.assign(wrap.style, { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', pointerEvents: 'auto' });
-    cb.style.accentColor = theme.teal;
-    Object.assign(span.style, { fontWeight: '700', color: theme.text });
-    wrap.appendChild(cb); wrap.appendChild(span);
-    return { wrap, cb };
-  };
-
-  // Root overlay
-  Object.assign(ui.root.style, {
-    position: 'absolute',
-    left: '0', top: '0',
-    width: '100%', height: '100%',
-    pointerEvents: 'none',
-    zIndex: '9999',
-    fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
-  });
-
-  // Dock
-  Object.assign(ui.dock.style, {
-    position: 'absolute',
-    right: '14px',
-    top: '14px',
-    width: '440px',
-    background: theme.bgPanel,
-    border: `1px solid ${theme.stroke}`,
-    borderRadius: '18px',
-    boxShadow: theme.shadow,
-    pointerEvents: 'auto',
-    overflow: 'hidden',
-    display: 'none'
-  });
-
-  Object.assign(ui.header.style, {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '10px 12px',
-    borderBottom: `1px solid ${theme.stroke}`,
-    background: theme.tealFaint
-  });
-
-  ui.title.textContent = 'Viewer Tools';
-  Object.assign(ui.title.style, { fontWeight: '800', color: theme.text });
-
-  Object.assign(ui.body.style, { padding: '10px 12px' });
-
-  // Floating toggle button (with hover)
-  ui.toggleBtn.textContent = 'Open Tools';
-  Object.assign(ui.toggleBtn.style, {
-    position: 'absolute',
-    right: '14px',
-    top: '14px',
-    padding: '8px 12px',
-    borderRadius: '12px',
-    border: `1px solid ${theme.stroke}`,
-    background: theme.bgPanel,
-    color: theme.text,
-    fontWeight: '700',
-    boxShadow: theme.shadow,
-    pointerEvents: 'auto',
-    zIndex: '10000',
-    transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
-  });
-  ui.toggleBtn.addEventListener('mouseenter', () => {
-    ui.toggleBtn.style.transform = 'translateY(-1px) scale(1.02)';
-    ui.toggleBtn.style.background = theme.tealFaint;
-    ui.toggleBtn.style.borderColor = theme.tealSoft ?? theme.teal;
-  });
-  ui.toggleBtn.addEventListener('mouseleave', () => {
-    ui.toggleBtn.style.transform = 'none';
-    ui.toggleBtn.style.background = theme.bgPanel;
-    ui.toggleBtn.style.borderColor = theme.stroke;
-  });
-
-  // Header button (Snapshot)
-  ui.fitBtn = mkButton('Snapshot');
-  Object.assign(ui.fitBtn.style, { padding: '6px 10px', borderRadius: '10px' });
-
-  ui.header.appendChild(ui.title);
-  ui.header.appendChild(ui.fitBtn);
-  ui.dock.appendChild(ui.header);
-  ui.dock.appendChild(ui.body);
-  ui.root.appendChild(ui.dock);
-  ui.root.appendChild(ui.toggleBtn);
-
-  // Attach
-  const host = (app?.renderer?.domElement?.parentElement) || document.body;
-  host.appendChild(ui.root);
-
-  // ---------- Controls ----------
-  const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
-
-  // Explode (slider drives a smoothed spring tween; see ExplodeManager below)
-  const explodeSlider = mkSlider(0, 1, 0.01, 0);
-
-  // Section
-  const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
-  const secDist = mkSlider(-1, 1, 0.001, 0);
-  const secEnable = mkToggle('Enable section');
-  const secShowPlane = mkToggle('Show slice plane');
-
-  // Views row (NO per-row Snapshot button)
-  const rowCam = document.createElement('div');
-  Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
-  const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
-  [bIso, bTop, bFront, bRight].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
-
-  // Projection + Scene toggles
-  const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
-  const togGrid = mkToggle('Grid');
-  const togGround = mkToggle('Ground & shadows');
-  const togAxes = mkToggle('XYZ axes');
-
-  // Assemble rows
-  ui.body.appendChild(mkRow('Render mode', renderModeSel));
-  ui.body.appendChild(mkRow('Explode', explodeSlider));
-  ui.body.appendChild(mkRow('Section axis', axisSel));
-  ui.body.appendChild(mkRow('Section dist', secDist));
-  ui.body.appendChild(mkRow('', secEnable.wrap));
-  ui.body.appendChild(mkRow('', secShowPlane.wrap));
-  ui.body.appendChild(mkRow('Views', rowCam));
-  rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight);
-  ui.body.appendChild(mkRow('Projection', projSel));
-  ui.body.appendChild(mkRow('', togGrid.wrap));
-  ui.body.appendChild(mkRow('', togGround.wrap));
-  ui.body.appendChild(mkRow('', togAxes.wrap));
-
-  // ---------- Logic ----------
-
-  // Open/close
-  function set(open) {
-    ui.dock.style.display = open ? 'block' : 'none';
-    ui.toggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
-    if (open) {
-      styleDockLeft(ui.dock);
-      explode.prepare(); // refresh when opening
-    }
   }
-  function openDock() { set(true); }
-  function closeDock() { set(false); }
-  ui.toggleBtn.addEventListener('click', () => set(ui.dock.style.display === 'none'));
 
-  // Snapshot (header only)
-  ui.fitBtn.addEventListener('click', () => {
-    try {
-      const url = app.renderer.domElement.toDataURL('image/png');
-      const a = document.createElement('a'); a.href = url; a.download = 'snapshot.png'; a.click();
-    } catch (_) {}
-  });
+  // ---------- Sections ----------
+  const secModes = mkSection('Render');
+  const secExpl  = mkSection('Explode');
+  const secClip  = mkSection('Section');
+  const secView  = mkSection('Views');
+  const secProj  = mkSection('Projection');
+  const secScene = mkSection('Scene');
 
-  // Render mode
-  renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
-  function setRenderMode(mode) {
-    const root = app.robot || app.scene;
-    if (!root) return;
-    root.traverse(o => {
+  ui.body.appendChild(secModes.wrap);
+  ui.body.appendChild(secExpl.wrap);
+  ui.body.appendChild(secClip.wrap);
+  ui.body.appendChild(secView.wrap);
+  ui.body.appendChild(secProj.wrap);
+  ui.body.appendChild(secScene.wrap);
+
+  // ----- Render modes -----
+  const btnSolid = mkButton('Solid', () => setWire(false));
+  const btnWire  = mkButton('Wireframe', () => setWire(true));
+  secModes.wrap.appendChild(mkRow('', (()=>{
+    const co = document.createElement('div');
+    Object.assign(co.style, { display:'flex', gap:'8px' });
+    co.appendChild(btnSolid); co.appendChild(btnWire);
+    return co;
+  })()));
+
+  function setWire(wire) {
+    app.scene.traverse(o => {
       if (o.isMesh && o.material) {
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        for (const m of mats) {
-          m.wireframe = (mode === 'Wireframe');
-          if (mode === 'X-Ray') {
-            m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.depthTest = true;
-          } else if (mode === 'Ghost') {
-            m.transparent = true; m.opacity = 0.70; m.depthWrite = true; m.depthTest = true;
-          } else {
-            m.transparent = false; m.opacity = 1.0; m.depthWrite = true; m.depthTest = true;
-          }
-          m.needsUpdate = true;
-        }
+        o.material.wireframe = !!wire;
+        o.material.needsUpdate = true;
       }
     });
   }
 
-  // ---------- Section plane ----------
-  let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
-  let sectionPlane = null, secVisual = null;
+  // ----- Explode -----
+  const explWrap = document.createElement('div');
+  Object.assign(explWrap.style, { display: 'grid', gap: '6px' });
+  const explSlider = document.createElement('input');
+  explSlider.type = 'range'; explSlider.min = '0'; explSlider.max = '1'; explSlider.step = '0.001'; explSlider.value = '0';
+  const explLabel = document.createElement('div');
+  Object.assign(explLabel.style, { fontSize: '12px', color: theme.textMuted });
+  explLabel.textContent = '0%';
 
-  function ensureSectionVisual() {
-    if (secVisual) return secVisual;
-    secVisual = new THREE.Mesh(
-      new THREE.PlaneGeometry(1, 1, 1, 1),
-      new THREE.MeshBasicMaterial({
-        color: theme.teal,
-        transparent: true,
-        opacity: 0.4,
-        depthWrite: false,
-        depthTest: false,
-        toneMapped: false,
-        side: THREE.DoubleSide
-      })
-    );
-    secVisual.visible = false;
-    secVisual.renderOrder = 10000;
-    app.scene.add(secVisual);
-    return secVisual;
-  }
+  explWrap.appendChild(explSlider);
+  explWrap.appendChild(explLabel);
+  secExpl.wrap.appendChild(explWrap);
 
-  function refreshSectionVisual(maxDim, center) {
-    if (!secVisual) return;
-    const size = Math.max(1e-6, maxDim || 1);
-    secVisual.scale.set(size * 1.2, size * 1.2, 1);
-    if (center) secVisual.position.copy(center);
-  }
-
-  function updateSectionPlane() {
-    const renderer = app.renderer;
-    renderer.clippingPlanes = [];
-    if (!secEnabled || !app.robot) {
-      renderer.localClippingEnabled = false;
-      if (secVisual) secVisual.visible = false;
-      return;
-    }
-
-    const n = new THREE.Vector3(
-      secAxis === 'X' ? 1 : 0,
-      secAxis === 'Y' ? 1 : 0,
-      secAxis === 'Z' ? 1 : 0
-    );
-    const box = new THREE.Box3().setFromObject(app.robot);
-    if (box.isEmpty()) { renderer.localClippingEnabled = false; if (secVisual) secVisual.visible = false; return; }
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const center = box.getCenter(new THREE.Vector3());
-
-    const dist = (Number(secDist.value) || 0) * maxDim * 0.5;
-    const plane = new THREE.Plane(n, -center.dot(n) - dist);
-
-    renderer.localClippingEnabled = true;
-    renderer.clippingPlanes = [plane];
-    sectionPlane = plane;
-
-    ensureSectionVisual();
-    refreshSectionVisual(maxDim, center);
-    secVisual.visible = !!secPlaneVisible;
-
-    // Orient the teal plane to match clipping plane normal
-    const look = new THREE.Vector3().copy(n);
-    const up = new THREE.Vector3(0, 1, 0);
-    if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
-    const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0, 0, 0), look, up);
-    const q = new THREE.Quaternion().setFromRotationMatrix(m);
-    secVisual.setRotationFromQuaternion(q);
-    const p0 = n.clone().multiplyScalar(-plane.constant);
-    secVisual.position.copy(p0);
-  }
-
-  axisSel.addEventListener('change', () => { secAxis = axisSel.value; updateSectionPlane(); });
-  secDist.addEventListener('input', () => updateSectionPlane());
-  secEnable.cb.addEventListener('change', () => { secEnabled = !!secEnable.cb.checked; updateSectionPlane(); });
-  secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
-
-  // ---------- Views (animated) ----------
-  const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
-
-  function currentAzEl(cam, target) {
-    const v = cam.position.clone().sub(target);
-    const len = Math.max(1e-9, v.length());
-    return { el: Math.asin(v.y / len), az: Math.atan2(v.z, v.x), r: len };
-  }
-
-  function tweenOrbits(cam, ctrl, toPos, toTarget = null, ms = 700) {
-    const p0 = cam.position.clone(), t0 = ctrl.target.clone(), tStart = performance.now();
-    ctrl.enabled = false; cam.up.set(0, 1, 0);
-    const moveTarget = (toTarget !== null);
-    function step(t) {
-      const u = Math.min(1, (t - tStart) / ms), e = easeInOutCubic(u);
-      cam.position.set(
-        p0.x + (toPos.x - p0.x) * e,
-        p0.y + (toPos.y - p0.y) * e,
-        p0.z + (toPos.z - p0.z) * e
-      );
-      if (moveTarget) ctrl.target.set(
-        t0.x + (toTarget.x - t0.x) * e,
-        t0.y + (toTarget.y - t0.y) * e,
-        t0.z + (toTarget.z - t0.z) * e
-      );
-      ctrl.update(); app.renderer.render(app.scene, cam);
-      if (u < 1) requestAnimationFrame(step); else ctrl.enabled = true;
-    }
-    requestAnimationFrame(step);
-  }
-
-  function viewEndPosition(kind) {
-    const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
-    const cur = currentAzEl(cam, t);
-    let az = cur.az, el = cur.el;
-    const topEps = 1e-3;
-    if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.2; }
-    if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
-    if (kind === 'front') { az = Math.PI / 2; el = 0; }
-    if (kind === 'right') { az = 0; el = 0; }
-    const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(cur.r));
-    return pos;
-  }
-
-  const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
-  bIsoEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
-  bTopEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('top'), null, 750); });
-  bFrontEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
-  bRightEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
-
-  // ---------- Projection ----------
-  projSel.addEventListener('change', () => {
-    const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
-    try { app.setProjection?.(mode); } catch (_) {}
-  });
-
-  // ---------- Scene toggles ----------
-  togGrid.cb.addEventListener('change', () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
-  togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
-  togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
-
-  // ============================================================
-  //                       EXPLODE MANAGER
-  //  Smooth, spring-tweened explode with robust calibration
-  //  - Stable per-part vectors in **parent local space**
-  //  - No double-application on nested meshes
-  //  - Recalibrates baseline when amount≈0 or on demand
-  // ============================================================
-  function makeExplodeManager() {
-    // Internals
-    const registry = []; // { node, baseLocal:Vector3, dirLocal:Vector3 }
-    const marker = new WeakSet(); // mark chosen top parts to avoid nesting
-    let maxDim = 1;
-    let prepared = false;
-
-    // spring state
-    let current = 0;            // current explode amount [0..1]
-    let target = 0;             // target explode amount [0..1]
-    let vel = 0;                // velocity in "amount units / s"
-    let raf = null;
-    let lastT = 0;
-    const stiffness = 18;       // rad/s (ω) — higher snappier
-    const damping   = 2 * Math.sqrt(stiffness); // critical damping
-
-    // recalibration timer when at zero
-    let zeroSince = null;
-
-    function worldDirToParentLocal(parent, dirWorld) {
-      // Convert direction vector from world to parent's local (ignore translation)
-      const m = new THREE.Matrix4().copy(parent.matrixWorld).invert();
-      const n = new THREE.Matrix3().setFromMatrix4(m); // normal matrix
-      return dirWorld.clone().applyMatrix3(n).normalize();
-    }
-
-    function chooseTopPartFor(mesh) {
-      // climb up until we reach a node whose parent either is the robot root
-      // or has already been selected as a part
-      let n = mesh;
-      while (n && n !== app.robot) {
-        if (marker.has(n)) return n; // already chosen
-        if (n.parent === app.robot) return n;
-        n = n.parent;
-      }
-      return mesh.parent || mesh;
-    }
-
-    function computeBounds() {
-      const box = new THREE.Box3().setFromObject(app.robot);
-      if (box.isEmpty()) return null;
-      return { center: box.getCenter(new THREE.Vector3()), size: box.getSize(new THREE.Vector3()) };
-    }
+  // Explode logic (robust center calculation + smoothed)
+  const explode = (function(){
+    const saved = new Map(); // mesh -> { pos: Vector3 }
+    const base  = new Map(); // mesh -> { dir: Vector3, dist: number }
 
     function prepare() {
-      registry.length = 0;
-      markClear();
-      if (!app.robot) { prepared = false; return; }
+      saved.clear(); base.clear();
+      app.scene.updateMatrixWorld(true);
+      // compute overall bounds
+      const bb = new THREE.Box3();
+      bb.setFromObject(app.robot || app.scene);
+      const center = bb.getCenter(new THREE.Vector3());
+      const diag = bb.getSize(new THREE.Vector3()).length() || 1;
 
-      const R = computeBounds();
-      if (!R) { prepared = false; return; }
-      maxDim = Math.max(R.size.x, R.size.y, R.size.z) || 1;
-
-      // collect parts (top-most parents with geometry)
-      const parts = new Set();
-      const seen = new WeakSet();
-      app.robot.traverse((o) => {
-        if (o.isMesh && o.geometry && o.visible && !o.userData.__isHoverOverlay) {
-          const top = chooseTopPartFor(o);
-          if (!seen.has(top)) { parts.add(top); seen.add(top); marker.add(top); }
+      (app.robot || app.scene).traverse(o => {
+        if (o.isMesh && o.geometry) {
+          saved.set(o, { pos: o.position.clone() });
+          const obb = new THREE.Box3().setFromObject(o);
+          const c   = obb.getCenter(new THREE.Vector3());
+          const dir = c.clone().sub(center);
+          if (dir.lengthSq() < 1e-6) dir.set(1,0,0); // avoid degenerate
+          dir.normalize();
+          const dist = 0.25 * diag; // explode radius as fraction of scene size
+          base.set(o, { dir, dist });
         }
       });
+    }
 
-      // capture base & dir in parent local space
-      parts.forEach((node) => {
-        const parent = node.parent || app.robot;
-        const baseLocal = node.position.clone();
-
-        const box = new THREE.Box3().setFromObject(node);
-        if (box.isEmpty()) return;
-        const cWorld = box.getCenter(new THREE.Vector3());
-        const dirWorld = cWorld.sub(R.center).normalize();
-        if (!isFinite(dirWorld.x + dirWorld.y + dirWorld.z)) return;
-
-        const dirLocal = worldDirToParentLocal(parent, dirWorld);
-        // if degenerate, jitter slightly
-        if (!isFinite(dirLocal.x + dirLocal.y + dirLocal.z) || dirLocal.lengthSq() < 1e-12) {
-          dirLocal.set((Math.random()*2-1), (Math.random()*2-1), (Math.random()*2-1)).normalize();
-        }
-
-        registry.push({ node, parent, baseLocal, dirLocal });
+    function apply(k) {
+      if (base.size === 0) prepare();
+      base.forEach((info, m) => {
+        const target = info.dir.clone().multiplyScalar(info.dist * k);
+        const src = saved.get(m)?.pos || new THREE.Vector3();
+        m.position.copy(src.clone().add(target));
       });
-
-      prepared = true;
-      zeroSince = performance.now(); // fresh baseline considered "zero"
-    }
-
-    function markClear() {
-      // (no-op now, we simply let WeakSets be GC'd)
-    }
-
-    function applyAmount(a01) {
-      if (!prepared) prepare();
-      const f = Math.max(0, Math.min(1, a01 || 0));
-      const maxOffset = maxDim * 0.6;
-
-      for (const rec of registry) {
-        const { node, baseLocal, dirLocal } = rec;
-        node.position.copy(baseLocal).addScaledVector(dirLocal, f * maxOffset);
-      }
-
-      // keep section visuals and other helpers in sync
-      updateSectionPlane?.();
-      // render one frame so it feels responsive even if main loop is paused
-      try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch(_) {}
-    }
-
-    function tickSpring(now) {
-      if (!lastT) lastT = now;
-      const dt = Math.min(0.05, (now - lastT) / 1000); // clamp 50ms for stability
-      lastT = now;
-
-      // critically damped spring to target
-      const x = current, v = vel, xT = target;
-      const a = stiffness * (xT - x) - damping * v;
-      vel = v + a * dt;
-      current = x + vel * dt;
-
-      // snap when close
-      if (Math.abs(current - target) < 0.0005 && Math.abs(vel) < 0.0005) {
-        current = target; vel = 0;
-      }
-
-      applyAmount(current);
-
-      // auto-recalibrate baseline if user keeps it at ~0 for a moment
-      if (current === 0) {
-        zeroSince ??= now;
-        if (now - zeroSince > 300) { // 300ms stable at zero → recapture as new baseline
-          const keepTarget = target; // preserve intent
-          prepare();                 // new base from current joint pose
-          applyAmount(current);      // re-apply exact zero after recalibration
-          target = keepTarget;
-          zeroSince = now;
-        }
-      } else {
-        zeroSince = null;
-      }
-
-      if (current !== target || vel !== 0) {
-        raf = requestAnimationFrame(tickSpring);
-      } else {
-        raf = null; // stop when settled
-      }
-    }
-
-    function setTarget(a01) {
-      target = Math.max(0, Math.min(1, Number(a01) || 0));
-      if (!prepared) prepare();
-      if (!raf) { lastT = 0; raf = requestAnimationFrame(tickSpring); }
-    }
-
-    function immediate(a01) {
-      target = current = Math.max(0, Math.min(1, Number(a01) || 0));
-      vel = 0;
-      if (!prepared) prepare();
-      applyAmount(current);
-    }
-
-    function recalibrate() {
-      // public: recalc baseline to current (useful after big joint moves)
-      prepare();
-      applyAmount(current);
     }
 
     function destroy() {
-      if (raf) cancelAnimationFrame(raf);
-      raf = null;
+      // restore positions
+      base.forEach((info, m) => {
+        const src = saved.get(m)?.pos || new THREE.Vector3();
+        m.position.copy(src);
+      });
+      saved.clear(); base.clear();
     }
 
-    return { prepare, setTarget, immediate, recalibrate, destroy };
-  }
+    return { prepare, apply, destroy };
+  })();
 
-  const explode = makeExplodeManager();
-
-  // Expose a hook so other parts (e.g., joint-drag code) can request recalibration:
-  try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
-
-  // Drive explode from slider (smooth spring tween)
-  explodeSlider.addEventListener('input', () => {
-    explode.setTarget(Number(explodeSlider.value) || 0);
+  explSlider.addEventListener('input', () => {
+    const k = parseFloat(explSlider.value || '0') || 0;
+    explLabel.textContent = Math.round(k * 100) + '%';
+    explode.apply(k);
   });
 
-  // Double-click label area to recalibrate baseline instantly (optional UX)
-  // (Assumes the row label is the first child of the row grid)
-  // You can comment this if unwanted.
-  // ui.body.querySelectorAll('div').forEach(div => {
-  //   if (div.textContent === 'Explode') {
-  //     div.addEventListener('dblclick', () => explode.recalibrate());
+  // ----- Section plane -----
+  const secWrap = document.createElement('div');
+  Object.assign(secWrap.style, { display: 'grid', gap: '6px' });
+  const secChk = mkToggle('Enable Section (Y plane)', (on) => setSection(on));
+  const secSlider = document.createElement('input');
+  secSlider.type = 'range'; secSlider.min = '-1'; secSlider.max = '1'; secSlider.step = '0.001'; secSlider.value = '0';
+  secWrap.appendChild(secChk.wrap);
+  secWrap.appendChild(secSlider);
+  secClip.wrap.appendChild(secWrap);
+
+  let secPlane = null;
+  let secVisual = null;
+
+  function setSection(on) {
+    if (on && !secPlane) {
+      secPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+      app.renderer.localClippingEnabled = true;
+      app.renderer.clippingPlanes = [secPlane];
+
+      // visual gizmo
+      const geo = new THREE.PlaneGeometry(10, 10, 1, 1);
+      const mat = new THREE.MeshBasicMaterial({ color: theme.teal, opacity: 0.08, transparent: true, side: THREE.DoubleSide });
+      secVisual = new THREE.Mesh(geo, mat);
+      app.scene.add(secVisual);
+    }
+    if (!on && secPlane) {
+      app.renderer.localClippingEnabled = false;
+      app.renderer.clippingPlanes = [];
+      if (secVisual) app.scene.remove(secVisual);
+      secPlane = null; secVisual = null;
+    }
+  }
+
+  secSlider.addEventListener('input', () => {
+    if (!secPlane) return;
+    const k = parseFloat(secSlider.value || '0') || 0;
+    secPlane.constant = -k * 2.0; // move plane
+    if (secVisual) {
+      secVisual.position.set(0, k * 2.0, 0);
+      secVisual.rotation.x = Math.PI / 2;
+      secVisual.scale.set(5, 5, 1);
+    }
+  });
+
+  // ----- Views -----
+  const btnIso = mkButton('ISO', () => setView('iso'));
+  const btnTop = mkButton('Top', () => setView('top'));
+  const btnFront = mkButton('Front', () => setView('front'));
+  const btnRight = mkButton('Right', () => setView('right'));
+  secView.wrap.appendChild(mkRow('', (()=>{
+    const co = document.createElement('div');
+    Object.assign(co.style, { display:'flex', gap:'8px', flexWrap: 'wrap' });
+    co.appendChild(btnIso); co.appendChild(btnTop); co.appendChild(btnFront); co.appendChild(btnRight);
+    return co;
+  })()));
+
+  function setView(which) {
+    const { camera, controls } = app;
+    const r = 2.2 * (controls.target.length() + 1);
+    const pos = new THREE.Vector3();
+    if (which === 'top')    pos.set(0,  r, 0);
+    if (which === 'front')  pos.set(0,  0,  r);
+    if (which === 'right')  pos.set(r,  0,  0);
+    if (which === 'iso')    pos.set(r,  r*0.7, r);
+    // tween
+    tweenCamera(camera.position.clone(), pos, controls.target.clone(), controls.target.clone(), 420);
+  }
+
+  // ----- Projection -----
+  const togOrtho = mkToggle('Orthographic', (on) => setOrtho(on));
+  secProj.wrap.appendChild(mkRow('', togOrtho.wrap));
+
+  function setOrtho(on) {
+    const { camera, renderer, controls } = app;
+    if (on && camera.isPerspectiveCamera) {
+      const aspect = renderer.domElement.clientWidth / Math.max(1, renderer.domElement.clientHeight);
+      const size = controls.target.length() + 2;
+      const oc = new THREE.OrthographicCamera(-size*aspect, size*aspect, size, -size, 0.1, 1e5);
+      oc.position.copy(camera.position);
+      oc.up.copy(camera.up);
+      oc.lookAt(controls.target);
+      app.camera = oc;
+      app.controls.object = oc;
+      app.scene.add(oc);
+    }
+    if (!on && app.camera.isOrthographicCamera) {
+      const pc = new THREE.PerspectiveCamera(45, renderer.domElement.clientWidth / Math.max(1, renderer.domElement.clientHeight), 0.01, 1e5);
+      pc.position.copy(app.camera.position);
+      pc.up.copy(app.camera.up);
+      pc.lookAt(app.controls.target);
+      app.camera = pc;
+      app.controls.object = pc;
+      app.scene.add(pc);
+    }
+  }
+
+  // ----- Scene toggles -----
+  const togGrid   = mkToggle('Grid',    (on) => setHelper('grid', on));
+  const togGround = mkToggle('Ground',  (on) => setHelper('ground', on));
+  const togAxes   = mkToggle('Axes',    (on) => setHelper('axes', on));
+  secScene.wrap.appendChild(mkRow('', togGrid.wrap));
+  secScene.wrap.appendChild(mkRow('', togGround.wrap));
+  secScene.wrap.appendChild(mkRow('', togAxes.wrap));
+
+  function setHelper(which, on) {
+    // placeholder for your helpers hookup
+    console.debug('[ToolsDock] helper', which, on);
+  }
+
+  // (Optional) Keyboard hover motion — retained as comments for reference
+  // document.addEventListener('keydown', (e) => {
+  //   if (e.key === 'ArrowRight') {
+  //     ui.dock.style.transform = 'translateX(4px)'; requestAnimationFrame(()=>ui.dock.style.transform='translateX(0)');
   //   }
   // });
 
@@ -648,6 +433,75 @@ export function createToolsDock(app, theme) {
   togGrid.cb.checked = false;
   togGround.cb.checked = false;
   togAxes.cb.checked = false;
+
+  // ---------- Logic ----------
+
+  // Open/close (tweened)
+  let isOpen = false;
+  let animId = null;
+  const ANIM_MS = 320; // duration
+
+  function animateDock(targetOpen) {
+    if (!ui || !ui.dock) return;
+    if (animId) cancelAnimationFrame(animId);
+
+    // ensure visible during animation
+    ui.dock.style.display = 'block';
+    ui.dock.style.willChange = 'transform, opacity';
+    ui.dock.style.pointerEvents = targetOpen ? 'auto' : 'none';
+
+    const start = performance.now();
+    const from = isOpen ? 1 : 0;
+    const to   = targetOpen ? 1 : 0;
+
+    // initial off-screen position (closed → slide in from right)
+    const CLOSED_TX = 480;
+
+    const ease = (t) => (t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2);
+
+    function step(t) {
+      const u = Math.min(1, (t - start) / ANIM_MS);
+      const e = ease(u);
+      const k = from + (to - from) * e;     // 0..1 open progress
+      const tx = (1 - k) * CLOSED_TX;       // translateX(px)
+      ui.dock.style.transform = `translateX(${tx}px)`;
+      ui.dock.style.opacity = String(k);
+      animId = (u < 1) ? requestAnimationFrame(step) : null;
+
+      if (!animId) {
+        isOpen = !!targetOpen;
+        ui.dock.style.willChange = 'auto';
+        ui.dock.style.pointerEvents = isOpen ? 'auto' : 'none';
+        if (!isOpen) ui.dock.style.display = 'none';
+        ui.toggleBtn.textContent = isOpen ? 'Close Tools' : 'Open Tools';
+        if (isOpen) {
+          styleDockLeft(ui.dock);
+          explode.prepare();
+        }
+      }
+    }
+    requestAnimationFrame(step);
+  }
+
+  function set(open) { animateDock(!!open); }
+  function openDock() { set(true); }
+  function closeDock() { set(false); }
+  function toggleDock() { set(!isOpen); }
+
+  ui.toggleBtn.textContent = 'Open Tools';
+  ui.toggleBtn.addEventListener('click', () => toggleDock());
+
+  // Snapshot (header only)
+  ui.fitBtn.addEventListener('click', () => {
+    try {
+      const url = app.renderer.domElement.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url; a.download = 'snapshot.png';
+      a.click();
+    } catch (e) {
+      console.warn('[ToolsDock] Snapshot failed:', e);
+    }
+  });
 
   // Start closed
   set(false);
@@ -665,5 +519,6 @@ export function createToolsDock(app, theme) {
     explode.destroy();
   }
 
-  return { open: openDock, close: closeDock, set, destroy };
+  return { open: openDock, close: closeDock, set, toggle: toggleDock, destroy };
 }
+
