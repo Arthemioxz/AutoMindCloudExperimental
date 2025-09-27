@@ -439,18 +439,23 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
     requestAnimationFrame(step);
   }
 
+
   function viewEndPosition(kind) {
-    const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
-    const cur = currentAzEl(cam, t);
-    let az = cur.az, el = cur.el;
-    const topEps = 1e-3;
-    if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.2; }
-    if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
-    if (kind === 'front') { az = Math.PI / 2; el = 0; }
-    if (kind === 'right') { az = 0; el = 0; }
-    const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(cur.r));
-    return pos;
-  }
+  const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
+  const cur = currentAzEl(cam, t);
+  let az = cur.az, el = cur.el;
+
+  const topEps = 1e-3;
+  if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.2; }
+  if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
+  if (kind === 'front') { az = Math.PI / 2; el = 0; }
+  if (kind === 'right') { az = 0; el = 0; }
+
+  // ---- FIXED DISTANCE (e.g. 10 units) ----
+  const FIXED_RADIUS = 10;
+  const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(FIXED_RADIUS));
+  return pos;
+}
 
   const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
   bIsoEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
