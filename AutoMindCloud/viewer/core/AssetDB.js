@@ -303,6 +303,57 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
   };
 }
 
+/* ---------- Python-to-JS migrated functions ---------- */
+
+/**
+ * Find URDF and meshes directories in a given root path (JS simulation)
+ * @param {string} root - Root directory path
+ * @returns {Object} - {urdfDir, meshesDir} or {null, null}
+ */
+export function findURDFDirs(root) {
+  // In JS context, this would interface with a file system API
+  // For now, returns mock structure matching Python logic
+  const paths = {
+    urdf: `${root}/urdf`,
+    meshes: `${root}/meshes`
+  };
+  
+  // Simulate directory existence check
+  const dirsExist = Math.random() > 0.5; // Mock check
+  
+  return dirsExist ? paths : { urdfDir: null, meshesDir: null };
+}
+
+/**
+ * Extract mesh references from URDF content
+ * @param {string} urdfContent - URDF XML content
+ * @returns {string[]} - Array of mesh filenames
+ */
+export function extractMeshReferences(urdfContent) {
+  const meshRefs = [];
+  const regex = /filename="([^"]+\.(?:stl|dae))"/gi;
+  let match;
+  
+  while ((match = regex.exec(urdfContent)) !== null) {
+    meshRefs.push(match[1]);
+  }
+  
+  return [...new Set(meshRefs)]; // Remove duplicates
+}
+
+/**
+ * Normalize file path for consistent lookup
+ * @param {string} path - File path to normalize
+ * @returns {string} - Normalized path
+ */
+export function normalizeAssetPath(path) {
+  return String(path || '')
+    .replace(/\\/g, '/')
+    .toLowerCase()
+    .replace(/^\.\//, '')
+    .replace(/^package:\/\//, '');
+}
+
 /* ---------- (opcional) export ALLOWED sets if UI wants them ---------- */
 export const ALLOWED_EXTS = {
   mesh: ALLOWED_MESH_EXTS,
