@@ -683,38 +683,35 @@ export function createToolsDock(app, theme) {
 
 
 
-// ---------- TWEENED OPEN/CLOSE (hotkey 'H') ----------
-const CLOSED_TX = 520; // px slide distance
+// ---------- Hotkey 'H' to toggle dock ----------
+const CLOSED_TX = 520;
 let isOpen = false;
 
-function placeClosed() {
-  ui.dock.style.opacity = '0';
-  ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`; // slide out left
-  ui.dock.style.pointerEvents = 'none';
-  ui.toggleBtn.textContent = 'Open Tools';
-}
-function placeOpen() {
-  ui.dock.style.opacity = '1';
-  ui.dock.style.transform = 'translateX(0)';
-  ui.dock.style.pointerEvents = 'auto';
-  ui.toggleBtn.textContent = 'Close Tools';
-}
-
-// initialize hidden
+// Initialize dock style for tween
 Object.assign(ui.dock.style, {
   display: 'block',
   willChange: 'transform, opacity',
   transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease'
 });
-placeClosed();
+ui.dock.style.opacity = '0';
+ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`; // off-screen left
+ui.dock.style.pointerEvents = 'none';
 
 function set(open) {
   isOpen = !!open;
-  if (isOpen) { try { explode.prepare(); } catch(_) {} ; placeOpen(); }
-  else placeClosed();
+  if (isOpen) {
+    try { explode.prepare(); } catch(_) {}
+    ui.dock.style.opacity = '1';
+    ui.dock.style.transform = 'translateX(0)';
+    ui.dock.style.pointerEvents = 'auto';
+    ui.toggleBtn.textContent = 'Close Tools';
+  } else {
+    ui.dock.style.opacity = '0';
+    ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
+    ui.dock.style.pointerEvents = 'none';
+    ui.toggleBtn.textContent = 'Open Tools';
+  }
 }
-function openDock()  { set(true); }
-function closeDock() { set(false); }
 
 ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
@@ -728,4 +725,8 @@ const onKeyDownToggleTools = (e) => {
   }
 };
 window.addEventListener('keydown', onKeyDownToggleTools);
+
+// cleanup in destroy():
+// window.removeEventListener('keydown', onKeyDownToggleTools);
+
 
