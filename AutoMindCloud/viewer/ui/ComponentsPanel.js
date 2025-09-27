@@ -27,6 +27,41 @@
  *   destroy: () => void
  * }}
  */
+
+// === Unified teal-white hover helper (applied to all buttons) ===
+function applyButtonHover(b, theme) {
+  if (!b) return;
+  const teal = (theme.colors?.teal) || theme.teal || '#0ea5a6';
+  const panelBg = (theme.colors?.panelBg) || theme.bgPanel || '#ffffff';
+  const stroke = (theme.colors?.teal) || theme.teal || '#0ea5a6';
+  const shadow = theme.shadow || (theme.shadows?.md) || '0 8px 24px rgba(0,0,0,0.12)';
+  b.style.background = panelBg;
+  b.style.color = '#000000';
+  b.style.border = `1px solid ${teal}`;
+  b.style.cursor = b.style.cursor or 'pointer';
+  b.style.transition = 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, color 120ms ease, border-color 120ms ease';
+
+  b.addEventListener('mouseenter', () => {
+    b.style.transform = 'translateY(-1px) scale(1.02)';
+    b.style.background = teal;
+    b.style.color = '#ffffff';
+    b.style.borderColor = teal;
+    b.style.boxShadow = shadow;
+  });
+  b.addEventListener('mouseleave', () => {
+    b.style.transform = 'none';
+    b.style.background = panelBg;
+    b.style.color = '#000000';
+    b.style.borderColor = teal;
+    b.style.boxShadow = shadow;
+  });
+  b.addEventListener('mousedown', () => {
+    b.style.transform = 'translateY(0) scale(0.97)';
+  });
+  b.addEventListener('mouseup', () => {
+    b.style.transform = 'translateY(-1px) scale(1.02)';
+  });
+}
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll)
     throw new Error('[ComponentsPanel] Missing required app APIs');
@@ -113,41 +148,10 @@ export function createComponentsPanel(app, theme) {
   applyStyles(ui.showAllBtn, css.showAllBtn);
   applyStyles(ui.list, css.list);
 
-  // --- Unified hover style for all buttons (teal/white, black text) ---
-  function applyButtonHover(b, theme) {
-    const teal = (theme.colors?.teal) || theme.teal || '#0ea5a6';
-    const bg0  = (theme.colors?.panelBg) || theme.bgPanel || '#ffffff';
-    const stroke = (theme.colors?.teal) || theme.teal || '#0ea5a6';
-    b.style.background = bg0;
-    b.style.color = '#000000';
-    b.style.borderColor = stroke;
-    b.style.transition = 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, color 120ms ease, border-color 120ms ease';
-    b.addEventListener('mouseenter', () => {
-      b.style.transform = 'translateY(-1px) scale(1.02)';
-      b.style.background = teal;
-      b.style.color = '#000000';
-      b.style.borderColor = teal;
-    });
-    b.addEventListener('mouseleave', () => {
-      b.style.transform = 'none';
-      b.style.background = bg0;
-      b.style.color = '#000000';
-      b.style.borderColor = stroke;
-    });
-    b.addEventListener('mousedown', () => {
-      b.style.transform = 'translateY(0) scale(0.97)';
-    });
-    b.addEventListener('mouseup', () => {
-      b.style.transform = 'translateY(-1px) scale(1.02)';
-    });
-  }
-
   ui.btn.textContent = 'Components';
+  applyButtonHover(ui.btn, theme);
   ui.title.textContent = 'Components';
   ui.showAllBtn.textContent = 'Show all';
-
-  // Hover unificado en botones del panel
-  applyButtonHover(ui.btn, theme);
   applyButtonHover(ui.showAllBtn, theme);
 
   ui.header.appendChild(ui.title);
@@ -227,13 +231,18 @@ export function createComponentsPanel(app, theme) {
 
     // Build rows
     for (const ent of normalized) {
-      const row = document.createElement('div');
-      applyStyles(row, rowStyles(theme));
-      // Hover effect for rows (teal/white, texto negro)
-      row.addEventListener('mouseenter', () => { row.style.background = (theme.colors?.teal || theme.teal || '#0ea5a6'); row.style.color = '#000000'; });
-      row.addEventListener('mouseleave', () => { row.style.background = '#fff'; row.style.color = theme.text; });
-
-      const img = document.createElement('img');
+      \1
+      // Hover effect for component rows
+      row.style.transition = 'background-color 120ms ease, transform 120ms ease';
+      row.addEventListener('mouseenter', () => {
+        row.style.background = theme.tealFaint || (theme.colors && theme.colors.tealFaint) || 'rgba(20,184,185,0.12)';
+        row.style.transform = 'translateY(-1px)';
+      });
+      row.addEventListener('mouseleave', () => {
+        row.style.background = 'transparent';
+        row.style.transform = 'none';
+      });
+    const img = document.createElement('img');
       applyStyles(img, thumbStyles(theme));
       img.alt = ent.base;
       img.loading = 'lazy';
@@ -300,30 +309,33 @@ export function createComponentsPanel(app, theme) {
   return { open: openPanel, close: closePanel, set, refresh, destroy };
 }
 
-/* ------------------ Helpers ---------------- */
+/* ------------------ Helpers ------------------ */
 
-function applyStyles(el, map) {
-  Object.assign(el.style, map || {});
+function applyStyles(el, styles) {
+  Object.assign(el.style, styles);
 }
+
 function clearElement(el) {
   while (el.firstChild) el.removeChild(el.firstChild);
 }
-function basenameNoExt(s) {
-  const b = (s || '').split('/').pop();
-  const i = b.lastIndexOf('.');
-  return i >= 0 ? b.slice(0, i) : b;
+
+function basenameNoExt(p) {
+  const q = String(p || '').split('/').pop().split('?')[0].split('#')[0];
+  const dot = q.lastIndexOf('.');
+  return dot >= 0 ? q.slice(0, dot) : q;
 }
+
 function extOf(p) {
   const q = String(p || '').split('?')[0].split('#')[0];
-  const i = q.lastIndexOf('.');
-  return i >= 0 ? q.slice(i + 1).toLowerCase() : '';
+  const dot = q.lastIndexOf('.');
+  return dot >= 0 ? q.slice(dot + 1).toLowerCase() : '';
 }
 
 function rowStyles(theme) {
   return {
     display: 'grid',
     gridTemplateColumns: '128px 1fr',
-    gap: '10px',
+    gap: '12px',
     alignItems: 'center',
     padding: '10px',
     borderRadius: '12px',
@@ -340,9 +352,9 @@ function thumbStyles(theme) {
     width: '128px',
     height: '96px',
     objectFit: 'contain',
+    background: '#f7fbfb',
     borderRadius: '10px',
-    border: `1px solid ${theme.stroke}`,
-    background: '#fff'
+    border: `1px solid ${theme.stroke}`
   };
 }
 
