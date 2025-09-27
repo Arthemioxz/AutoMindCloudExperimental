@@ -416,24 +416,41 @@ export function createToolsDock(app, theme) {
     console.debug('[ToolsDock] helper', which, on);
   }
 
-  // (Optional) Keyboard hover motion — retained as comments for reference
-  // document.addEventListener('keydown', (e) => {
-  //   if (e.key === 'ArrowRight') {
-  //     ui.dock.style.transform = 'translateX(4px)'; requestAnimationFrame(()=>ui.dock.style.transform='translateX(0)');
-  //   }
-  // });
-
   // ---------- Utilities ----------
+  function tweenCamera(fromPos, toPos, fromTarget, toTarget, ms = 420) {
+    const cam = app.camera;
+    const ctl = app.controls;
+    if (!cam || !ctl) return;
+
+    const start = performance.now();
+    const ease = (t) => (t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2);
+
+    function step(t) {
+      const u = Math.min(1, (t - start) / ms);
+      const e = ease(u);
+      cam.position.set(
+        fromPos.x + (toPos.x - fromPos.x) * e,
+        fromPos.y + (toPos.y - fromPos.y) * e,
+        fromPos.z + (toPos.z - fromPos.z) * e
+      );
+      const tx = fromTarget.x + (toTarget.x - fromTarget.x) * e;
+      const ty = fromTarget.y + (toTarget.y - fromTarget.y) * e;
+      const tz = fromTarget.z + (toTarget.z - fromTarget.z) * e;
+      ctl.target.set(tx, ty, tz);
+      cam.lookAt(ctl.target);
+      ctl.update();
+      if (u < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
   function styleDockLeft(dockEl) {
     dockEl.classList.add('viewer-dock-fix');
     Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
   }
 
   // Defaults
-  togGrid.cb.checked = false;
-  togGround.cb.checked = false;
-  togAxes.cb.checked = false;
-
+  // (helpers off by default)
   // ---------- Logic ----------
 
   // Open/close (tweened)
@@ -476,7 +493,6 @@ export function createToolsDock(app, theme) {
         ui.toggleBtn.textContent = isOpen ? 'Close Tools' : 'Open Tools';
         if (isOpen) {
           styleDockLeft(ui.dock);
-          explode.prepare();
         }
       }
     }
@@ -511,12 +527,6 @@ export function createToolsDock(app, theme) {
     try { ui.toggleBtn.remove(); } catch (_) {}
     try { ui.dock.remove(); } catch (_) {}
     try { ui.root.remove(); } catch (_) {}
-    try {
-      app.renderer.localClippingEnabled = false;
-      app.renderer.clippingPlanes = [];
-      if (secVisual) app.scene.remove(secVisual);
-    } catch (_) {}
-    explode.destroy();
   }
 
   return { open: openDock, close: closeDock, set, toggle: toggleDock, destroy };
