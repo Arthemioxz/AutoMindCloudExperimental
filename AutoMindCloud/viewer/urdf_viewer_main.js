@@ -21,12 +21,19 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
 export function render(opts = {}) {
   const {
     container,
-    urdfContent,
+    urdfContent = '',
     meshDB = {},
     selectMode = 'link',
-    background = THEME.bgCanvas,
+    background = THEME.bgCanvas || 0xffffff,
     clickAudioDataURL = null
   } = opts;
+
+  // Make sure container can receive focus → key events land inside the iframe
+  container.setAttribute('tabindex', '0');
+  container.style.outline = 'none';
+  container.addEventListener('pointerdown', () => {
+    try { container.focus({ preventScroll: true }); } catch {}
+  });
 
   // 1) Core viewer
   const core = createViewer({ container, background });
@@ -51,7 +58,7 @@ export function render(opts = {}) {
   // 4) Build an offscreen renderer for thumbnails (after robot exists)
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
-  // 5) Interaction (hover, select, drag joints, key 'i')
+  // 5) Interaction (hover, select, drag joints, key 'i' etc.)
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -89,21 +96,16 @@ export function render(opts = {}) {
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // --- Global hotkey: 'h' toggles the Tools dock with tween ---
-  document.addEventListener('keydown', (e) => {
-    const tag = (e.target && e.target.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
-    if (e.key === 'h' || e.key === 'H') {
-      e.preventDefault();
-      try { console.log('pressed h'); tools.toggle(); } catch (_) {}
-    }
-  });
+  // --- Robust 'h' hotkey binder with visual toast ---
+  bindHotkeyH({ container, tools });
 
   // Optional click SFX for UI (kept minimal; UI modules do not depend on it)
   if (clickAudioDataURL) {
     try {
       const audio = new Audio(clickAudioDataURL);
-      ['click','pointerup'].forEach(evt => container.addEventListener(evt, () => { try { audio.currentTime = 0; audio.play(); } catch {} }, { capture: true }));
+      ['click','pointerup'].forEach(evt => container.addEventListener(
+        evt, () => { try { audio.currentTime = 0; audio.play(); } catch {} }, { capture: true }
+      ));
     } catch {}
   }
 
@@ -119,9 +121,62 @@ export function render(opts = {}) {
   };
 }
 
+// ---------- Hotkey binding (works in iframe/shadow, multiple listeners) ----------
+function bindHotkeyH({ container, tools }) {
+  const doc = container.ownerDocument || document;
+  const win = doc.defaultView || window;
+
+  // Small toast overlay (so you *see* the event without DevTools)
+  function toast(text) {
+    const t = doc.createElement('div');
+    Object.assign(t.style, {
+      position: 'absolute',
+      left: '12px', bottom: '12px',
+      padding: '6px 10px',
+      font: '12px/1.2 system-ui, sans-serif',
+      color: '#0f172a',
+      background: 'rgba(255,255,255,0.92)',
+      border: '1px solid rgba(0,0,0,0.1)',
+      borderRadius: '10px',
+      boxShadow: '0 6px 16px rgba(0,0,0,0.12)',
+      zIndex: 99999,
+      pointerEvents: 'none',
+      opacity: '0',
+      transition: 'opacity 120ms ease'
+    });
+    t.textContent = text;
+    container.appendChild(t);
+    requestAnimationFrame(() => (t.style.opacity = '1'));
+    setTimeout(() => {
+      t.style.opacity = '0';
+      setTimeout(() => t.remove(), 220);
+    }, 700);
+  }
+
+  function handler(e) {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+    const isH = (e.key === 'h' || e.key === 'H' || e.code === 'KeyH');
+    if (!isH) return;
+    e.preventDefault();
+    try { console.log('pressed h'); } catch {}
+    toast('pressed h');
+    try { tools.toggle(); } catch {}
+  }
+
+  // Attach on all likely targets (covers iframe/shadow cases)
+  win.addEventListener('keydown', handler, { capture: true });
+  doc.addEventListener('keydown', handler, { capture: true });
+  container.addEventListener('keydown', handler, { capture: true });
+
+  // Ensure container keeps focus after clicks
+  container.addEventListener('pointerdown', () => {
+    try { container.focus({ preventScroll: true }); } catch {}
+  });
+}
+
 // ---------- Helpers ----------
 function listAssets(assetToMeshes) {
-  // return array of { key, count }
   const arr = [];
   for (const [k, v] of assetToMeshes.entries()) arr.push({ key: k, count: v.length });
   arr.sort((a,b) => a.key.localeCompare(b.key));
@@ -130,21 +185,13 @@ function listAssets(assetToMeshes) {
 
 function isolateAsset(core, assetToMeshes, assetKey) {
   const meshes = assetToMeshes.get(assetKey) || [];
-  // Hide everything
-  if (core.robot) {
-    core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = false; });
-  }
-  // Show only these meshes
+  if (core.robot) core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = false; });
   meshes.forEach(m => { m.visible = true; });
-
-  // Frame selection
   frameMeshes(core, meshes);
 }
 
 function showAll(core) {
-  if (core.robot) {
-    core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = true; });
-  }
+  if (core.robot) core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = true; });
 }
 
 function frameMeshes(core, meshes) {
@@ -157,14 +204,12 @@ function frameMeshes(core, meshes) {
 
   const fromPos = core.camera.position.clone();
   const toPos = ctr.clone().add(new THREE.Vector3(dist, dist * 0.7, dist));
-  tweenCamera(fromPos, toPos, core.controls.target.clone(), ctr, 400);
+  tweenCamera(core, fromPos, toPos, core.controls.target.clone(), ctr, 400);
 }
 
-function tweenCamera(fromPos, toPos, fromTarget, toTarget, ms = 420) {
-  const { camera, controls } = this?.app || window.__viewerApp || {};
-  // Fallback: try global access if not bound in context
-  const cam = camera || window.__viewerCamera || controls?.object;
-  const ctl = controls || window.__viewerControls;
+function tweenCamera(core, fromPos, toPos, fromTarget, toTarget, ms = 420) {
+  const cam = core.camera;
+  const ctl = core.controls;
   if (!cam || !ctl) return;
 
   const start = performance.now();
@@ -189,7 +234,7 @@ function tweenCamera(fromPos, toPos, fromTarget, toTarget, ms = 420) {
   requestAnimationFrame(step);
 }
 
-// ---------- Offscreen thumbnails (kept compact) ----------
+// ---------- Offscreen thumbnails ----------
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   try {
     const off = document.createElement('canvas');
@@ -198,3 +243,33 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const sc = new THREE.Scene();
     const cam = new THREE.PerspectiveCamera(40, 1, 0.01, 1e5);
     const light = new THREE.DirectionalLight(0xffffff, 1.0);
+    light.position.set(1,1,1);
+    sc.add(light);
+
+    return {
+      thumbnail(assetKey) {
+        const meshes = assetToMeshes.get(assetKey) || [];
+        if (meshes.length === 0) return null;
+
+        const grp = new THREE.Group();
+        meshes.forEach(m => grp.add(m.clone()));
+        sc.add(grp);
+
+        const bb = new THREE.Box3().setFromObject(grp);
+        const ctr = bb.getCenter(new THREE.Vector3());
+        const size = bb.getSize(new THREE.Vector3()).length() || 1;
+        cam.position.copy(ctr.clone().add(new THREE.Vector3(size, size * 0.6, size)));
+        cam.lookAt(ctr);
+        r.setClearColor(0x000000, 0);
+        r.render(sc, cam);
+
+        const data = off.toDataURL('image/png');
+        sc.remove(grp);
+        return data;
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
