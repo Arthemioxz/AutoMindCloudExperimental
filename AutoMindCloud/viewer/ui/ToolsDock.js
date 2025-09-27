@@ -667,3 +667,86 @@ export function createToolsDock(app, theme) {
 
   return { open: openDock, close: closeDock, set, destroy };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ---------- TWEENED OPEN/CLOSE (hotkey 'H') ----------
+const CLOSED_TX = 520; // px slide distance
+let isOpen = false;
+
+// Put dock on the left and prep animated style
+function styleDockLeft(dockEl) {
+  dockEl.classList.add('viewer-dock-fix');
+  Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
+}
+styleDockLeft(ui.dock);
+
+Object.assign(ui.dock.style, {
+  display: 'block',                 // keep in flow, animate via transform/opacity
+  willChange: 'transform, opacity',
+  transition: 'transform 320ms cubic-bezier(.22,.61,.36,1), opacity 220ms ease'
+});
+
+function placeClosed() {
+  ui.dock.style.opacity = '0';
+  ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`; // slide out to left
+  ui.dock.style.pointerEvents = 'none';
+  ui.toggleBtn.textContent = 'Open Tools';
+}
+
+function placeOpen() {
+  ui.dock.style.opacity = '1';
+  ui.dock.style.transform = 'translateX(0)';
+  ui.dock.style.pointerEvents = 'auto';
+  ui.toggleBtn.textContent = 'Close Tools';
+}
+
+// initialize hidden
+placeClosed();
+
+function set(open) {
+  isOpen = !!open;
+  if (isOpen) {
+    try { explode.prepare(); } catch(_) {}
+    placeOpen();
+  } else {
+    placeClosed();
+  }
+}
+
+function openDock()  { set(true); }
+function closeDock() { set(false); }
+
+// Click toggle (kept)
+ui.toggleBtn.addEventListener('click', () => set(!isOpen));
+
+// Global hotkey: H (ignore when typing in inputs)
+const onKeyDownToggleTools = (e) => {
+  const tag = (e.target && e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+  if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
+    e.preventDefault();
+    try { console.log('pressed h'); } catch {}
+    set(!isOpen);
+  }
+};
+window.addEventListener('keydown', onKeyDownToggleTools);
+
+// (Add this to your destroy() at the end of the file)
+/// window.removeEventListener('keydown', onKeyDownToggleTools);
