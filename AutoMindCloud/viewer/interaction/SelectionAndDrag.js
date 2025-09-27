@@ -334,7 +334,7 @@ export function attachInteraction({
     renderer.domElement.style.cursor = (joint && isMovable(joint)) ? 'grab' : 'auto';
   }
 
-  // Isolation (key 'i')
+  // Isolation (key 'i') - MODIFICADO: zoom a componente seleccionado
   const ray = new THREE.Raycaster();
   const centerPointer = new THREE.Vector2(0, 0);
   let allMeshes = [];
@@ -344,84 +344,202 @@ export function attachInteraction({
   }
   rebuildMeshCache();
 
-  let lastHoverMesh = null, isolating = false, isolatedRoot = null;
+  let isolating = false;
   let savedPos = null, savedTarget = null;
 
-  function centerPick() {
-    if (!robotModel) return null;
-    ray.setFromCamera(centerPointer, camera);
-    const hits = ray.intersectObjects(allMeshes, true);
-    return hits.length ? hits[0].object : null;
+  function tweenCameraToObject(targetObj, duration = 600) {
+    if (!targetObj) return false;
+
+    const box = new THREE.Box3().setFromObject(targetObj);
+    if (box.isEmpty()) return false;
+
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+
+    let toPos;
+    if (camera.isPerspectiveCamera) {
+      const fov = (camera.fov || 60) * Math.PI / 180;
+      const dist = maxDim * 1.8 / Math.tan(Math.max(1e-6, fov / 2)); // Distancia fija
+      const dir = new THREE.Vector3(1, 0.7, 1).normalize();
+      toPos = center.clone().add(dir.multiplyScalar(dist));
+    } else {
+      const aspect = Math.max(1e-6, (renderer.domElement.clientWidth || 1) / (renderer.domElement.clientHeight || 1));
+      camera.left = -maxDim * aspect;
+      camera.right = maxDim * aspect;
+      camera.top = maxDim;
+      camera.bottom = -maxDim;
+      camera.updateProjectionMatrix();
+      toPos = center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim));
+    }
+
+    const fromPos = camera.position.clone();
+    const fromTarget = controls.target.clone();
+
+    const start = performance.now();
+    const ease = (t) => (t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2);
+
+    function step(t) {
+      const u = Math.min(1, (t - start) / duration);
+      const e = ease(u);
+      
+      camera.position.set(
+        fromPos.x + (toPos.x - fromPos.x) * e,
+        fromPos.y + (toPos.y - fromPos.y) * e,
+        fromPos.z + (toPos.z - fromPos.z) * e
+      );
+      
+      controls.target.set(
+        fromTarget.x + (center.x - fromTarget.x) * e,
+        fromTarget.y + (center.y - fromTarget.y) * e,
+        fromTarget.z + (center.z - fromTarget.z) * e
+      );
+      
+      controls.update();
+      
+      if (u < 1) {
+        requestAnimationFrame(step);
+      }
+    }
+    
+    requestAnimationFrame(step);
+    return true;
   }
-  function getLinkRoot(mesh) {
-    if (!mesh) return null; let n = mesh;
-    while (n && n !== robotModel) { if ((n.children || []).some(ch => ch.isMesh)) return n; n = n.parent; }
-    return mesh || robotModel;
-  }
-  function bulkSetVisible(v) {
-    if (!allMeshes.length) rebuildMeshCache();
-    for (let i = 0; i < allMeshes.length; i++) allMeshes[i].visible = v;
-  }
-  function setVisibleSubtree(root, v) {
-    root?.traverse(o => { if (o.isMesh) o.visible = v; });
+
+  function tweenCameraToIso(duration = 600) {
+    if (!robotModel) return false;
+
+    const box = new THREE.Box3().setFromObject(robotModel);
+    if (box.isEmpty()) return false;
+
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+
+    let toPos;
+    if (camera.isPerspectiveCamera) {
+      const fov = (camera.fov || 60) * Math.PI / 180;
+      const dist = maxDim * 2.0 / Math.tan(Math.max(1e-6, fov / 2)); // Distancia fija para vista ISO
+      const dir = new THREE.Vector3(1, 0.7, 1).normalize(); // Dirección ISO estándar
+      toPos = center.clone().add(dir.multiplyScalar(dist));
+    } else {
+      const aspect = Math.max(1e-6, (renderer.domElement.clientWidth || 1) / (renderer.domElement.clientHeight || 1));
+      camera.left = -maxDim * aspect;
+      camera.right = maxDim * aspect;
+      camera.top = maxDim;
+      camera.bottom = -maxDim;
+      camera.updateProjectionMatrix();
+      toPos = center.clone().add(new THREE.Vector3(maxDim * 1.5, maxDim * 1.2, maxDim * 1.5));
+    }
+
+    const fromPos = camera.position.clone();
+    const fromTarget = controls.target.clone();
+
+    const start = performance.now();
+    const ease = (t) => (t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2);
+
+    function step(t) {
+      const u = Math.min(1, (t - start) / duration);
+      const e = ease(u);
+      
+      camera.position.set(
+        fromPos.x + (toPos.x - fromPos.x) * e,
+        fromPos.y + (toPos.y - fromPos.y) * e,
+        fromPos.z + (toPos.z - fromPos.z) * e
+      );
+      
+      controls.target.set(
+        fromTarget.x + (center.x - fromTarget.x) * e,
+        fromTarget.y + (center.y - fromTarget.y) * e,
+        fromTarget.z + (center.z - fromTarget.z) * e
+      );
+      
+      controls.update();
+      
+      if (u < 1) {
+        requestAnimationFrame(step);
+      }
+    }
+    
+    requestAnimationFrame(step);
+    return true;
   }
 
   function isolateCurrent() {
-    const target = getLinkRoot(lastHoverMesh || centerPick());
-    if (!target) return false;
+    if (selectedMeshes.length === 0) return false;
+
+    // Usar el primer mesh seleccionado para encontrar el link/componente
+    const firstMesh = selectedMeshes[0];
+    if (!firstMesh) return false;
+
+    let targetObj;
+    if (selectMode === 'link') {
+      targetObj = findAncestorLink(firstMesh, linkSet) || firstMesh;
+    } else {
+      targetObj = firstMesh;
+    }
+
+    if (!targetObj) return false;
 
     if (!isolating) {
       savedPos = camera.position.clone();
       savedTarget = controls.target.clone();
     }
 
-    bulkSetVisible(false);
-    setVisibleSubtree(target, true);
-
-    // Quick frame (no custom tween here; delegate to upper UI tween if needed)
-    const box = new THREE.Box3().setFromObject(target);
-    const c = box.getCenter(new THREE.Vector3());
-    const s = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(s.x, s.y, s.z) || 1;
-    if (camera.isPerspectiveCamera) {
-      const fov = (camera.fov || 60) * Math.PI / 180;
-      const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
-      camera.position.copy(c.clone().add(new THREE.Vector3(1, 0.7, 1).normalize().multiplyScalar(dist)));
-    } else {
-      camera.left = -maxDim; camera.right = maxDim; camera.top = maxDim; camera.bottom = -maxDim;
-      camera.near = Math.max(maxDim / 1000, 0.001); camera.far = Math.max(maxDim * 1500, 1500);
-      camera.updateProjectionMatrix();
-      camera.position.copy(c.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
+    // Hacer zoom al componente seleccionado
+    const success = tweenCameraToObject(targetObj);
+    if (success) {
+      isolating = true;
     }
-    controls.target.copy(c); controls.update();
-
-    isolating = true; isolatedRoot = target;
-    return true;
+    
+    return success;
   }
 
   function restoreAll() {
-    bulkSetVisible(true);
-    if (savedPos && savedTarget) {
-      camera.position.copy(savedPos);
-      controls.target.copy(savedTarget);
-      controls.update();
+    if (!savedPos || !savedTarget) {
+      // Si no hay posición guardada, ir a vista ISO
+      tweenCameraToIso();
+    } else {
+      // Restaurar posición anterior
+      const fromPos = camera.position.clone();
+      const fromTarget = controls.target.clone();
+
+      const start = performance.now();
+      const duration = 600;
+      const ease = (t) => (t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2);
+
+      function step(t) {
+        const u = Math.min(1, (t - start) / duration);
+        const e = ease(u);
+        
+        camera.position.set(
+          fromPos.x + (savedPos.x - fromPos.x) * e,
+          fromPos.y + (savedPos.y - fromPos.y) * e,
+          fromPos.z + (savedPos.z - fromPos.z) * e
+        );
+        
+        controls.target.set(
+          fromTarget.x + (savedTarget.x - fromTarget.x) * e,
+          fromTarget.y + (savedTarget.y - fromTarget.y) * e,
+          fromTarget.z + (savedTarget.z - fromTarget.z) * e
+        );
+        
+        controls.update();
+        
+        if (u < 1) {
+          requestAnimationFrame(step);
+        } else {
+          isolating = false;
+        }
+      }
+      
+      requestAnimationFrame(step);
     }
-    isolating = false; isolatedRoot = null;
   }
 
   // Events
   function onPointerMove(e) {
     lastMoveEvt = e;
-    // track last hover mesh for isolation
-    // (reuse raycaster path – separate quick pass for cursor pos)
-    try {
-      getPointerFromEvent(e);
-      raycaster.setFromCamera(pointer, camera);
-      const pickables = [];
-      robotModel?.traverse(o => { if (o.isMesh && o.geometry && o.visible) pickables.push(o); });
-      const hits = raycaster.intersectObjects(pickables, true);
-      lastHoverMesh = hits.length ? hits[0].object : null;
-    } catch (_) {}
     scheduleHover();
   }
 
@@ -453,8 +571,11 @@ export function attachInteraction({
     const k = (e.key || '').toLowerCase();
     if (k === 'i') {
       e.preventDefault();
-      if (isolating) restoreAll();
-      else isolateCurrent();
+      if (isolating) {
+        restoreAll();
+      } else {
+        isolateCurrent();
+      }
     }
   }
 
@@ -505,4 +626,3 @@ export function attachInteraction({
     destroy
   };
 }
-
