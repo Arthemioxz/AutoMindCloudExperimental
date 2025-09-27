@@ -667,4 +667,3 @@ export function createToolsDock(app, theme) {
 
   return { open: openDock, close: closeDock, set, destroy };
 }
-
