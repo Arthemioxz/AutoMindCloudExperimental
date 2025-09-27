@@ -665,6 +665,70 @@ export function createToolsDock(app, theme) {
     explode.destroy();
   }
 
+  \\
+
+    // ======== 'h' hotkey: translational slide tween (right-to-left) ========
+  // Keep this INSIDE createToolsDock so it can see `ui`, `explode`, and `styleDockLeft`.
+  const _onKeyDownToggleTools = (e) => {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+
+    if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
+      e.preventDefault();
+      try { console.log('pressed h'); } catch {}
+
+      const isOpen = ui.dock.style.display !== 'none';
+      const CLOSED_TX = 520; // px, slide distance
+
+      // Ensure the dock is styled on the left (matches your preference)
+      styleDockLeft(ui.dock);
+
+      if (!isOpen) {
+        // Opening tween
+        ui.dock.style.display = 'block';
+        ui.dock.style.willChange = 'transform, opacity';
+        ui.dock.style.transition = 'none';
+        ui.dock.style.opacity = '0';
+        // slide from left (negative X hides to the left; positive X hides to the right)
+        ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
+
+        requestAnimationFrame(() => {
+          ui.toggleBtn.textContent = 'Close Tools';
+          try { explode.prepare(); } catch (_) {}
+          ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
+          ui.dock.style.opacity = '1';
+          ui.dock.style.transform = 'translateX(0px)';
+          setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
+        });
+      } else {
+        // Closing tween
+        ui.dock.style.willChange = 'transform, opacity';
+        ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
+        ui.dock.style.opacity = '0';
+        ui.dock.style.transform = `translateX(${-CLOSED_TX}px)`;
+        const onEnd = () => {
+          ui.dock.style.display = 'none';
+          ui.dock.style.willChange = 'auto';
+          ui.toggleBtn.textContent = 'Open Tools';
+          ui.dock.removeEventListener('transitionend', onEnd);
+        };
+        ui.dock.addEventListener('transitionend', onEnd);
+      }
+    }
+  };
+
+  // Register when the dock is created:
+  document.addEventListener('keydown', _onKeyDownToggleTools, true);
+
+  // Extend destroy() to remove the listener:
+  const _destroyOrig = destroy;
+  destroy = function () {
+    try { document.removeEventListener('keydown', _onKeyDownToggleTools, true); } catch (_) {}
+    _destroyOrig();
+  };
+
+
+  \\
   return { open: openDock, close: closeDock, set, destroy };
 }
 
@@ -679,47 +743,3 @@ export function createToolsDock(app, theme) {
 
 
 
-  // ======== 'h' hotkey: translational slide tween (right-to-left) ========
-  const _onKeyDownToggleTools = (e) => {
-    const tag = (e.target && e.target.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
-    if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
-      e.preventDefault();
-      try { console.log('pressed h'); } catch {}
-      const isOpen = ui.dock.style.display !== 'none';
-      const CLOSED_TX = 520; // px, slide distance
-
-      if (!isOpen) {
-        // Opening: from off-screen (translateX) to 0
-        ui.dock.style.display = 'block';
-        ui.dock.style.willChange = 'transform, opacity';
-        ui.dock.style.transition = 'none';
-        ui.dock.style.opacity = '0';
-        ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
-        requestAnimationFrame(() => {
-          ui.toggleBtn.textContent = 'Close Tools';
-          styleDockLeft(ui.dock);
-          try { explode.prepare(); } catch(_) {}
-          ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
-          ui.dock.style.opacity = '1';
-          ui.dock.style.transform = 'translateX(0px)';
-          setTimeout(() => { ui.dock.style.willChange = 'auto'; }, 300);
-        });
-      } else {
-        // Closing: to off-screen then display:none
-        ui.dock.style.willChange = 'transform, opacity';
-        ui.dock.style.transition = 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
-        ui.dock.style.opacity = '0';
-        ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
-        const onEnd = () => {
-          ui.dock.style.display = 'none';
-          ui.dock.style.willChange = 'auto';
-          ui.toggleBtn.textContent = 'Open Tools';
-          ui.dock.removeEventListener('transitionend', onEnd);
-        };
-        ui.dock.addEventListener('transitionend', onEnd);
-      }
-    }
-  };
-  document.addEventListener('keydown', _onKeyDownToggleTools, true);
-  // ======== End hotkey ========
