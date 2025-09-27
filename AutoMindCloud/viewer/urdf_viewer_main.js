@@ -19,7 +19,8 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
  * @param {string|null} [opts.clickAudioDataURL] â€” optional UI SFX (not required)
  */
 
-async function latest(){{ try{{ const api='https://api.github.com/repos/'+repo+'/commits/'+branch+'?_='+Date.now(); const r=await fetch(api,{{headers:{{'Accept':'application/vnd.github+json'}}, cache:'no-store'}}); if(!r.ok) throw 0; const j=await r.json(); return (j.sha||'').slice(0,7)||branch; }}catch(_e){{ return branch; }} }}
+export async function latest(){{ try{{ const api='https://api.github.com/repos/'+repo+'/commits/'+branch+'?_='+Date.now(); const r=await fetch(api,{{headers:{{'Accept':'application/vnd.github+json'}}, cache:'no-store'}}); if(!r.ok) throw 0; const j=await r.json(); return (j.sha||'').slice(0,7)||branch; }}catch(_e){{ return branch; }} }}
+
 export async function loadScript(url) {
   return new Promise((res, rej) => {
     const s = document.createElement('script');
