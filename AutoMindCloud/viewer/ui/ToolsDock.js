@@ -483,22 +483,43 @@ function initDefaultRadius(app) {
 }
 
 // -------------------------------
-function viewEndPosition(kind) {
-  const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
-  const cur = currentAzEl(cam, t);
-  let az = cur.az, el = cur.el;
+// ---------- Fixed default distance support ----------
+let DEFAULT_RADIUS = null;
 
-  const topEps = 1e-3;
-  if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.2; }
-  if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
-  if (kind === 'front') { az = Math.PI / 2; el = 0; }
-  if (kind === 'right') { az = 0; el = 0; }
+// Compute and cache the default radius ONCE (distance from camera to controls.target)
+function ensureDefaultRadius() {
+  const cam  = app.camera;
+  const ctrl = app.controls;
+  const t = (ctrl && ctrl.target) ? ctrl.target : new THREE.Vector3();
 
-  // ---- FIXED DISTANCE (e.g. 10 units) ----
-  const FIXED_RADIUS = 10;
-  const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(FIXED_RADIUS));
-  return pos;
+  if (DEFAULT_RADIUS && DEFAULT_RADIUS > 0) return DEFAULT_RADIUS;
+
+  // Use actual current distance (assumes you've already done your initial fit)
+  DEFAULT_RADIUS = cam.position.distanceTo(t);
+  // Fallback just in case something is weird
+  if (!isFinite(DEFAULT_RADIUS) || DEFAULT_RADIUS <= 0) DEFAULT_RADIUS = 10;
+
+  return DEFAULT_RADIUS;
 }
+
+// Call once after your initial fit/setup (safe to call multiple times)
+ensureDefaultRadius();
+
+// ---------- View destination using the fixed default distance ----------
+  function viewEndPosition(kind) {
+    const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
+    const cur = currentAzEl(cam, t);
+    let az = cur.az, el = cur.el;
+    const topEps = 1e-3;
+    if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.2; }
+    if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
+    if (kind === 'front') { az = Math.PI / 2; el = 0; }
+    if (kind === 'right') { az = 0; el = 0; }
+    const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(cur.r));
+    return pos;
+  }
+
+  
 
 
 
