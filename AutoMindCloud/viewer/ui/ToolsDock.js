@@ -587,7 +587,7 @@ export function createToolsDock(app, theme) {
       e.preventDefault();
       try { console.log('pressed h'); } catch {}
       const isOpen = ui.dock.style.display !== 'none';
-      const CLOSED_TX = 520; // px, slide distance
+      const CLOSED_TX = -520; // px, slide distance
 
       if (!isOpen) {
         // Opening: from off-screen (translateX) to 0
