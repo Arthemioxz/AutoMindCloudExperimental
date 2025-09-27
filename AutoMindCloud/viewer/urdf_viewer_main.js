@@ -8,6 +8,26 @@ import { attachInteraction } from './interaction/SelectionAndDrag.js';
 import { createToolsDock } from './ui/ToolsDock.js';
 import { createComponentsPanel } from './ui/ComponentsPanel.js';
 
+// Import utility functions
+import { 
+  calculateFixedDistance, 
+  directionFromAzEl, 
+  currentAzimuthElevation,
+  easeInOutCubic 
+} from './core/ViewerCore.js';
+
+import { 
+  navigateToFixedDistanceView,
+  tweenOrbits 
+} from './ui/ToolsDock.js';
+
+import { 
+  buildMeshCache, 
+  bulkSetVisible, 
+  setVisibleSubtree,
+  frameObjectAnimated 
+} from './interaction/SelectionAndDrag.js';
+
 /**
  * Public entry: render the URDF viewer.
  * @param {Object} opts
@@ -61,7 +81,10 @@ export function render(opts = {}) {
     selectMode
   });
 
-  // 6) Facade "app" that is passed to UI components
+  // 6) Enhanced view manager
+  const viewManager = createViewManager(core, robot);
+
+  // 7) Facade "app" that is passed to UI components
   const app = {
     // Expose core bits
     ...core,
@@ -82,18 +105,73 @@ export function render(opts = {}) {
     // --- Show all ---
     showAll: () => showAll(core),
 
+    // --- View Manager ---
+    viewManager,
+
     // Optional: open tools externally
     openTools(open = true) { tools.set(!!open); }
   };
 
-  // 7) UI modules
+  // 8) UI modules
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
   // Optional click SFX for UI (kept minimal; UI modules do not depend on it)
   if (clickAudioDataURL) {
-     try { installClickSound(clickAudioDataURL); } catch (_) {}
+    try { installClickSound(clickAudioDataURL); } catch (_) {}
   }
+
+  // Enhanced keyboard shortcuts
+  function setupEnhancedShortcuts() {
+    function handleEnhancedKeys(e) {
+      const key = (e.key || '').toLowerCase();
+      
+      // 'i' for isolation
+      if (key === 'i') {
+        e.preventDefault();
+        viewManager.isolateSelectedComponent();
+      }
+      
+      // 'h' for toggle dock
+      if (key === 'h') {
+        e.preventDefault();
+        const dock = document.querySelector('.viewer-dock-fix');
+        if (dock) dock.classList.toggle('collapsed');
+      }
+    }
+    
+    container.addEventListener('keydown', handleEnhancedKeys, true);
+    core.renderer.domElement.addEventListener('keydown', handleEnhancedKeys, true);
+  }
+
+  // Override view buttons to use fixed distance
+  function setupEnhancedViewButtons() {
+    document.addEventListener('click', (ev) => {
+      const button = ev.target.closest('button');
+      if (!button) return;
+      
+      const label = (button.textContent || '').trim().toLowerCase();
+      if (['iso', 'top', 'front', 'right'].includes(label)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        viewManager.navigateToView(label);
+      }
+    }, true);
+  }
+
+  // Initialize enhanced features
+  setTimeout(() => {
+    if (robot) {
+      viewManager.initialize();
+      setupEnhancedShortcuts();
+      setupEnhancedViewButtons();
+      
+      // Initial navigation to ISO view
+      setTimeout(() => {
+        viewManager.navigateToView('iso');
+      }, 300);
+    }
+  }, 200);
 
   // Public destroy
   const destroy = () => {
@@ -102,12 +180,125 @@ export function render(opts = {}) {
     try { inter.destroy(); } catch (_) {}
     try { off?.destroy?.(); } catch (_) {}
     try { core.destroy(); } catch (_) {}
+    try { viewManager.destroy(); } catch (_) {}
   };
 
   return { ...app, destroy };
 }
 
-/* ---------------------------- Helpers ---------------------------- */
+/* ---------------------------- Enhanced View Manager ---------------------------- */
+
+/**
+ * Create enhanced view management with fixed distance and isolation
+ */
+function createViewManager(app, robot) {
+  let fixedDistance = null;
+  let allMeshes = [];
+  let isolating = false;
+  let originalCameraState = null;
+  let isolatedComponent = null;
+  
+  function initialize() {
+    if (robot) {
+      allMeshes = buildMeshCache(robot);
+      fixedDistance = calculateFixedDistance(robot, app.camera, 1.9);
+    }
+  }
+  
+  function navigateToView(viewType) {
+    if (!fixedDistance) initialize();
+    navigateToFixedDistanceView(viewType, app, fixedDistance, 750);
+  }
+  
+  function isolateComponent(component) {
+    if (isolating) return restoreView();
+    
+    if (!component) {
+      console.warn('No component provided for isolation');
+      return;
+    }
+    
+    originalCameraState = {
+      position: app.camera.position.clone(),
+      target: app.controls.target.clone()
+    };
+    
+    bulkSetVisible(allMeshes, false);
+    setVisibleSubtree(component, true);
+    frameObjectAnimated(component, app, 1.3, 800);
+    
+    isolating = true;
+    isolatedComponent = component;
+  }
+  
+  function restoreView() {
+    if (!isolating || !originalCameraState) return;
+    
+    bulkSetVisible(allMeshes, true);
+    tweenOrbits(app.camera, app.controls, originalCameraState.position, originalCameraState.target, 800);
+    
+    isolating = false;
+    isolatedComponent = null;
+  }
+  
+  function getSelectedComponent() {
+    // Implementation depends on your selection system
+    const selectedRows = document.querySelectorAll('.viewer-dock-fix tr.selected');
+    if (selectedRows.length === 0) return null;
+    
+    const row = selectedRows[0];
+    const linkName = row.cells[0]?.textContent?.trim();
+    if (!linkName) return null;
+    
+    let targetComponent = null;
+    robot.traverse(obj => {
+      if (obj.name === linkName || obj.userData?.linkName === linkName) {
+        targetComponent = obj;
+      }
+    });
+    
+    return targetComponent;
+  }
+  
+  function isolateSelectedComponent() {
+    if (isolating) return restoreView();
+    
+    const selectedComp = getSelectedComponent();
+    if (!selectedComp) {
+      console.log('No component selected');
+      return;
+    }
+    
+    isolateComponent(selectedComp);
+  }
+  
+  function destroy() {
+    // Cleanup if needed
+    allMeshes = [];
+    isolating = false;
+    originalCameraState = null;
+    isolatedComponent = null;
+  }
+  
+  // Initialize when robot is loaded
+  if (robot) {
+    setTimeout(initialize, 100);
+  }
+  
+  return {
+    initialize,
+    navigateToView,
+    isolateComponent,
+    isolateSelectedComponent,
+    restoreView,
+    getSelectedComponent,
+    destroy,
+    get isIsolating() { return isolating; },
+    get fixedDistance() { return fixedDistance; }
+  };
+}
+
+/* ---------------------------- Original Helpers ---------------------------- */
 
 function listAssets(assetToMeshes) {
   // Returns: [{ assetKey, base, ext, count }]
@@ -314,3 +505,18 @@ function installClickSound(dataURL) {
 if (typeof window !== 'undefined') {
   window.URDFViewer = { render };
 }
+
+// Export utility functions for external use
+export { 
+  createViewManager,
+  calculateFixedDistance,
+  directionFromAzEl,
+  currentAzimuthElevation,
+  easeInOutCubic,
+  navigateToFixedDistanceView,
+  tweenOrbits,
+  buildMeshCache,
+  bulkSetVisible,
+  setVisibleSubtree,
+  frameObjectAnimated
+};
