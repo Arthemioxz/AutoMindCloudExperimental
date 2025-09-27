@@ -1,11 +1,8 @@
 // /viewer/ui/ComponentsPanel.js
-// Panel de Componentes completo (dock IZQUIERDA, hotkey 'c' con mismo tween de Tools, hover en items y botones).
-// Muestra tipo real (.dae/.stl/.stp/...) en la lista; botón "Show all" mantiene lógica original.
+// Floating gallery of components with thumbnails + type (.dae/.stl/.stp/...), hover on items,
+// tween toggle with 'c' (dock left). Matches the same tween as Tools ('h').
 
 export function createComponentsPanel(app, theme) {
-  if (!app || !app.assets || !app.isolate || !app.showAll)
-    throw new Error('[ComponentsPanel] Missing required app APIs');
-
   if (theme && theme.colors) {
     theme.teal       ??= theme.colors.teal;
     theme.tealSoft   ??= theme.colors.tealSoft;
@@ -16,37 +13,55 @@ export function createComponentsPanel(app, theme) {
     theme.text       ??= theme.colors.text;
     theme.textMuted  ??= theme.colors.textMuted;
   }
-  theme = {
-    teal: '#0ea5a6', tealSoft: '#8ef5f7', tealFaint:'#e8fbfc',
-    bgPanel:'#fff', stroke:'#d5e6e6', text:'#0d2022', textMuted:'#577071',
-    shadow: '0 8px 24px rgba(0,0,0,.15)', ...(theme||{})
-  };
+  const SHADOW = (theme?.shadows?.md) || '0 8px 24px rgba(0,0,0,.14)';
 
   const ui = {
     root: document.createElement('div'),
-    btn: document.createElement('button'),
     panel: document.createElement('div'),
     header: document.createElement('div'),
     title: document.createElement('div'),
     showAllBtn: document.createElement('button'),
+    btn: document.createElement('button'),
     list: document.createElement('div')
   };
 
-  Object.assign(ui.root.style,{position:'absolute',left:0,top:0,width:'100%',height:'100%',pointerEvents:'none',zIndex:9999,fontFamily:'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'});
-  Object.assign(ui.btn.style,{position:'absolute',left:'14px',bottom:'14px',padding:'8px 12px',borderRadius:'12px',border:`1px solid ${theme.stroke}`,background:theme.bgPanel,color:theme.text,fontWeight:'700',cursor:'pointer',boxShadow:theme.shadow,pointerEvents:'auto',transition:'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'});
-  ui.btn.textContent='Components';
-  ui.btn.addEventListener('mouseenter',()=>{ ui.btn.style.transform='translateY(-1px) scale(1.02)'; ui.btn.style.background=theme.tealFaint; ui.btn.style.borderColor=theme.tealSoft; });
-  ui.btn.addEventListener('mouseleave',()=>{ ui.btn.style.transform='none'; ui.btn.style.background=theme.bgPanel; ui.btn.style.borderColor=theme.stroke; });
+  Object.assign(ui.root.style, {
+    position: 'absolute',
+    left: '0', top: '0', width: '100%', height: '100%',
+    pointerEvents: 'none', zIndex: 9999,
+    fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
+  });
 
-  Object.assign(ui.panel.style,{position:'absolute',left:'14px',bottom:'14px',width:'440px',maxHeight:'72%',background:theme.bgPanel,border:`1px solid ${theme.stroke}`,boxShadow:theme.shadow,borderRadius:'18px',overflow:'hidden',display:'none',pointerEvents:'auto'});
-  Object.assign(ui.header.style,{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'8px',padding:'10px 12px',borderBottom:`1px solid ${theme.stroke}`,background:theme.tealFaint});
-  ui.title.textContent='Components'; Object.assign(ui.title.style,{fontWeight:800,color:theme.text});
-  Object.assign(ui.showAllBtn.style,{padding:'6px 10px',borderRadius:'10px',border:`1px solid ${theme.stroke}`,background:theme.bgPanel,fontWeight:'700',cursor:'pointer',transition:'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'});
-  ui.showAllBtn.textContent='Show all';
-  ui.showAllBtn.addEventListener('mouseenter',()=>{ ui.showAllBtn.style.transform='translateY(-1px)'; ui.showAllBtn.style.background=theme.tealFaint; ui.showAllBtn.style.borderColor=theme.tealSoft; });
-  ui.showAllBtn.addEventListener('mouseleave',()=>{ ui.showAllBtn.style.transform='none'; ui.showAllBtn.style.background=theme.bgPanel; ui.showAllBtn.style.borderColor=theme.stroke; });
+  Object.assign(ui.panel.style, {
+    position: 'absolute',
+    left: '14px',
+    bottom: '14px',
+    width: '420px',
+    maxHeight: '75%',
+    background: theme?.bgPanel || '#fff',
+    border: `1px solid ${theme?.stroke || '#d5e6e6'}`,
+    boxShadow: SHADOW,
+    borderRadius: '18px',
+    overflow: 'hidden',
+    display: 'none',
+    pointerEvents: 'auto'
+  });
 
-  Object.assign(ui.list.style,{overflowY:'auto',maxHeight:'calc(72vh - 52px)',padding:'10px'});
+  Object.assign(ui.header.style, {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    gap: '8px', padding: '10px 12px',
+    borderBottom: `1px solid ${theme?.stroke || '#d5e6e6'}`,
+    background: theme?.tealFaint || 'rgba(20,184,185,0.12)'
+  });
+  ui.title.textContent = 'Components';
+  Object.assign(ui.title.style, { fontWeight: 800, color: theme?.text || '#0d2022' });
+
+  styleButton(ui.showAllBtn, 'Show all');
+
+  styleButton(ui.btn, 'Components');
+  Object.assign(ui.btn.style, { position: 'absolute', left: '14px', bottom: '14px' });
+
+  Object.assign(ui.list.style, { overflow: 'auto', maxHeight: '60vh', padding: '10px 12px', display: 'grid', gap: '8px' });
 
   ui.header.appendChild(ui.title);
   ui.header.appendChild(ui.showAllBtn);
@@ -54,77 +69,115 @@ export function createComponentsPanel(app, theme) {
   ui.panel.appendChild(ui.list);
   ui.root.appendChild(ui.panel);
   ui.root.appendChild(ui.btn);
-  (app?.renderer?.domElement?.parentElement || document.body).appendChild(ui.root);
 
-  // Estado
-  function openTween(){
-    if (ui.panel.style.display!=='none') return;
+  const host = (app?.renderer?.domElement?.parentElement) || document.body;
+  host.appendChild(ui.root);
+
+  let open = false, building = false, disposed = false;
+
+  function set(isOpen) { open = !!isOpen; ui.panel.style.display = open ? 'block' : 'none'; }
+  function openPanel(){ set(true); maybeBuild(); }
+  function closePanel(){ set(false); }
+
+  // tween (same timing/curve as Tools)
+  const CLOSED_TX = 520;
+  function openWithTween(){
+    if (ui.panel.style.display !== 'none') return;
     ui.panel.style.display='block';
-    ui.panel.style.willChange='transform, opacity';
+    ui.panel.style.willChange='transform,opacity';
     ui.panel.style.transition='none';
     ui.panel.style.opacity='0';
-    ui.panel.style.transform='translateX(-520px)'; // entra desde la izquierda
+    ui.panel.style.transform=`translateX(-${CLOSED_TX}px)`;
     requestAnimationFrame(()=>{
       ui.panel.style.transition='transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
       ui.panel.style.opacity='1';
-      ui.panel.style.transform='translateX(0px)';
-      setTimeout(()=>{ ui.panel.style.willChange='auto'; }, 300);
+      ui.panel.style.transform='translateX(0)';
+      setTimeout(()=>{ ui.panel.style.willChange='auto'; }, 320);
     });
+    open=true; maybeBuild();
   }
-  function closeTween(){
+  function closeWithTween(){
     if (ui.panel.style.display==='none') return;
-    ui.panel.style.willChange='transform, opacity';
+    ui.panel.style.willChange='transform,opacity';
     ui.panel.style.transition='transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease';
     ui.panel.style.opacity='0';
-    ui.panel.style.transform='translateX(-520px)';
-    const onEnd=()=>{ ui.panel.style.display='none'; ui.panel.style.willChange='auto'; ui.panel.removeEventListener('transitionend',onEnd); };
-    ui.panel.addEventListener('transitionend',onEnd);
-  }
-  ui.btn.addEventListener('click', ()=>{ const isOpen = ui.panel.style.display!=='none'; if(!isOpen) openTween(); else closeTween(); });
-  document.addEventListener('keydown',(e)=>{ const tag=(e.target?.tagName||'').toLowerCase(); if(tag==='input'||tag==='textarea'||tag==='select'||e.isComposing) return; if(e.code==='KeyC'||e.key==='c'||e.key==='C'){ e.preventDefault(); const isOpen = ui.panel.style.display!=='none'; if(!isOpen) openTween(); else closeTween(); } }, true);
-
-  ui.showAllBtn.addEventListener('click',()=>{ try { app.showAll?.(); } catch{} });
-
-  // Lista
-  function rowStyles() {
-    return {
-      display:'grid', gridTemplateColumns:'64px 1fr auto', gap:'10px', alignItems:'center',
-      padding:'8px', borderRadius:'12px', border:`1px solid ${theme.stroke}`, background:'#fff',
-      transition:'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease', cursor:'pointer'
-    };
-  }
-  function thumbStyles() {
-    return { width:'64px', height:'64px', background:'#eef4f4', borderRadius:'10px', objectFit:'cover' };
-  }
-  function applyHover(el) {
-    el.addEventListener('mouseenter',()=>{ el.style.transform='translateY(-1px)'; el.style.boxShadow='0 10px 26px rgba(0,0,0,.18)'; el.style.background=theme.tealFaint; el.style.borderColor=theme.tealSoft; });
-    el.addEventListener('mouseleave',()=>{ el.style.transform='none'; el.style.boxShadow='none'; el.style.background='#fff'; el.style.borderColor=theme.stroke; });
+    ui.panel.style.transform=`translateX(-${CLOSED_TX}px)`;
+    const onEnd=()=>{ ui.panel.style.display='none'; ui.panel.style.willChange='auto'; ui.panel.removeEventListener('transitionend', onEnd); };
+    ui.panel.addEventListener('transitionend', onEnd);
+    open=false;
   }
 
-  function extOf(str=''){ const m=(str.match(/\.([a-z0-9]+)$/i)||[])[1]; return m?('.'+m.toLowerCase()):''; }
+  const _onKeyDown = (e)=>{
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag==='input'||tag==='textarea'||tag==='select'||e.isComposing) return;
+    if (e.key==='c'||e.key==='C'||e.code==='KeyC'){ e.preventDefault(); (ui.panel.style.display==='none')?openWithTween():closeWithTween(); try{console.log('pressed c');}catch{} }
+  };
+  document.addEventListener('keydown', _onKeyDown, true);
 
-  async function refresh() {
+  ui.btn.addEventListener('click', ()=>{ (ui.panel.style.display==='none')?openWithTween():closeWithTween(); });
+  ui.showAllBtn.addEventListener('click', ()=>{ try{ app.showAll?.(); }catch{} });
+
+  async function maybeBuild(){
+    if (building || disposed) return;
+    building = true;
+    try { await renderList(); } finally { building = false; }
+  }
+
+  function extFrom(str=''){ const m=(str.match(/\\.([a-z0-9]+)$/i)||[])[1]; return m?('.'+m.toLowerCase()):''; }
+
+  function styleItem(el){
+    Object.assign(el.style,{
+      display:'grid', gridTemplateColumns:'64px 1fr auto',
+      gap:'10px', alignItems:'center', padding:'8px',
+      borderRadius:'12px', border:`1px solid ${theme?.stroke||'#d5e6e6'}`,
+      background:'#fff', cursor:'pointer',
+      transition:'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
+    });
+    el.addEventListener('mouseenter', ()=>{
+      el.style.transform='translateY(-1px)'; el.style.boxShadow='0 10px 26px rgba(0,0,0,.18)';
+      el.style.background= theme?.tealFaint || 'rgba(20,184,185,0.12)'; el.style.borderColor= theme?.tealSoft || '#14b8b9';
+    });
+    el.addEventListener('mouseleave', ()=>{
+      el.style.transform='none'; el.style.boxShadow='none'; el.style.background='#fff'; el.style.borderColor= theme?.stroke || '#d5e6e6';
+    });
+  }
+
+  async function renderList(){
     ui.list.innerHTML='';
-    let items=[]; try { const res=app.assets.list?.(); items = Array.isArray(res) ? res : await res; } catch {}
-    if (!items || !items.length) {
-      const empty=document.createElement('div'); empty.textContent='No components with visual geometry found.'; empty.style.color=theme.textMuted; empty.style.fontWeight='600'; empty.style.padding='8px 2px'; ui.list.appendChild(empty); return;
-    }
-    const norm = items.map(it=>({ assetKey: it.assetKey||it.key||'', base: it.base||(it.name?it.name.replace(/\.[^.]+$/,''):''), ext: (it.ext || extOf(it.assetKey||it.key||it.name||'')), count: it.count||1 }));
-    for (const ent of norm) {
-      const row=document.createElement('div'); Object.assign(row.style,rowStyles()); applyHover(row);
-      const img=document.createElement('img'); Object.assign(img.style,thumbStyles()); img.alt=ent.base; img.loading='lazy';
-      const thumb = app.assets.thumbnail?.(ent.assetKey); if (thumb) img.src=thumb;
-      const meta=document.createElement('div'); const title=document.createElement('div'); title.textContent=ent.base; title.style.fontWeight='700'; title.style.fontSize='14px'; title.style.color=theme.text;
-      const sub=document.createElement('div'); sub.textContent = ent.ext || '(?)'; sub.style.color=theme.textMuted; sub.style.fontWeight='700'; sub.style.fontSize='12px';
-      const type=document.createElement('div'); type.textContent = ent.count>1 ? `x${ent.count}` : ''; type.style.color=theme.textMuted; type.style.fontWeight='700';
-      meta.appendChild(title); meta.appendChild(sub);
-      row.appendChild(img); row.appendChild(meta); row.appendChild(type);
-      row.addEventListener('click', ()=>{ try { app.isolate.asset?.(ent.assetKey); } catch{} });
+    let items=[];
+    try{
+      const raw = await app.assets?.list?.();
+      items = Array.isArray(raw)? raw : [];
+    }catch{}
+    for(const it of items){
+      const row = document.createElement('div'); styleItem(row);
+      const thumb = document.createElement('div');
+      Object.assign(thumb.style,{width:'64px',height:'64px',borderRadius:'10px',background:'#eef4f4',backgroundSize:'cover',backgroundPosition:'center'});
+      if (it.thumb) thumb.style.backgroundImage = `url(${it.thumb})`;
+      const name = document.createElement('div'); name.textContent = it.name || it.key || '(item)'; Object.assign(name.style,{fontWeight:700, color: theme?.text||'#0d2022'});
+      const type = document.createElement('div'); type.textContent = extFrom(it.url||it.name||it.key) || '(?)'; Object.assign(type.style,{color: theme?.textMuted||'#577071', fontWeight:700});
+      row.appendChild(thumb); row.appendChild(name); row.appendChild(type);
+      row.addEventListener('click', ()=>{ try{ app.selectByAssetKey?.(it.key||it.name); }catch{} });
       ui.list.appendChild(row);
     }
   }
 
-  // Construcción inicial al abrir
-  const maybeBuild = ()=>refresh();
-  return { open: openTween, close: closeTween, set:(o)=>{ o?openTween():closeTween(); }, refresh: maybeBuild, destroy(){ try{ui.root.remove();}catch{} } };
+  function styleButton(btn, label){
+    btn.textContent = label;
+    Object.assign(btn.style,{
+      padding:'10px 14px', borderRadius:'12px', border:`1px solid ${theme?.stroke||'#d5e6e6'}`,
+      background: theme?.bgPanel || '#fff', color: theme?.text || '#0d2022', fontWeight:'700',
+      cursor:'pointer', pointerEvents:'auto', boxShadow: SHADOW,
+      transition:'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
+    });
+    btn.addEventListener('mouseenter', ()=>{ btn.style.transform='translateY(-1px) scale(1.02)'; btn.style.boxShadow='0 10px 26px rgba(0,0,0,.18)'; btn.style.background= theme?.tealFaint||'rgba(20,184,185,0.12)'; btn.style.borderColor= theme?.tealSoft||'#14b8b9'; });
+    btn.addEventListener('mouseleave', ()=>{ btn.style.transform='none'; btn.style.boxShadow=SHADOW; btn.style.background=theme?.bgPanel||'#fff'; btn.style.borderColor= theme?.stroke || '#d5e6e6'; });
+  }
+
+  return { open: openWithTween, close: closeWithTween, set, destroy(){
+    disposed = true;
+    try{ document.removeEventListener('keydown', _onKeyDown, true); }catch{}
+    try{ ui.panel.remove(); }catch{}; try{ ui.root.remove(); }catch{};
+  }};
 }
+
