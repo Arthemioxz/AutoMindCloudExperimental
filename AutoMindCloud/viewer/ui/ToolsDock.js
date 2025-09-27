@@ -1,5 +1,5 @@
 // /viewer/ui/ToolsDock.js
-// Floating tools dock: render modes, explode, section plane, views, projection, scene toggles, snapshot.
+// Floating tools dock: render modes, explode (simple), section plane, views, projection, scene toggles, snapshot.
 // Adds tweened open/close animation and global "h" hotkey to toggle the dock.
 /* global THREE */
 
@@ -7,7 +7,7 @@ export function createToolsDock(app, theme = {}) {
   if (!app || !app.camera || !app.controls || !app.renderer)
     throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
 
-  // --- Normalize theme (compatible with your Theme.js nested shape) ---
+  // --- Normalize theme (compatible with nested Theme.js shape) ---
   if (theme && theme.colors) {
     theme.teal       ??= theme.colors.teal;
     theme.tealSoft   ??= theme.colors.tealSoft;
@@ -53,7 +53,7 @@ export function createToolsDock(app, theme = {}) {
     fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
   });
 
-  // Dock (panel)
+  // Dock (panel) — animated with CSS transitions
   Object.assign(ui.dock.style, {
     position: 'absolute',
     right: '14px',
@@ -66,8 +66,9 @@ export function createToolsDock(app, theme = {}) {
     boxShadow: theme.shadow,
     pointerEvents: 'auto',
     overflow: 'hidden',
-    display: 'none',               // controlled by animation
-    transform: 'translateX(110%)', // start off-screen
+    display: 'none',
+    transform: 'translateX(110%)',
+    transition: 'transform 320ms cubic-bezier(.4,0,.2,1)'
   });
 
   // Header
@@ -83,7 +84,7 @@ export function createToolsDock(app, theme = {}) {
   ui.title.textContent = 'Viewer Tools';
   Object.assign(ui.title.style, { fontWeight: '800', color: theme.text });
 
-  // Snapshot button (header)
+  // Snapshot button
   ui.snapshotBtn.textContent = 'Snapshot';
   styleButton(ui.snapshotBtn, theme);
   Object.assign(ui.snapshotBtn.style, { padding: '6px 10px', borderRadius: '10px' });
@@ -123,7 +124,6 @@ export function createToolsDock(app, theme = {}) {
   host.appendChild(ui.root);
 
   // ---------- Controls & Rows ----------
-  // Helpers to build rows/controls
   const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid', theme);
   const explodeSlider = mkSlider(0, 1, 0.01, 0, theme);
 
@@ -144,7 +144,7 @@ export function createToolsDock(app, theme = {}) {
         bFront = mkButton('Front', theme), bRight = mkButton('Right', theme);
   [bIso, bTop, bFront, bRight].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
 
-  // Add rows to body
+  // Build rows
   ui.body.appendChild(mkRow('Render mode', renderModeSel, theme));
   ui.body.appendChild(mkRow('Explode', explodeSlider, theme));
   ui.body.appendChild(mkRow('Section axis', axisSel, theme));
@@ -160,33 +160,28 @@ export function createToolsDock(app, theme = {}) {
 
   // ---------- Animated open/close ----------
   let _isOpen = false;
-  let _animId = 0;
+  let hideTimer = null;
 
-  function easeInOutCubic(t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
-
-  function animateDock(open, ms = 320) {
-    cancelAnimationFrame(_animId);
-    const start = performance.now();
-    ui.dock.style.display = 'block'; // ensure in flow while animating
-    const from = _isOpen ? 0 : 1;    // 0 => visible, 1 => offscreen-right
-    const to   = open ? 0 : 1;
-
-    function step(t) {
-      const u = Math.min(1, (t - start) / ms);
-      const e = easeInOutCubic(u);
-      const x = from + (to - from) * e;
-      ui.dock.style.transform = `translateX(${x * 110}%)`;
-      if (u < 1) _animId = requestAnimationFrame(step);
-      else {
-        _isOpen = open;
-        if (!open) ui.dock.style.display = 'none';
-        ui.toggleBtn.textContent = open ? 'Close Tools' : 'Open Tools';
-      }
+  function set(open) {
+    clearTimeout(hideTimer);
+    if (open) {
+      ui.dock.style.display = 'block';          // make it visible
+      // small frame to ensure transition kicks
+      requestAnimationFrame(() => {
+        ui.dock.style.transform = 'translateX(0%)';
+      });
+    } else {
+      ui.dock.style.transform = 'translateX(110%)';
+      // hide after animation ends
+      hideTimer = setTimeout(() => { ui.dock.style.display = 'none'; }, 330);
     }
-    _animId = requestAnimationFrame(step);
+    _isOpen = !!open;
+    ui.toggleBtn.textContent = _isOpen ? 'Close Tools' : 'Open Tools';
+    // Recalculate explode vectors when opening (guard if explode exists)
+    try { if (_isOpen) explode.prepare?.(); } catch (_) {}
+    // Some builds used styleDockLeft; guard it to avoid ReferenceError
+    try { /* optional */ if (typeof styleDockLeft === 'function') styleDockLeft(ui.dock); } catch (_) {}
   }
-
-  function set(open) { animateDock(!!open); }
   function openDock() { set(true); }
   function closeDock() { set(false); }
   function toggleDock() { set(!_isOpen); }
@@ -309,7 +304,7 @@ export function createToolsDock(app, theme = {}) {
   secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
 
   // ---------- Views (animated) ----------
-  function easeInOut(t) { return easeInOutCubic(t); }
+  const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
   const dirFromAzEl = (az, el) => new THREE.Vector3(
     Math.cos(el) * Math.cos(az),
     Math.sin(el),
@@ -325,7 +320,7 @@ export function createToolsDock(app, theme = {}) {
     ctrl.enabled = false; cam.up.set(0, 1, 0);
     const moveTarget = (toTarget !== null);
     function step(t) {
-      const u = Math.min(1, (t - tStart) / ms), e = easeInOut(u);
+      const u = Math.min(1, (t - tStart) / ms), e = easeInOutCubic(u);
       cam.position.set(
         p0.x + (toPos.x - p0.x) * e,
         p0.y + (toPos.y - p0.y) * e,
@@ -383,19 +378,17 @@ export function createToolsDock(app, theme = {}) {
       const size = box.getSize(new THREE.Vector3());
       max = Math.max(size.x, size.y, size.z) || 1;
 
+      // group meshes by their immediate parent to avoid double-translation
+      const groups = new Set();
       root.traverse(o => {
         if (!o?.isMesh || !o.geometry) return;
-        // Use the top-level parent that still groups this mesh cluster
-        const parentGroup = o.parent || root;
-        const key = parentGroup.__explodeKey || (parentGroup.__explodeKey = Symbol());
-        let entry = items.find(e => e.key === key);
-        if (!entry) {
-          const p = parentGroup.getWorldPosition(new THREE.Vector3());
-          const v = p.clone().sub(center).normalize();
-          if (!isFinite(v.lengthSq()) || v.lengthSq() < 1e-12) v.set(1, 0, 0);
-          entry = { key, group: parentGroup, basePos: parentGroup.position.clone(), vec: v };
-          items.push(entry);
-        }
+        groups.add(o.parent || root);
+      });
+      groups.forEach(parentGroup => {
+        const p = parentGroup.getWorldPosition(new THREE.Vector3());
+        const v = p.clone().sub(center).normalize();
+        if (!isFinite(v.lengthSq()) || v.lengthSq() < 1e-12) v.set(1, 0, 0);
+        items.push({ group: parentGroup, basePos: parentGroup.position.clone(), vec: v });
       });
     }
 
@@ -417,16 +410,9 @@ export function createToolsDock(app, theme = {}) {
     explode.set(Number(explodeSlider.value) || 0);
   });
 
-  // Prepare explode vectors whenever we open the dock
-  // (also useful if robot was just loaded)
-  const observeOpenOnce = new MutationObserver(() => {
-    if (_isOpen) { try { explode.prepare(); } catch (_) {} }
-  });
-  observeOpenOnce.observe(ui.dock, { attributes: true, attributeFilter: ['style'] });
-
   // ---------- Public API ----------
   function destroy() {
-    cancelAnimationFrame(_animId);
+    clearTimeout(hideTimer);
     window.removeEventListener('keydown', keyHandler);
     try { ui.root.remove(); } catch (_) {}
   }
@@ -441,114 +427,113 @@ export function createToolsDock(app, theme = {}) {
     toggle: toggleDock,
     destroy
   };
-}
 
-/* ------------------ UI Helper Builders ------------------ */
+  // ===== helpers (UI builders) =====
+  function mkRow(label, child, theme) {
+    const row = document.createElement('div');
+    Object.assign(row.style, {
+      display: 'grid',
+      gridTemplateColumns: '120px 1fr',
+      gap: '10px',
+      alignItems: 'center',
+      margin: '6px 0'
+    });
+    const l = document.createElement('div');
+    l.textContent = label;
+    Object.assign(l.style, { color: theme.textMuted, fontWeight: '700' });
+    row.appendChild(l);
+    row.appendChild(child);
+    return row;
+  }
 
-function mkRow(label, child, theme) {
-  const row = document.createElement('div');
-  Object.assign(row.style, {
-    display: 'grid',
-    gridTemplateColumns: '120px 1fr',
-    gap: '10px',
-    alignItems: 'center',
-    margin: '6px 0'
-  });
-  const l = document.createElement('div');
-  l.textContent = label;
-  Object.assign(l.style, { color: theme.textMuted, fontWeight: '700' });
-  row.appendChild(l);
-  row.appendChild(child);
-  return row;
-}
+  function mkSelect(options, value, theme) {
+    const sel = document.createElement('select');
+    options.forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o; opt.textContent = o; sel.appendChild(opt);
+    });
+    sel.value = value;
+    Object.assign(sel.style, {
+      padding: '8px',
+      border: `1px solid ${theme.stroke}`,
+      borderRadius: '10px',
+      pointerEvents: 'auto',
+      background: theme.bgPanel,
+      color: theme.text,
+      transition: 'border-color 120ms ease, box-shadow 120ms ease'
+    });
+    sel.addEventListener('focus', () => {
+      sel.style.borderColor = theme.teal;
+      sel.style.boxShadow = theme.shadow;
+    });
+    sel.addEventListener('blur', () => {
+      sel.style.borderColor = theme.stroke;
+      sel.style.boxShadow = 'none';
+    });
+    return sel;
+  }
 
-function mkSelect(options, value, theme) {
-  const sel = document.createElement('select');
-  options.forEach(o => {
-    const opt = document.createElement('option');
-    opt.value = o; opt.textContent = o; sel.appendChild(opt);
-  });
-  sel.value = value;
-  Object.assign(sel.style, {
-    padding: '8px',
-    border: `1px solid ${theme.stroke}`,
-    borderRadius: '10px',
-    pointerEvents: 'auto',
-    background: theme.bgPanel,
-    color: theme.text,
-    transition: 'border-color 120ms ease, box-shadow 120ms ease'
-  });
-  sel.addEventListener('focus', () => {
-    sel.style.borderColor = theme.teal;
-    sel.style.boxShadow = theme.shadow;
-  });
-  sel.addEventListener('blur', () => {
-    sel.style.borderColor = theme.stroke;
-    sel.style.boxShadow = 'none';
-  });
-  return sel;
-}
+  function mkSlider(min, max, step, value, theme) {
+    const s = document.createElement('input');
+    s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
+    s.style.width = '100%';
+    s.style.accentColor = theme.teal;
+    s.style.pointerEvents = 'auto';
+    return s;
+  }
 
-function mkSlider(min, max, step, value, theme) {
-  const s = document.createElement('input');
-  s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
-  s.style.width = '100%';
-  s.style.accentColor = theme.teal;
-  s.style.pointerEvents = 'auto';
-  return s;
-}
+  function mkToggle(label, theme) {
+    const wrap = document.createElement('label');
+    const cb = document.createElement('input'); cb.type = 'checkbox';
+    const span = document.createElement('span'); span.textContent = label;
+    Object.assign(wrap.style, { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', pointerEvents: 'auto' });
+    cb.style.accentColor = theme.teal;
+    Object.assign(span.style, { fontWeight: '700', color: theme.text });
+    wrap.appendChild(cb); wrap.appendChild(span);
+    return { wrap, cb };
+  }
 
-function mkToggle(label, theme) {
-  const wrap = document.createElement('label');
-  const cb = document.createElement('input'); cb.type = 'checkbox';
-  const span = document.createElement('span'); span.textContent = label;
-  Object.assign(wrap.style, { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', pointerEvents: 'auto' });
-  cb.style.accentColor = theme.teal;
-  Object.assign(span.style, { fontWeight: '700', color: theme.text });
-  wrap.appendChild(cb); wrap.appendChild(span);
-  return { wrap, cb };
-}
+  function mkButton(label, theme) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    styleButton(b, theme);
+    return b;
+  }
 
-function mkButton(label, theme) {
-  const b = document.createElement('button');
-  b.textContent = label;
-  styleButton(b, theme);
-  return b;
-}
+  function styleButton(b, theme) {
+    Object.assign(b.style, {
+      padding: '8px 12px',
+      borderRadius: '12px',
+      border: `1px solid ${theme.stroke}`,
+      background: theme.bgPanel,
+      color: theme.text,
+      fontWeight: '700',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      boxShadow: theme.shadow,
+      transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
+    });
+    addHoverFX(b, theme);
+  }
 
-function styleButton(b, theme) {
-  Object.assign(b.style, {
-    padding: '8px 12px',
-    borderRadius: '12px',
-    border: `1px solid ${theme.stroke}`,
-    background: theme.bgPanel,
-    color: theme.text,
-    fontWeight: '700',
-    cursor: 'pointer',
-    pointerEvents: 'auto',
-    boxShadow: theme.shadow,
-    transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
-  });
-  addHoverFX(b, theme);
-}
-
-function addHoverFX(b, theme) {
-  b.addEventListener('mouseenter', () => {
-    b.style.transform = 'translateY(-1px) scale(1.02)';
-    b.style.boxShadow = theme.shadow;
-    b.style.background = theme.tealFaint;
-    b.style.borderColor = theme.tealSoft ?? theme.teal;
-  });
-  b.addEventListener('mouseleave', () => {
-    b.style.transform = 'none';
-    b.style.boxShadow = theme.shadow;
-    b.style.background = theme.bgPanel;
-    b.style.borderColor = theme.stroke;
-  });
-  b.addEventListener('mousedown', () => {
-    b.style.transform = 'translateY(0) scale(0.99)';
-  });
-  b.addEventListener('mouseup', () => {
-    b.style.transform = 'translateY(-1px) scale(1.02)';
-  });
+  function addHoverFX(b, theme) {
+    b.addEventListener('mouseenter', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.tealFaint;
+      b.style.borderColor = theme.tealSoft ?? theme.teal;
+    });
+    b.addEventListener('mouseleave', () => {
+      b.style.transform = 'none';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.bgPanel;
+      b.style.borderColor = theme.stroke;
+    });
+    b.addEventListener('mousedown', () => {
+      b.style.transform = 'translateY(0) scale(0.99)';
+    });
+    b.addEventListener('mouseup', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+    });
+  }
 }
