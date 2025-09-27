@@ -440,7 +440,17 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
   }
 
 
-  function viewEndPosition(kind) {
+// Store default distance once (at init)
+let DEFAULT_RADIUS = null;
+
+function initDefaultRadius(app) {
+  const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
+  const cur = currentAzEl(cam, t);
+  DEFAULT_RADIUS = cur.r;   // save the startup distance
+}
+
+// -------------------------------
+function viewEndPosition(kind) {
   const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
   const cur = currentAzEl(cam, t);
   let az = cur.az, el = cur.el;
@@ -451,11 +461,12 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
   if (kind === 'front') { az = Math.PI / 2; el = 0; }
   if (kind === 'right') { az = 0; el = 0; }
 
-  // ---- FIXED DISTANCE (e.g. 10 units) ----
-  const FIXED_RADIUS = 10;
-  const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(FIXED_RADIUS));
+  // ---- use fixed system default radius ----
+  const r = DEFAULT_RADIUS ?? cur.r;  // fallback if not initialized
+  const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(r));
   return pos;
 }
+
 
   const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
   bIsoEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
