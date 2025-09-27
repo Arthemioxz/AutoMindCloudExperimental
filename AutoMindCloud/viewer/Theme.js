@@ -55,4 +55,3 @@ export function injectCssVars(theme = THEME) {
 
 // Export por defecto también (para compatibilidad)
 export default THEME;
-
