@@ -210,7 +210,7 @@ export function createComponentsPanel(app, theme) {
       title.style.color = theme.text;
 
       const small = document.createElement('div');
-      small.textContent = `.${ent.ext || 'asset'} â€¢ ${ent.count} instance${ent.count > 1 ? 's' : ''}`;
+      small.textContent = `.${ent.ext || 'asset'} • ${ent.count} instance${ent.count > 1 ? 's' : ''}`;
       small.style.color = theme.textMuted;
       small.style.fontSize = '12px';
       small.style.marginTop = '2px';
@@ -229,7 +229,7 @@ export function createComponentsPanel(app, theme) {
       row.appendChild(meta);
       ui.list.appendChild(row);
 
-      // Click â†’ isolate this asset
+      // Click → isolate this asset
       row.addEventListener('click', () => {
         try { app.isolate.asset?.(ent.assetKey); } catch (_) {}
       });
@@ -326,6 +326,6 @@ function makeThumbFallback(label, theme) {
   wrap.style.fontSize = '11px';
   wrap.style.color = theme.textMuted;
   wrap.style.textAlign = 'center';
-  wrap.textContent = label || 'â€”';
+  wrap.textContent = label || '—';
   return wrap;
 }
