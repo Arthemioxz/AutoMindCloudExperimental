@@ -5,21 +5,17 @@
 
 // /viewer/Theme.js
 
-/**
- * Apply AutoMindCloud UI classes to standard elements
- * @param {Document|HTMLElement} root 
- */
+
+ // ---- UI Enhancer: etiqueta botones/controles ----
+// Make sure it's exported
 export function enhanceUI(root) {
   root = root || document;
-
-  // Style buttons
   const btns = root.querySelectorAll('button');
   btns.forEach(b => b.classList.add('am-btn'));
-
-  // Style text inputs + selects
   const sels = root.querySelectorAll('select, input[type="text"]');
   sels.forEach(el => el.classList.add('am-input'));
 }
+
 
 
 export const THEME = {
