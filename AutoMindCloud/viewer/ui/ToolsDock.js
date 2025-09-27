@@ -450,9 +450,35 @@ function initDefaultRadius(app) {
 }
 
 // -------------------------------
+// ---------- Fixed default distance support ----------
+let DEFAULT_RADIUS = null;
+
+// Compute and cache the default radius ONCE (distance from camera to controls.target)
+function ensureDefaultRadius() {
+  const cam  = app.camera;
+  const ctrl = app.controls;
+  const t = (ctrl && ctrl.target) ? ctrl.target : new THREE.Vector3();
+
+  if (DEFAULT_RADIUS && DEFAULT_RADIUS > 0) return DEFAULT_RADIUS;
+
+  // Use actual current distance (assumes you've already done your initial fit)
+  DEFAULT_RADIUS = cam.position.distanceTo(t);
+  // Fallback just in case something is weird
+  if (!isFinite(DEFAULT_RADIUS) || DEFAULT_RADIUS <= 0) DEFAULT_RADIUS = 10;
+
+  return DEFAULT_RADIUS;
+}
+
+// Call once after your initial fit/setup (safe to call multiple times)
+ensureDefaultRadius();
+
+// ---------- View destination using the fixed default distance ----------
 function viewEndPosition(kind) {
-  const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
-  const cur = currentAzEl(cam, t);
+  const cam  = app.camera;
+  const ctrl = app.controls;
+  const t = ctrl.target.clone();
+
+  const cur = currentAzEl(cam, t); // your existing utility
   let az = cur.az, el = cur.el;
 
   const topEps = 1e-3;
@@ -461,11 +487,10 @@ function viewEndPosition(kind) {
   if (kind === 'front') { az = Math.PI / 2; el = 0; }
   if (kind === 'right') { az = 0; el = 0; }
 
-  // ---- use fixed system default radius ----
-  const r = DEFAULT_RADIUS ?? cur.r;  // fallback if not initialized
-  const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(r));
-  return pos;
+  const r = ensureDefaultRadius(); // <- fixed, cached default
+  return t.clone().add(dirFromAzEl(az, el).multiplyScalar(r)); // your existing utility
 }
+
 
 
   const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
