@@ -27,10 +27,11 @@ export async function latest(repo, branch) {
     if (!r.ok) throw 0;
     const j = await r.json();
     return (j.sha || '').slice(0, 7) || branch;
-  } catch (_) {
+  } catch {
     return branch;
   }
 }
+
 
 export async function loadScript(url) {
   return new Promise((res, rej) => {
