@@ -444,7 +444,7 @@ export function createToolsDock(app, theme) {
   //  Smooth, spring-tweened explode with robust calibration
   //  - Stable per-part vectors in **parent local space**
   //  - No double-application on nested meshes
-  //  - Recalibrates baseline when amount≈0 or on demand
+  //  - Recalibrates baseline when amountâ‰ˆ0 or on demand
   // ============================================================
   function makeExplodeManager() {
     // Internals
@@ -459,7 +459,7 @@ export function createToolsDock(app, theme) {
     let vel = 0;                // velocity in "amount units / s"
     let raf = null;
     let lastT = 0;
-    const stiffness = 18;       // rad/s (ω) — higher snappier
+    const stiffness = 18;       // rad/s (Ï‰) â€” higher snappier
     const damping   = 2 * Math.sqrt(stiffness); // critical damping
 
     // recalibration timer when at zero
@@ -574,7 +574,7 @@ export function createToolsDock(app, theme) {
       // auto-recalibrate baseline if user keeps it at ~0 for a moment
       if (current === 0) {
         zeroSince ??= now;
-        if (now - zeroSince > 300) { // 300ms stable at zero → recapture as new baseline
+        if (now - zeroSince > 300) { // 300ms stable at zero â†’ recapture as new baseline
           const keepTarget = target; // preserve intent
           prepare();                 // new base from current joint pose
           applyAmount(current);      // re-apply exact zero after recalibration
@@ -644,113 +644,6 @@ export function createToolsDock(app, theme) {
     Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
   }
 
-  /* ---------- Python-to-JS migrated functions ---------- */
-
-  /**
-   * Navigate to predefined view with fixed distance
-   * @param {string} viewType - 'iso', 'top', 'front', 'right'
-   * @param {Object} app - Application instance
-   * @param {number} fixedDistance - Fixed camera distance
-   * @param {number} duration - Animation duration in ms
-   */
-  function navigateToFixedDistanceView(viewType, app, fixedDistance, duration = 700) {
-    const { camera, controls, robot } = app;
-    if (!robot) return;
-    
-    const box = new THREE.Box3().setFromObject(robot);
-    const center = box.getCenter(new THREE.Vector3());
-    
-    let targetAz, targetEl;
-    const topEps = 1e-3;
-    
-    switch (viewType.toLowerCase()) {
-      case 'iso':
-        targetAz = Math.PI * 0.25;
-        targetEl = Math.PI * 0.2;
-        break;
-      case 'top':
-        targetAz = 0;
-        targetEl = Math.PI / 2 - topEps;
-        break;
-      case 'front':
-        targetAz = Math.PI / 2;
-        targetEl = 0;
-        break;
-      case 'right':
-        targetAz = 0;
-        targetEl = 0;
-        break;
-      default:
-        targetAz = Math.PI * 0.25;
-        targetEl = Math.PI * 0.2;
-    }
-    
-    const direction = directionFromAzEl(targetAz, targetEl);
-    const targetPos = center.clone().add(direction.multiplyScalar(fixedDistance));
-    
-    tweenOrbits(camera, controls, targetPos, center, duration);
-  }
-
-  /**
-   * Get direction vector from azimuth and elevation
-   * @param {number} az - Azimuth in radians
-   * @param {number} el - Elevation in radians
-   * @returns {THREE.Vector3} - Direction vector
-   */
-  function directionFromAzEl(az, el) {
-    return new THREE.Vector3(
-      Math.cos(el) * Math.cos(az),
-      Math.sin(el),
-      Math.cos(el) * Math.sin(az)
-    ).normalize();
-  }
-
-  /**
-   * Tween camera orbit to new position
-   * @param {THREE.Camera} camera - Camera to animate
-   * @param {THREE.OrbitControls} controls - Controls to update
-   * @param {THREE.Vector3} toPos - Target position
-   * @param {THREE.Vector3|null} toTarget - Target look-at point
-   * @param {number} duration - Animation duration
-   */
-  function tweenOrbits(camera, controls, toPos, toTarget = null, duration = 700) {
-    const startPos = camera.position.clone();
-    const startTarget = controls.target.clone();
-    const startTime = performance.now();
-    
-    controls.enabled = false;
-    camera.up.set(0, 1, 0);
-    
-    function animate(currentTime) {
-      const elapsed = currentTime - startTime;
-      const progress = Math.min(1, elapsed / duration);
-      const eased = easeInOutCubic(progress);
-      
-      // Interpolate position
-      camera.position.lerpVectors(startPos, toPos, eased);
-      
-      // Interpolate target if provided
-      if (toTarget) {
-        controls.target.lerpVectors(startTarget, toTarget, eased);
-      }
-      
-      controls.update();
-      
-      if (progress < 1) {
-        requestAnimationFrame(animate);
-      } else {
-        controls.enabled = true;
-      }
-    }
-    
-    requestAnimationFrame(animate);
-  }
-
-  // Easing function
-  function easeInOutCubic(t) {
-    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  }
-
   // Defaults
   togGrid.cb.checked = false;
   togGround.cb.checked = false;
@@ -772,24 +665,5 @@ export function createToolsDock(app, theme) {
     explode.destroy();
   }
 
-  return { 
-    open: openDock, 
-    close: closeDock, 
-    set, 
-    destroy,
-    
-    // New utility functions
-    navigateToFixedDistanceView,
-    directionFromAzEl,
-    tweenOrbits,
-    easeInOutCubic
-  };
+  return { open: openDock, close: closeDock, set, destroy };
 }
-
-// Export utility functions
-export { 
-  navigateToFixedDistanceView,
-  directionFromAzEl,
-  tweenOrbits,
-  easeInOutCubic
-};
