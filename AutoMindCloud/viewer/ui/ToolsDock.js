@@ -669,39 +669,6 @@ export function createToolsDock(app, theme) {
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 document.addEventListener('keydown', (e) => {
   if (e.key === 'k' || e.key === 'K' || e.code === 'KeyK') {
     console.log('key pressed');
