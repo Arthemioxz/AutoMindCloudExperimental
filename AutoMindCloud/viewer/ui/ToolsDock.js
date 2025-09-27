@@ -1,4 +1,4 @@
-// /viewer/ui/ToolsDock.js
+// /viewer/ui/ToolsDock.js / checkpoint
 // Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
 /* global THREE */
 
