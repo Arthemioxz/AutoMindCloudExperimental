@@ -723,6 +723,33 @@ function onHotkeyH(e) {
   }
 }
 
+
+
+// Wire the hotkey:
+document.addEventListener('keydown', onHotkeyH, true);
+  
+  //
+  // Public API
+  function destroy() {
+    try { ui.toggleBtn.remove(); } catch (_) {}
+    try { ui.dock.remove(); } catch (_) {}
+    try { ui.root.remove(); } catch (_) {}
+    try {
+      app.renderer.localClippingEnabled = false;
+      app.renderer.clippingPlanes = [];
+      if (secVisual) app.scene.remove(secVisual);
+    } catch (_) {}
+    explode.destroy();
+  }
+
+  return { open: openDock, close: closeDock, set, destroy };
+}
+
+
+
+
+
+
 // 2) Tween executor: ONLY performs the open/close animation
 function toggleDockTween({
   dock,
@@ -788,31 +815,5 @@ function toggleDockTween({
     setLabel(labelOpen);
   }
 }
-
-// Wire the hotkey:
-document.addEventListener('keydown', onHotkeyH, true);
-  
-  //
-  // Public API
-  function destroy() {
-    try { ui.toggleBtn.remove(); } catch (_) {}
-    try { ui.dock.remove(); } catch (_) {}
-    try { ui.root.remove(); } catch (_) {}
-    try {
-      app.renderer.localClippingEnabled = false;
-      app.renderer.clippingPlanes = [];
-      if (secVisual) app.scene.remove(secVisual);
-    } catch (_) {}
-    explode.destroy();
-  }
-
-  return { open: openDock, close: closeDock, set, destroy };
-}
-
-
-
-
-
-
 
 
