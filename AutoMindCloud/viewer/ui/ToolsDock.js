@@ -295,8 +295,9 @@ function openDock()  { set(true);  }
 function closeDock() { set(false); }
 
 // ------------------ EVENT ------------------
-ui.toggleBtn.addEventListener('click', () => set(!isOpen));
-
+//ui.toggleBtn.addEventListener('click', () => set(!isOpen));
+set(!isOpen)
+// cambio
 
   // Snapshot (header only)
   ui.fitBtn.addEventListener('click', () => {
