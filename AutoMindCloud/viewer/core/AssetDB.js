@@ -193,8 +193,8 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
       if (o && o.isMesh && o.geometry) {
         o.userData.__assetKey = key;
         // sombras quedan off por defecto (lo decide UI/Core)
-        o.castShadow = false;
-        o.receiveShadow = false;
+        o.castShadow = true;
+        o.receiveShadow = true;
       }
     });
   }
