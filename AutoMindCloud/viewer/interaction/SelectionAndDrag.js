@@ -182,9 +182,9 @@ export function attachInteraction({
       
       selectionHelper.renderOrder = 10001;
       scene.add(selectionHelper);
-    }
-    return selectionHelper;
-  } else {console.log("5");}
+    } else {console.log("5");}
+    return selectionHelper;}
+  
   
   function refreshSelectionMarker() {
     ensureSelectionHelper();
