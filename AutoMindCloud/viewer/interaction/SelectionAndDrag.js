@@ -216,7 +216,7 @@ export function attachInteraction({
     console.log("insolate setSelectedMeshes = ");
     console.log(typeof meshes);
     console.log(typeof selectedMeshes);
-    //global_target = meshes
+    global_target = meshes
     refreshSelectionMarker();
   }
   function selectFromHit(meshHit) {
