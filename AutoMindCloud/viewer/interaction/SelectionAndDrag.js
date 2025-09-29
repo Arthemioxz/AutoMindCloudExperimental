@@ -182,8 +182,8 @@ export function attachInteraction({
     selectionHelper.renderOrder = 10001;
     scene.add(selectionHelper);
   } else {
-    console.log("5");
-    global_target = null
+    //console.log("5");
+    //global_target = null
   }
   return selectionHelper;
 }
@@ -216,7 +216,7 @@ export function attachInteraction({
     console.log("insolate setSelectedMeshes = ");
     console.log(typeof meshes);
     console.log(typeof selectedMeshes);
-    //global_target = meshes
+    global_target = meshes
     refreshSelectionMarker();
   }
   function selectFromHit(meshHit) {
@@ -397,7 +397,7 @@ export function attachInteraction({
   }
 
   function isolateCurrent() {
-    const target = getLinkRoot(lastHoverMesh || centerPick());//importante
+    const target = global_target//getLinkRoot(lastHoverMesh || centerPick());//importante
     console.log("insolate current type = ");
     console.log(typeof target);
     if (!target) return false;
