@@ -5,7 +5,7 @@
 const HOVER_COLOR = 0x0ea5a6;
 const HOVER_OPACITY = 0.28;
 
-let global_target = null//
+let global_target = false//
 
 function isMovable(j) {
   const t = (j?.jointType || '').toString().toLowerCase();
@@ -195,7 +195,7 @@ export function attachInteraction({
     ensureSelectionHelper();
     if (!robotModel || !selectedMeshes.length) {
       console.log("7");
-      global_target = null
+      global_target = false
       selectionHelper.visible = false; return;
     }
     const box = computeUnionBox(selectedMeshes);
@@ -216,7 +216,7 @@ export function attachInteraction({
     console.log("insolate setSelectedMeshes = ");
     console.log(typeof meshes);
     console.log(typeof selectedMeshes);
-    global_target = meshes
+    //global_target = meshes
     refreshSelectionMarker();
   }
   function selectFromHit(meshHit) {
