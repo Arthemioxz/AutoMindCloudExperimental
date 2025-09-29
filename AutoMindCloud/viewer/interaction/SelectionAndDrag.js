@@ -184,7 +184,8 @@ export function attachInteraction({
       scene.add(selectionHelper);
     }
     return selectionHelper;
-  } {console.log("5");}
+  } else {console.log("5");}
+  
   function refreshSelectionMarker() {
     ensureSelectionHelper();
     if (!robotModel || !selectedMeshes.length) {
