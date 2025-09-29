@@ -436,24 +436,57 @@ function setSelectedMeshes(meshes, root = null) {
     savedTarget = controls.target.clone();
   }
 
+  // show only the selected subtree
   bulkSetVisible(false);
   setVisibleSubtree(target, true);
 
-  // IMPORTANT: force fresh world matrices before measuring
+  // --- crucial: ensure world matrices are fresh before measuring ---
   target.updateWorldMatrix(true, true);
   scene.updateMatrixWorld(true);
 
+  // measure and frame with aspect-aware distance
   const box = new THREE.Box3().setFromObject(target);
+  const center = box.getCenter(new THREE.Vector3());
+  const size   = box.getSize(new THREE.Vector3());
+
   if (camera.isPerspectiveCamera) {
-    fitPerspectiveToBox(camera, controls, box, 1.15);
+    const fov = THREE.MathUtils.degToRad(camera.fov || 60);
+    const halfH = size.y * 0.5;
+    const halfW = size.x * 0.5;
+
+    const distH = halfH / Math.tan(fov * 0.5);
+    const distW = halfW / (Math.tan(fov * 0.5) * camera.aspect);
+    const dist  = Math.max(distH, distW) * 1.15; // small padding
+
+    const viewDir = new THREE.Vector3(1, 0.7, 1).normalize(); // keep your preferred angle
+    camera.position.copy(center.clone().add(viewDir.multiplyScalar(dist)));
   } else {
-    fitOrthoToBox(camera, controls, box, 1.10);
+    // orthographic fit (simple padding)
+    const pad = 1.10;
+    const halfW = (size.x * 0.5) * pad;
+    const halfH = (size.y * 0.5) * pad;
+
+    camera.left   = -Math.max(halfW, halfH * camera.aspect);
+    camera.right  =  Math.max(halfW, halfH * camera.aspect);
+    camera.top    =  Math.max(halfH, halfW / camera.aspect);
+    camera.bottom = -Math.max(halfH, halfW / camera.aspect);
+
+    camera.near = Math.max(0.001, camera.near);
+    camera.far  = Math.max(camera.far, size.length() * 5);
+    camera.updateProjectionMatrix();
+
+    const viewDir = new THREE.Vector3(1, 0.9, 1).normalize();
+    const dist = size.length() * 0.9;
+    camera.position.copy(center.clone().add(viewDir.multiplyScalar(dist)));
   }
 
-  isolating = true; isolatedRoot = target;
+  controls.target.copy(center);
+  controls.update();
+
+  isolating = true;
+  isolatedRoot = target;
   return true;
 }
-
 
 
   function restoreAll() {
