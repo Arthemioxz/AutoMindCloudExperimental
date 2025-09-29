@@ -296,9 +296,9 @@ function closeDock() { set(false); }
 
 // ------------------ EVENT ------------------
 ui.toggleBtn.addEventListener('click', () => set(!isOpen));
-ui.toggleBtn.addEventListener('keydown', onHotkeyH, true);
+//ui.toggleBtn.addEventListener('keydown', onHotkeyH, true);
 //set(!isOpen)
-// cambio
+// h
 
   // Snapshot (header only)
   ui.fitBtn.addEventListener('click', () => {
@@ -704,31 +704,12 @@ function initDefaultRadius(app) {
   //
 
   // 1) Hotkey handler: ONLY detects "h" and calls the tween
-function onHotkeyH(e) {
-  const tag = (e.target && e.target.tagName || '').toLowerCase();
-  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
-
-  if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
-    e.preventDefault();
-    try { console.log('pressed h'); } catch {}
-
-    // Call the tween function (pass your own elements/params)
-    toggleDockTween({
-      dock: ui.dock,                 // REQUIRED: your dock element
-      toggleBtn: ui.toggleBtn,       // optional
-      side: 'left',                  // 'left' | 'right'
-      distance: 520,                 // px off-screen distance
-      labelOpen: 'Open Tools',
-      labelClose: 'Close Tools',
-      onOpenPrepare: () => { try { explode.prepare(); } catch(_) {} }
-    });
-  }
-}
+function onHotkeyH(e) {set(!isOpen)}
 
 
 
 // Wire the hotkey:
-//document.addEventListener('keydown', onHotkeyH, true);
+document.addEventListener('keydown', onHotkeyH, true);
   
   //
   // Public API
