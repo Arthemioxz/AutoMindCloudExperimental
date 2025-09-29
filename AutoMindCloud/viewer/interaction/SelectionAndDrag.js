@@ -211,15 +211,6 @@ export function attachInteraction({
     selectionHelper.updateMatrixWorld(true);
     selectionHelper.visible = true;
   }
-  //function setSelectedMeshes(meshes) {
-    //selectedMeshes = (meshes || []).filter(Boolean);
-    //console.log("insolate setSelectedMeshes = ");
-    //console.log(typeof meshes);
-    //console.log(typeof selectedMeshes);
-    //global_target = selectedMeshes
-    //global_target = global_target = root || false;
-    /refreshSelectionMarker();
-  //}
 
   function setSelectedMeshes(meshes) {
   selectedMeshes = (meshes || []).filter(Boolean);
