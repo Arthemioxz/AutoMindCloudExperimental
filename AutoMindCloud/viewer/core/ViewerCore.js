@@ -23,7 +23,7 @@ function applyDoubleSided(root) {
       if (Array.isArray(n.material)) n.material.forEach(m => (m.side = THREE.DoubleSide));
       else if (n.material) n.material.side = THREE.DoubleSide;
       n.castShadow = false;
-      n.receiveShadow = false;
+      n.receiveShadow = true;
       n.geometry.computeVertexNormals?.();
     }
   });
