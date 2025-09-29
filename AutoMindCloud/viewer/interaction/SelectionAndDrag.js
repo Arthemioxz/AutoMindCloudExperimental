@@ -1,6 +1,6 @@
 // /viewer/interaction/SelectionAndDrag.js
 // Hover + selection + joint dragging + 'i' isolate/restore
-/* global THREE *//
+/* global THREE */
 
 const HOVER_COLOR = 0x0ea5a6;
 const HOVER_OPACITY = 0.28;
@@ -691,4 +691,3 @@ function isolateCurrent() {
     destroy
   };
 }
-
