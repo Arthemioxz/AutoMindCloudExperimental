@@ -211,15 +211,29 @@ export function attachInteraction({
     selectionHelper.updateMatrixWorld(true);
     selectionHelper.visible = true;
   }
-  function setSelectedMeshes(meshes) {
-    selectedMeshes = (meshes || []).filter(Boolean);
-    console.log("insolate setSelectedMeshes = ");
-    console.log(typeof meshes);
-    console.log(typeof selectedMeshes);
+  //function setSelectedMeshes(meshes) {
+    //selectedMeshes = (meshes || []).filter(Boolean);
+    //console.log("insolate setSelectedMeshes = ");
+    //console.log(typeof meshes);
+    //console.log(typeof selectedMeshes);
     //global_target = selectedMeshes
-    global_target = global_target = root || false;
-    refreshSelectionMarker();
-  }
+    //global_target = global_target = root || false;
+    /refreshSelectionMarker();
+  //}
+
+  function setSelectedMeshes(meshes) {
+  selectedMeshes = (meshes || []).filter(Boolean);
+
+  // Derivamos un "root" válido desde el primer mesh seleccionado
+  const root = selectedMeshes[0] ? getLinkRoot(selectedMeshes[0]) : null;
+
+  // Guardamos el root como global_target (Object3D o null)
+  global_target = root || null;
+
+  refreshSelectionMarker();
+}
+
+
   function selectFromHit(meshHit) {
     if (!meshHit) { setSelectedMeshes([]); return; }
     if (selectMode === 'link') {
