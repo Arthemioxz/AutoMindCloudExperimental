@@ -145,31 +145,7 @@ export function createComponentsPanel(app, theme) {
   // cambio
     // Floating toggle button (with hover)
   ui.btn.textContent = 'Open Tools';
-  Object.assign(ui.btn.style, {
-    position: 'absolute',
-    right: '14px',
-    top: '14px',
-    padding: '8px 12px',
-    borderRadius: '12px',
-    border: `1px solid ${theme.stroke}`,
-    background: theme.bgPanel,
-    color: theme.text,
-    fontWeight: '700',
-    boxShadow: theme.shadow,
-    pointerEvents: 'auto',
-    zIndex: '10000',
-    transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
-  });
-  ui.btn.addEventListener('mouseenter', () => {
-    ui.btn.style.transform = 'translateY(-1px) scale(1.02)';
-    ui.btn.style.background = theme.tealFaint;
-    ui.btn.style.borderColor = theme.tealSoft ?? theme.teal;
-  });
-  ui.btn.addEventListener('mouseleave', () => {
-    ui.btn.style.transform = 'none';
-    ui.btn.style.background = theme.bgPanel;
-    ui.btn.style.borderColor = theme.stroke;
-  });
+ 
   
   ui.btn.addEventListener('click', () => {
     set(ui.panel.style.display === 'none');
