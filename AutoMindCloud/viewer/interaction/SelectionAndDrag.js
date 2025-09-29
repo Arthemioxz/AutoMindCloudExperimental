@@ -171,7 +171,7 @@ export function attachInteraction({
   let selectionHelper = null;
   function ensureSelectionHelper() {
   if (!selectionHelper) {
-    global_target = selectionHelper
+    //global_target = selectionHelper
     const box = new THREE.Box3(
       new THREE.Vector3(-0.5, -0.5, -0.5),
       new THREE.Vector3(0.5, 0.5, 0.5)
@@ -390,7 +390,8 @@ export function attachInteraction({
   }
 
   function isolateCurrent() {
-    const target = global_target//getLinkRoot(lastHoverMesh || centerPick());//importante
+    const target = getLinkRoot(lastHoverMesh || centerPick());//importante
+    console.log(typeof target);
     if (!target) return false;
 
     if (!isolating) {
