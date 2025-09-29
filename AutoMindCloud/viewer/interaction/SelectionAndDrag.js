@@ -428,7 +428,85 @@ function setSelectedMeshes(meshes, root = null) {
   }
 
 
-  function isolateCurrent() {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// -------- tiny tween system (no deps) --------
+let _activeTweens = [];
+
+function easeInOutCubic(t){ return t<0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
+
+function tweenVec3(start, end, ms, onUpdate, onComplete, ease=easeInOutCubic){
+  const s = start.clone(), e = end.clone();
+  const st = performance.now();
+  let stopped = false;
+
+  function step(now){
+    if (stopped) return;
+    const t = Math.min(1, (now - st) / ms);
+    const k = ease(t);
+    const v = s.clone().lerp(e, k);
+    onUpdate(v, t);
+    if (t < 1) requestAnimationFrame(step);
+    else { if (onComplete) onComplete(); }
+  }
+  const h = { stop(){ stopped = true; } };
+  _activeTweens.push(h);
+  requestAnimationFrame(step);
+  return h;
+}
+
+function stopAllTweens(){
+  _activeTweens.forEach(t => t.stop && t.stop());
+  _activeTweens.length = 0;
+}
+
+// Tween camera+target together; disables orbit during animation
+function tweenCameraTo(camera, controls, newPos, newTarget, ms=420){
+  stopAllTweens();
+  const oldEnabled = controls.enabled;
+  controls.enabled = false;
+
+  const startPos = camera.position.clone();
+  const startTgt = controls.target.clone();
+
+  // update during tween
+  const upd = () => {
+    camera.updateProjectionMatrix?.();
+    controls.update?.();
+  };
+
+  const t1 = tweenVec3(startPos, newPos, ms, (v)=>{ camera.position.copy(v); upd(); });
+  const t2 = tweenVec3(startTgt, newTarget, ms, (v)=>{ controls.target.copy(v); upd(); }, ()=>{
+    controls.enabled = oldEnabled;
+  });
+
+  return [t1, t2];
+}
+
+function isolateCurrent() {
   const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
   if (!target) return false;
 
@@ -437,50 +515,45 @@ function setSelectedMeshes(meshes, root = null) {
     savedTarget = controls.target.clone();
   }
 
-  // --- capture current view direction BEFORE changing target/visibility ---
+  // preserve current orientation
   let viewDir = camera.position.clone().sub(controls.target).normalize();
   if (!isFinite(viewDir.lengthSq()) || viewDir.lengthSq() < 1e-6) {
-    viewDir.set(1, 0.7, 1).normalize(); // fallback
+    viewDir.set(1, 0.7, 1).normalize();
   }
 
   // show only the selected subtree
   bulkSetVisible(false);
   setVisibleSubtree(target, true);
 
-  // ensure transforms are fresh
+  // refresh matrices & bounds
   target.updateWorldMatrix(true, true);
   scene.updateMatrixWorld(true);
 
-  // measure bounds
   const box = new THREE.Box3().setFromObject(target);
   const center = box.getCenter(new THREE.Vector3());
   const size   = box.getSize(new THREE.Vector3());
-  const sphere = new THREE.Sphere();
-  box.getBoundingSphere(sphere);
-  const r = Math.max(sphere.radius, 1e-6); // avoid 0
+  const sphere = new THREE.Sphere(); box.getBoundingSphere(sphere);
+  const r = Math.max(sphere.radius, 1e-6);
 
+  // compute destination camera position (keep orientation)
+  let destPos;
   if (camera.isPerspectiveCamera) {
-    // Compute both vertical & horizontal FOV to guarantee fit with current aspect
     const vFov = THREE.MathUtils.degToRad(camera.fov || 60);
     const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * (camera.aspect || 1));
-
-    // Distance needed to fit the bounding sphere in each FOV
     const distV = r / Math.sin(vFov * 0.5);
     const distH = r / Math.sin(hFov * 0.5);
+    const dist  = Math.max(distV, distH) * 1.05;  // padding
+    destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
 
-    const dist = Math.max(distV, distH) * 1.05; // small padding
-
-    // Keep the previous orientation: move along the old viewDir to the new center
-    camera.position.copy(center).add(viewDir.clone().multiplyScalar(dist));
-
-    // Make sure near/far encloses the object comfortably
-    camera.near = Math.max(0.01, dist - r * 2);
-    camera.far  = Math.max(camera.near + 1, dist + r * 4);
+    // widen clip just in case during tween
+    const curDist = camera.position.distanceTo(controls.target);
+    const maxDist = Math.max(curDist, dist);
+    camera.near = Math.max(0.01, maxDist - r * 3);
+    camera.far  = Math.max(camera.near + 1, maxDist + r * 6);
     camera.updateProjectionMatrix();
 
   } else {
-    // ORTHO: keep orientation, fit by resizing the ortho box
-    // Project box extents: we’ll conservatively use XY size vs aspect
+    // Ortho: adjust frustum to fit, keep direction, set a reasonable distance
     const pad = 1.10;
     const halfW = (size.x * 0.5) * pad;
     const halfH = (size.y * 0.5) * pad;
@@ -493,22 +566,36 @@ function setSelectedMeshes(meshes, root = null) {
     camera.top    =  maxHalfH;
     camera.bottom = -maxHalfH;
 
-    // Maintain previous direction, just place the camera “in front” of the object
     const dist = Math.max(size.length(), r) * 1.2;
-    camera.position.copy(center).add(viewDir.clone().multiplyScalar(dist));
+    destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
 
-    camera.near = Math.max(0.001, dist - r * 2);
-    camera.far  = Math.max(camera.near + 1, dist + r * 4);
+    camera.near = Math.max(0.001, dist - r * 3);
+    camera.far  = Math.max(camera.near + 1, dist + r * 6);
     camera.updateProjectionMatrix();
   }
 
-  controls.target.copy(center);
-  controls.update();
+  // tween to the new framing (position + target)
+  tweenCameraTo(camera, controls, destPos, center, 450); // 450ms feels nice
 
   isolating = true;
   isolatedRoot = target;
   return true;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
   
   function restoreAll() {
     bulkSetVisible(true);
