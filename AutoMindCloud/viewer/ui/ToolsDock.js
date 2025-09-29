@@ -704,8 +704,14 @@ function initDefaultRadius(app) {
   //
 
   // 1) Hotkey handler: ONLY detects "h" and calls the tween
-function onHotkeyH(e) {set(!isOpen)}
-
+//function onHotkeyH(e) {set(!isOpen)}
+function onHotkeyH(e) {
+  if (e.key === 'k' || e.key === 'K' || e.code === 'KeyK') {
+    e.preventDefault();
+    console.log("pressed k");
+    set(!isOpen);
+  }
+}
 // Wire the hotkey:
 document.addEventListener('keydown', onHotkeyH, true);
   
