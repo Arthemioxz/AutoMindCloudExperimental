@@ -705,13 +705,20 @@ function initDefaultRadius(app) {
 
   // 1) Hotkey handler: ONLY detects "h" and calls the tween
 //function onHotkeyH(e) {set(!isOpen)}
+
 function onHotkeyH(e) {
-  if (e.key === 'k' || e.key === 'K' || e.code === 'KeyK') {
+  const tag = (e.target && e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+
+  if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
     e.preventDefault();
-    console.log("pressed k");
+    try { console.log('pressed h'); } catch {}
+
+    // Call the tween function (pass your own elements/params)
     set(!isOpen);
   }
 }
+  
 // Wire the hotkey:
 document.addEventListener('keydown', onHotkeyH, true);
   
