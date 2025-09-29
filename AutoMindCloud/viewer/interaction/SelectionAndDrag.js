@@ -195,6 +195,7 @@ export function attachInteraction({
     ensureSelectionHelper();
     if (!robotModel || !selectedMeshes.length) {
       console.log("7");
+      global_target = null
       selectionHelper.visible = false; return;
     }
     const box = computeUnionBox(selectedMeshes);
@@ -212,6 +213,9 @@ export function attachInteraction({
   }
   function setSelectedMeshes(meshes) {
     selectedMeshes = (meshes || []).filter(Boolean);
+    console.log(typeof meshes);
+    console.log(typeof selectedMeshes);
+    //global_target = meshes
     refreshSelectionMarker();
   }
   function selectFromHit(meshHit) {
