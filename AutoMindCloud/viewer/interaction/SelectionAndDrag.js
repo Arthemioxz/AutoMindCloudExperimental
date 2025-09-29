@@ -170,22 +170,20 @@ export function attachInteraction({
   let selectedMeshes = [];
   let selectionHelper = null;
   function ensureSelectionHelper() {
+     if (!selectionHelper) {
+    const box = new THREE.Box3(
+      new THREE.Vector3(-0.5, -0.5, -0.5),
+      new THREE.Vector3(0.5, 0.5, 0.5)
+    );
+    console.log("box creada");
 
-    if (!selectionHelper) {
-      const box = new THREE.Box3(
-        new THREE.Vector3(-0.5, -0.5, -0.5),
-        new THREE.Vector3(0.5, 0.5, 0.5)
-      );
-      console.log("box creada");
-      selectionHelper = new THREE.Box3Helper(box, new THREE.Color(HOVER_COLOR));
-      selectionHelper.visible = false;
-      
-      selectionHelper.renderOrder = 10001;
-      scene.add(selectionHelper);
-    } else {
-      console.log("5");
-    }
-    
+    selectionHelper = new THREE.Box3Helper(box, new THREE.Color(HOVER_COLOR));
+    selectionHelper.visible = false;
+    selectionHelper.renderOrder = 10001;
+    scene.add(selectionHelper);
+  } else {
+    console.log("5"); // se ejecuta si ya existía
+  }
     return selectionHelper;
   }
   
