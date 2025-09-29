@@ -170,6 +170,7 @@ export function attachInteraction({
       console.log("box creada");
       selectionHelper = new THREE.Box3Helper(box, new THREE.Color(HOVER_COLOR));
       selectionHelper.visible = false;
+      
       selectionHelper.renderOrder = 10001;
       scene.add(selectionHelper);
     }
@@ -381,6 +382,9 @@ export function attachInteraction({
 
     // Quick frame (no custom tween here; delegate to upper UI tween if needed)
     const box = new THREE.Box3().setFromObject(target);
+    // box ajustada
+    console.log("box ajustada");
+    
     const c = box.getCenter(new THREE.Vector3());
     const s = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(s.x, s.y, s.z) || 1;
