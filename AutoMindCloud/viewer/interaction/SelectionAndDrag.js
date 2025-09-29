@@ -454,82 +454,66 @@ function setSelectedMeshes(meshes, root = null) {
 
 
 // -------- tiny tween system (no deps) --------
+// -------- tiny tween system (single copy) --------
 let _activeTweens = [];
 
-function easeInOutCubic(t){ return t<0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
 
-function tweenVec3(start, end, ms, onUpdate, onComplete, ease=easeInOutCubic){
-  const s = start.clone(), e = end.clone();
+function tweenVec3(start, end, ms, onUpdate, onComplete, ease = easeInOutCubic) {
+  const s = start.clone();
+  const e = end.clone();
   const st = performance.now();
   let stopped = false;
 
-  function step(now){
+  function step(now) {
     if (stopped) return;
     const t = Math.min(1, (now - st) / ms);
     const k = ease(t);
     const v = s.clone().lerp(e, k);
     onUpdate(v, t);
-    if (t < 1) requestAnimationFrame(step);
-    else { if (onComplete) onComplete(); }
+    if (t < 1) {
+      requestAnimationFrame(step);
+    } else {
+      if (onComplete) onComplete();
+    }
   }
-  const h = { stop(){ stopped = true; } };
-  _activeTweens.push(h);
+
+  const handle = { stop() { stopped = true; } };
+  _activeTweens.push(handle);
   requestAnimationFrame(step);
-  return h;
+  return handle;
 }
 
-function stopAllTweens(){
+function stopAllTweens() {
   _activeTweens.forEach(t => t.stop && t.stop());
   _activeTweens.length = 0;
 }
 
 // Tween camera+target together; disables orbit during animation
-function tweenCameraTo(camera, controls, newPos, newTarget, ms=420){
+function tweenCameraTo(camera, controls, newPos, newTarget, ms = 420) {
   stopAllTweens();
-  const oldEnabled = controls.enabled;
+  const wasEnabled = controls.enabled;
   controls.enabled = false;
 
   const startPos = camera.position.clone();
   const startTgt = controls.target.clone();
 
-  // update during tween
-  const upd = () => {
-    camera.updateProjectionMatrix?.();
-    controls.update?.();
+  const tick = () => {
+    if (camera.updateProjectionMatrix) camera.updateProjectionMatrix();
+    if (controls.update) controls.update();
   };
 
-  const t1 = tweenVec3(startPos, newPos, ms, (v)=>{ camera.position.copy(v); upd(); });
-  const t2 = tweenVec3(startTgt, newTarget, ms, (v)=>{ controls.target.copy(v); upd(); }, ()=>{
-    controls.enabled = oldEnabled;
+  tweenVec3(startPos, newPos, ms, (v) => { camera.position.copy(v); tick(); });
+  tweenVec3(startTgt, newTarget, ms, (v, t) => {
+    controls.target.copy(v);
+    tick();
+    if (t === 1) controls.enabled = wasEnabled;
   });
-
-  return [t1, t2];
 }
 
-// --- minimal tween (no deps) ---
-let _activeTweens = [];
-function easeInOutCubic(t){ return t<0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
-function tweenVec3(a, b, ms, onUpdate, onDone, ease=easeInOutCubic){
-  const s=a.clone(), e=b.clone(); const t0=performance.now(); let stop=false;
-  const h={stop(){stop=true;}}; _activeTweens.push(h);
-  (function step(t){
-    if (stop) return;
-    const u=Math.min(1,(t-t0)/ms), k=ease(u), v=s.clone().lerp(e,k);
-    onUpdate(v,u); if(u<1) requestAnimationFrame(step); else onDone&&onDone();
-  })(t0);
-  return h;
-}
-function stopAllTweens(){ _activeTweens.forEach(t=>t.stop&&t.stop()); _activeTweens.length=0; }
-function tweenCameraTo(camera, controls, destPos, destTarget, ms=420){
-  stopAllTweens();
-  const wasEnabled = controls.enabled; controls.enabled = false;
-  const p0 = camera.position.clone(); const t0 = controls.target.clone();
-  const tick = ()=>{ controls.update?.(); };
-  tweenVec3(p0, destPos,   ms, v=>{ camera.position.copy(v); tick(); });
-  tweenVec3(t0, destTarget,ms, v=>{ controls.target.copy(v); tick(); }, ()=>{ controls.enabled = wasEnabled; });
-}
-
-
+// -------- isolateCurrent using your original math, just tweened --------
 function isolateCurrent() {
   const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
   if (!target) return false;
@@ -539,26 +523,24 @@ function isolateCurrent() {
     savedTarget = controls.target.clone();
   }
 
-  // preserve current orientation (use your existing orientation, not a fixed vector)
+  // keep previous orientation
   let viewDir = camera.position.clone().sub(controls.target).normalize();
-  if (!isFinite(viewDir.lengthSq()) || viewDir.lengthSq() < 1e-6) {
-    viewDir.set(1, 0.7, 1).normalize(); // fallback if camera == target
-  }
+  if (viewDir.lengthSq() < 1e-6) viewDir.set(1, 0.7, 1).normalize();
 
-  // show only the selected subtree (unchanged)
+  // visibility (unchanged)
   bulkSetVisible(false);
   setVisibleSubtree(target, true);
 
-  // refresh matrices before measuring (unchanged)
+  // refresh transforms before measuring
   target.updateWorldMatrix(true, true);
   scene.updateMatrixWorld(true);
 
-  // measure bounds (unchanged)
+  // bounds (unchanged)
   const box = new THREE.Box3().setFromObject(target);
   const center = box.getCenter(new THREE.Vector3());
   const size   = box.getSize(new THREE.Vector3());
 
-  // compute destination using YOUR original math (unchanged), but don't apply yet
+  // destination camera position (your formula)
   let destPos;
   if (camera.isPerspectiveCamera) {
     const fov = THREE.MathUtils.degToRad(camera.fov || 60);
@@ -566,11 +548,9 @@ function isolateCurrent() {
     const halfW = size.x * 0.5;
     const distH = halfH / Math.tan(fov * 0.5);
     const distW = halfW / (Math.tan(fov * 0.5) * camera.aspect);
-    const dist  = Math.max(distH, distW) * 3; // your padding factor
-
+    const dist  = Math.max(distH, distW) * 3; // your padding
     destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
   } else {
-    // orthographic path (unchanged logic)
     const pad = 1.10;
     const halfW = (size.x * 0.5) * pad;
     const halfH = (size.y * 0.5) * pad;
@@ -585,16 +565,13 @@ function isolateCurrent() {
     destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
   }
 
-  // 👇 only change vs before: animate instead of snapping
+  // animate instead of snapping
   tweenCameraTo(camera, controls, destPos, center, 450);
 
   isolating = true;
   isolatedRoot = target;
   return true;
 }
-
-
-
 
 
 
