@@ -33,6 +33,9 @@ function computeUnionBox(meshes) {
   const box = new THREE.Box3();
   let has = false;
   const tmp = new THREE.Box3();
+
+  console.log("2");
+  
   for (const m of meshes || []) {
     if (!m) continue;
     tmp.setFromObject(m);
@@ -40,7 +43,7 @@ function computeUnionBox(meshes) {
     else box.union(tmp);
   }
 
-  console.log("2");
+ 
   
   return has ? box : null;
 }
@@ -185,7 +188,9 @@ export function attachInteraction({
       selectionHelper.visible = false; return;
     }
     const box = computeUnionBox(selectedMeshes);
-    if (!box) { selectionHelper.visible = false; return; }
+    if (!box) { selectionHelper.visible = false
+      console.log("3");
+      ; return; }
     selectionHelper.box.copy(box);
     selectionHelper.updateMatrixWorld(true);
     selectionHelper.visible = true;
