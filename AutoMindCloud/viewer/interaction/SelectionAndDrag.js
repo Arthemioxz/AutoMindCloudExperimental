@@ -212,30 +212,54 @@ export function attachInteraction({
     selectionHelper.visible = true;
   }
 
-  function setSelectedMeshes(meshes) {
+function setSelectedMeshes(meshes, root = null) {
   selectedMeshes = (meshes || []).filter(Boolean);
 
-  // Tomamos el primer mesh seleccionado y subimos al "root" estable del componente
-  const root = selectedMeshes[0] ? getLinkRoot(selectedMeshes[0]) : null;
+  // If a root was provided (e.g., the link object), use it
+  if (root && typeof root.traverse === 'function') {
+    global_target = root;
+    refreshSelectionMarker();
+    return;
+  }
 
-  // guardamos el root en global_target (Object3D o null)
-  global_target = root || null;
+  // Otherwise, compute a stable root: lowest common ancestor of all selected meshes
+  function ancestry(n) {
+    const path = [];
+    while (n) { path.push(n); if (n === robotModel) break; n = n.parent; }
+    return path; // nearest -> ... -> robotModel
+  }
+  function commonRoot(objs) {
+    if (!objs.length) return null;
+    let common = ancestry(objs[0]);
+    for (let i = 1; i < objs.length; i++) {
+      const set = new Set(ancestry(objs[i]));
+      common = common.filter(n => set.has(n));
+      if (!common.length) return null;
+    }
+    return common[0] || null; // nearest common ancestor
+  }
+
+  const computed = commonRoot(selectedMeshes) || (selectedMeshes[0] ? getLinkRoot(selectedMeshes[0]) : null);
+  global_target = (computed && typeof computed.traverse === 'function') ? computed : null;
 
   refreshSelectionMarker();
+}
+
+
+
+
+ function selectFromHit(meshHit) {
+  if (!meshHit) { setSelectedMeshes([]); return; }
+
+  if (selectMode === 'link') {
+    const link = findAncestorLink(meshHit, linkSet);
+    const meshes = link ? collectMeshesInLink(link) : [meshHit];
+    setSelectedMeshes(meshes, link || getLinkRoot(meshHit)); // <-- pass root here
+  } else {
+    setSelectedMeshes([meshHit], getLinkRoot(meshHit)); // <-- and here
   }
+}
 
-
-
-  function selectFromHit(meshHit) {
-    if (!meshHit) { setSelectedMeshes([]); return; }
-    if (selectMode === 'link') {
-      const link = findAncestorLink(meshHit, linkSet);
-      const meshes = link ? collectMeshesInLink(link) : [meshHit];
-      setSelectedMeshes(meshes);
-    } else {
-      setSelectedMeshes([meshHit]);
-    }
-  }
 
   // Joint dragging
   let dragState = null;
