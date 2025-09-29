@@ -390,7 +390,7 @@ export function attachInteraction({
   }
 
   function isolateCurrent() {
-    const target = global_target#getLinkRoot(lastHoverMesh || centerPick());//importante
+    const target = global_target//getLinkRoot(lastHoverMesh || centerPick());//importante
     if (!target) return false;
 
     if (!isolating) {
