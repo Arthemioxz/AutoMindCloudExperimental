@@ -295,8 +295,9 @@ function openDock()  { set(true);  }
 function closeDock() { set(false); }
 
 // ------------------ EVENT ------------------
-//ui.toggleBtn.addEventListener('click', () => set(!isOpen));
-set(!isOpen)
+ui.toggleBtn.addEventListener('click', () => set(!isOpen));
+ui.toggleBtn.addEventListener('keydown', onHotkeyH, true);
+//set(!isOpen)
 // cambio
 
   // Snapshot (header only)
@@ -727,7 +728,7 @@ function onHotkeyH(e) {
 
 
 // Wire the hotkey:
-document.addEventListener('keydown', onHotkeyH, true);
+//document.addEventListener('keydown', onHotkeyH, true);
   
   //
   // Public API
