@@ -5,7 +5,7 @@
 const HOVER_COLOR = 0x0ea5a6;
 const HOVER_OPACITY = 0.28;
 
-let global_target = false//
+let global_target = false;//
 
 function isMovable(j) {
   const t = (j?.jointType || '').toString().toLowerCase();
@@ -224,14 +224,15 @@ export function attachInteraction({
   function setSelectedMeshes(meshes) {
   selectedMeshes = (meshes || []).filter(Boolean);
 
-  // Derivamos un "root" válido desde el primer mesh seleccionado
+  // Tomamos el primer mesh seleccionado y subimos al "root" estable del componente
   const root = selectedMeshes[0] ? getLinkRoot(selectedMeshes[0]) : null;
 
-  // Guardamos el root como global_target (Object3D o null)
+  // guardamos el root en global_target (Object3D o null)
   global_target = root || null;
 
   refreshSelectionMarker();
-}
+  }
+
 
 
   function selectFromHit(meshHit) {
