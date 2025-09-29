@@ -22,7 +22,7 @@ function applyDoubleSided(root) {
     if (n.isMesh && n.geometry) {
       if (Array.isArray(n.material)) n.material.forEach(m => (m.side = THREE.DoubleSide));
       else if (n.material) n.material.side = THREE.DoubleSide;
-      n.castShadow = false;
+      n.castShadow = true;
       n.receiveShadow = true;
       n.geometry.computeVertexNormals?.();
     }
@@ -176,7 +176,7 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   const dir = new THREE.DirectionalLight(0xffffff, 1.05);
   dir.position.set(3, 4, 2);
   dir.castShadow = false;
-  dir.shadow.mapSize.set(1024, 1024);
+  dir.shadow.mapSize.set(2048, 2048);
   dir.shadow.camera.near = 0.1;
   dir.shadow.camera.far = 1000;
   scene.add(hemi);
