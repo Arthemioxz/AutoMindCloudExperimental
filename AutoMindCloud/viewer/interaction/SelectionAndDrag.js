@@ -1,4 +1,4 @@
-// /viewer/interaction/SelectionAndDrag.js
+// /viewer/interaction/SelectionAndDrag.js 
 // Hover + selection + joint dragging + 'i' isolate/restore 
 /* global THREE */
 
