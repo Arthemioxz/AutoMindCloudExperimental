@@ -480,6 +480,81 @@ function tweenCameraTo(camera, controls, newPos, newTarget, ms=420){
   return [t1, t2];
 }
 
+function isolateCurrent() {
+  const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
+  if (!target) return false;
+
+  if (!isolating) {
+    savedPos = camera.position.clone();
+    savedTarget = controls.target.clone();
+  }
+
+  // preserve current orientation
+  let viewDir = camera.position.clone().sub(controls.target).normalize();
+  if (!isFinite(viewDir.lengthSq()) || viewDir.lengthSq() < 1e-6) {
+    viewDir.set(1, 0.7, 1).normalize();
+  }
+
+  // show only the selected subtree
+  bulkSetVisible(false);
+  setVisibleSubtree(target, true);
+
+  // refresh matrices & bounds
+  target.updateWorldMatrix(true, true);
+  scene.updateMatrixWorld(true);
+
+  const box = new THREE.Box3().setFromObject(target);
+  const center = box.getCenter(new THREE.Vector3());
+  const size   = box.getSize(new THREE.Vector3());
+  const sphere = new THREE.Sphere(); box.getBoundingSphere(sphere);
+  const r = Math.max(sphere.radius, 1e-6);
+
+  // compute destination camera position (keep orientation)
+  let destPos;
+  if (camera.isPerspectiveCamera) {
+    const vFov = THREE.MathUtils.degToRad(camera.fov || 60);
+    const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * (camera.aspect || 1));
+    const distV = r / Math.sin(vFov * 0.5);
+    const distH = r / Math.sin(hFov * 0.5);
+    const dist  = Math.max(distV, distH) * 1.05;  // padding
+    destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
+
+    // widen clip just in case during tween
+    const curDist = camera.position.distanceTo(controls.target);
+    const maxDist = Math.max(curDist, dist);
+    camera.near = Math.max(0.01, maxDist - r * 3);
+    camera.far  = Math.max(camera.near + 1, maxDist + r * 6);
+    camera.updateProjectionMatrix();
+
+  } else {
+    // Ortho: adjust frustum to fit, keep direction, set a reasonable distance
+    const pad = 1.10;
+    const halfW = (size.x * 0.5) * pad;
+    const halfH = (size.y * 0.5) * pad;
+
+    const maxHalfW = Math.max(halfW, halfH * camera.aspect);
+    const maxHalfH = Math.max(halfH, halfW / camera.aspect);
+
+    camera.left   = -maxHalfW;
+    camera.right  =  maxHalfW;
+    camera.top    =  maxHalfH;
+    camera.bottom = -maxHalfH;
+
+    const dist = Math.max(size.length(), r) * 1.2;
+    destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
+
+    camera.near = Math.max(0.001, dist - r * 3);
+    camera.far  = Math.max(camera.near + 1, dist + r * 6);
+    camera.updateProjectionMatrix();
+  }
+
+  // tween to the new framing (position + target)
+  tweenCameraTo(camera, controls, destPos, center, 450); // 450ms feels nice
+
+  isolating = true;
+  isolatedRoot = target;
+  return true;
+}
 
   
 
