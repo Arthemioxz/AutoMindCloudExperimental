@@ -142,6 +142,21 @@ export function createComponentsPanel(app, theme) {
   function openPanel() { set(true); maybeBuild(); }
   function closePanel() { set(false); }
 
+    // Edicion
+      // Hover/active animations (KEEP)
+    ui.btn.addEventListener('mouseenter', () => {
+      ui.btn.style.transform = 'translateY(-1px) scale(1.02)';
+      ui.btn.style.boxShadow = theme.shadow;
+      ui.btn.style.background = theme.tealFaint;
+      ui.btn.style.borderColor = theme.tealSoft ?? theme.teal;
+    });
+    ui.btn.addEventListener('mouseleave', () => {
+      ui.btn.style.transform = 'none';
+      ui.btn.style.boxShadow = theme.shadow;
+      ui.btn.style.background = theme.bgPanel;
+      ui.btn.style.borderColor = theme.stroke;
+    });
+  
   ui.btn.addEventListener('click', () => {
     set(ui.panel.style.display === 'none');
     if (open) maybeBuild();
