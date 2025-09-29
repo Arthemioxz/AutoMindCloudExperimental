@@ -428,37 +428,44 @@ function setSelectedMeshes(meshes, root = null) {
   }
 
 // -------- tiny tween system (no deps) --------
+// -------- tiny tween system (no deps) --------
 let _activeTweens = [];
 
-function easeInOutCubic(t){ return t<0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
 
-function tweenVec3(start, end, ms, onUpdate, onComplete, ease=easeInOutCubic){
-  const s = start.clone(), e = end.clone();
+function tweenVec3(start, end, ms, onUpdate, onComplete, ease = easeInOutCubic) {
+  const s = start.clone();
+  const e = end.clone();
   const st = performance.now();
   let stopped = false;
 
-  function step(now){
+  function step(now) {
     if (stopped) return;
     const t = Math.min(1, (now - st) / ms);
     const k = ease(t);
     const v = s.clone().lerp(e, k);
     onUpdate(v, t);
-    if (t < 1) requestAnimationFrame(step);
-    else { if (onComplete) onComplete(); }
+    if (t < 1) {
+      requestAnimationFrame(step);
+    } else {
+      if (onComplete) onComplete();
+    }
   }
-  const h = { stop(){ stopped = true; } };
+
+  const h = { stop() { stopped = true; } };
   _activeTweens.push(h);
   requestAnimationFrame(step);
   return h;
 }
 
-function stopAllTweens(){
+function stopAllTweens() {
   _activeTweens.forEach(t => t.stop && t.stop());
   _activeTweens.length = 0;
 }
 
-// Tween camera+target together; disables orbit during animation
-function tweenCameraTo(camera, controls, newPos, newTarget, ms=420){
+function tweenCameraTo(camera, controls, newPos, newTarget, ms = 420) {
   stopAllTweens();
   const oldEnabled = controls.enabled;
   controls.enabled = false;
@@ -466,19 +473,19 @@ function tweenCameraTo(camera, controls, newPos, newTarget, ms=420){
   const startPos = camera.position.clone();
   const startTgt = controls.target.clone();
 
-  // update during tween
-  const upd = () => {
+  function upd() {
     camera.updateProjectionMatrix?.();
     controls.update?.();
-  };
+  }
 
-  const t1 = tweenVec3(startPos, newPos, ms, (v)=>{ camera.position.copy(v); upd(); });
-  const t2 = tweenVec3(startTgt, newTarget, ms, (v)=>{ controls.target.copy(v); upd(); }, ()=>{
-    controls.enabled = oldEnabled;
+  tweenVec3(startPos, newPos, ms, (v) => { camera.position.copy(v); upd(); });
+  tweenVec3(startTgt, newTarget, ms, (v, t) => {
+    controls.target.copy(v);
+    upd();
+    if (t === 1) controls.enabled = oldEnabled;
   });
-
-  return [t1, t2];
 }
+
 
 function isolateCurrent() {
   const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
