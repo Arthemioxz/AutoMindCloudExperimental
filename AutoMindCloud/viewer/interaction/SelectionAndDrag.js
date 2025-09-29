@@ -5,7 +5,7 @@
 const HOVER_COLOR = 0x0ea5a6;
 const HOVER_OPACITY = 0.28;
 
-let target = null//
+let global_target = null//
 
 function isMovable(j) {
   const t = (j?.jointType || '').toString().toLowerCase();
@@ -171,6 +171,7 @@ export function attachInteraction({
   let selectionHelper = null;
   function ensureSelectionHelper() {
   if (!selectionHelper) {
+    global_target = selectionHelper
     const box = new THREE.Box3(
       new THREE.Vector3(-0.5, -0.5, -0.5),
       new THREE.Vector3(0.5, 0.5, 0.5)
@@ -181,6 +182,7 @@ export function attachInteraction({
     scene.add(selectionHelper);
   } else {
     console.log("5");
+    global_target = null
   }
   return selectionHelper;
 }
@@ -388,7 +390,7 @@ export function attachInteraction({
   }
 
   function isolateCurrent() {
-    const target = getLinkRoot(lastHoverMesh || centerPick());//importante
+    const target = global_target#getLinkRoot(lastHoverMesh || centerPick());//importante
     if (!target) return false;
 
     if (!isolating) {
