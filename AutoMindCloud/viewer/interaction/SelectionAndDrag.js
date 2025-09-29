@@ -509,17 +509,6 @@ function setSelectedMeshes(meshes, root = null) {
   isolatedRoot = target;
   return true;
 }
-
-  
-
-  controls.target.copy(center);
-  controls.update();
-
-  isolating = true;
-  isolatedRoot = target;
-  return true;
-}
-
   
   function restoreAll() {
     bulkSetVisible(true);
