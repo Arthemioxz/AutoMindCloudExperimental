@@ -168,6 +168,7 @@ export function attachInteraction({
   let selectedMeshes = [];
   let selectionHelper = null;
   function ensureSelectionHelper() {
+    console.log("5");
     if (!selectionHelper) {
       const box = new THREE.Box3(
         new THREE.Vector3(-0.5, -0.5, -0.5),
