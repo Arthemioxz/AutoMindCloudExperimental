@@ -5,7 +5,7 @@
 const HOVER_COLOR = 0x0ea5a6;
 const HOVER_OPACITY = 0.28;
 
-let target = null\\
+let target = null//
 
 function isMovable(j) {
   const t = (j?.jointType || '').toString().toLowerCase();
