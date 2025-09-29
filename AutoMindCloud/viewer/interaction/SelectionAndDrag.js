@@ -167,6 +167,7 @@ export function attachInteraction({
         new THREE.Vector3(-0.5, -0.5, -0.5),
         new THREE.Vector3(0.5, 0.5, 0.5)
       );
+      console.log("box creada");
       selectionHelper = new THREE.Box3Helper(box, new THREE.Color(HOVER_COLOR));
       selectionHelper.visible = false;
       selectionHelper.renderOrder = 10001;
@@ -367,7 +368,7 @@ export function attachInteraction({
   }
 
   function isolateCurrent() {
-    const target = getLinkRoot(lastHoverMesh || centerPick());
+    const target = getLinkRoot(lastHoverMesh || centerPick());//importante
     if (!target) return false;
 
     if (!isolating) {
