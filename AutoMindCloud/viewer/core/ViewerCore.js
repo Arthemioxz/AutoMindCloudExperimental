@@ -163,7 +163,7 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   rootEl.appendChild(renderer.domElement);
 
   // Shadows OFF by default
-  renderer.shadowMap.enabled = false;
+  renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   // Controls
