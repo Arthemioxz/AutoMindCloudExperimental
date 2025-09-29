@@ -39,6 +39,9 @@ function computeUnionBox(meshes) {
     if (!has) { box.copy(tmp); has = true; }
     else box.union(tmp);
   }
+
+  console.log("2");
+  
   return has ? box : null;
 }
 
@@ -383,7 +386,7 @@ export function attachInteraction({
     // Quick frame (no custom tween here; delegate to upper UI tween if needed)
     const box = new THREE.Box3().setFromObject(target);
     // box ajustada
-    console.log("box ajustada");
+    console.log("1");
     
     const c = box.getCenter(new THREE.Vector3());
     const s = box.getSize(new THREE.Vector3());
