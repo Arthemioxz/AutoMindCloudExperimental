@@ -194,6 +194,7 @@ export function attachInteraction({
   function refreshSelectionMarker() {
     ensureSelectionHelper();
     if (!robotModel || !selectedMeshes.length) {
+      console.log("7");
       selectionHelper.visible = false; return;
     }
     const box = computeUnionBox(selectedMeshes);
