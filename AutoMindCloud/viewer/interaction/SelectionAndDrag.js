@@ -188,9 +188,14 @@ export function attachInteraction({
       selectionHelper.visible = false; return;
     }
     const box = computeUnionBox(selectedMeshes);
+
+    console.log("3");
+    
     if (!box) { selectionHelper.visible = false
-      console.log("3");
       ; return; }
+
+    console.log("4");
+    
     selectionHelper.box.copy(box);
     selectionHelper.updateMatrixWorld(true);
     selectionHelper.visible = true;
