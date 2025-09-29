@@ -456,7 +456,7 @@ function setSelectedMeshes(meshes, root = null) {
 
     const distH = halfH / Math.tan(fov * 0.5);
     const distW = halfW / (Math.tan(fov * 0.5) * camera.aspect);
-    const dist  = Math.max(distH, distW) * 1.15; // small padding
+    const dist  = Math.max(distH, distW) * 5//1.15; // small padding
 
     const viewDir = new THREE.Vector3(1, 0.7, 1).normalize(); // keep your preferred angle
     camera.position.copy(center.clone().add(viewDir.multiplyScalar(dist)));
