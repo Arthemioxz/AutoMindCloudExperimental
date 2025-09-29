@@ -427,7 +427,7 @@ function setSelectedMeshes(meshes, root = null) {
     root?.traverse(o => { if (o.isMesh) o.visible = v; });
   }
 
-  function isolateCurrent() {
+function isolateCurrent() {
   const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
   if (!target) return false;
 
@@ -436,48 +436,69 @@ function setSelectedMeshes(meshes, root = null) {
     savedTarget = controls.target.clone();
   }
 
+  // --- capture current view direction BEFORE changing target/visibility ---
+  let viewDir = camera.position.clone().sub(controls.target).normalize();
+  if (!isFinite(viewDir.lengthSq()) || viewDir.lengthSq() < 1e-6) {
+    viewDir.set(1, 0.7, 1).normalize(); // fallback
+  }
+
   // show only the selected subtree
   bulkSetVisible(false);
   setVisibleSubtree(target, true);
 
-  // --- crucial: ensure world matrices are fresh before measuring ---
+  // ensure transforms are fresh
   target.updateWorldMatrix(true, true);
   scene.updateMatrixWorld(true);
 
-  // measure and frame with aspect-aware distance
+  // measure bounds
   const box = new THREE.Box3().setFromObject(target);
   const center = box.getCenter(new THREE.Vector3());
   const size   = box.getSize(new THREE.Vector3());
+  const sphere = new THREE.Sphere();
+  box.getBoundingSphere(sphere);
+  const r = Math.max(sphere.radius, 1e-6); // avoid 0
 
   if (camera.isPerspectiveCamera) {
-    const fov = THREE.MathUtils.degToRad(camera.fov || 60);
-    const halfH = size.y * 0.5;
-    const halfW = size.x * 0.5;
+    // Compute both vertical & horizontal FOV to guarantee fit with current aspect
+    const vFov = THREE.MathUtils.degToRad(camera.fov || 60);
+    const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * (camera.aspect || 1));
 
-    const distH = halfH / Math.tan(fov * 0.5);
-    const distW = halfW / (Math.tan(fov * 0.5) * camera.aspect);
-    const dist  = Math.max(distH, distW) * 3//1.15; // small padding
+    // Distance needed to fit the bounding sphere in each FOV
+    const distV = r / Math.sin(vFov * 0.5);
+    const distH = r / Math.sin(hFov * 0.5);
 
-    const viewDir = new THREE.Vector3(1, 0.7, 1).normalize(); // keep your preferred angle
-    camera.position.copy(center.clone().add(viewDir.multiplyScalar(dist)));
+    const dist = Math.max(distV, distH) * 1.05; // small padding
+
+    // Keep the previous orientation: move along the old viewDir to the new center
+    camera.position.copy(center).add(viewDir.clone().multiplyScalar(dist));
+
+    // Make sure near/far encloses the object comfortably
+    camera.near = Math.max(0.01, dist - r * 2);
+    camera.far  = Math.max(camera.near + 1, dist + r * 4);
+    camera.updateProjectionMatrix();
+
   } else {
-    // orthographic fit (simple padding)
+    // ORTHO: keep orientation, fit by resizing the ortho box
+    // Project box extents: we’ll conservatively use XY size vs aspect
     const pad = 1.10;
     const halfW = (size.x * 0.5) * pad;
     const halfH = (size.y * 0.5) * pad;
 
-    camera.left   = -Math.max(halfW, halfH * camera.aspect);
-    camera.right  =  Math.max(halfW, halfH * camera.aspect);
-    camera.top    =  Math.max(halfH, halfW / camera.aspect);
-    camera.bottom = -Math.max(halfH, halfW / camera.aspect);
+    const maxHalfW = Math.max(halfW, halfH * camera.aspect);
+    const maxHalfH = Math.max(halfH, halfW / camera.aspect);
 
-    camera.near = Math.max(0.001, camera.near);
-    camera.far  = Math.max(camera.far, size.length() * 5);
+    camera.left   = -maxHalfW;
+    camera.right  =  maxHalfW;
+    camera.top    =  maxHalfH;
+    camera.bottom = -maxHalfH;
+
+    // Maintain previous direction, just place the camera “in front” of the object
+    const dist = Math.max(size.length(), r) * 1.2;
+    camera.position.copy(center).add(viewDir.clone().multiplyScalar(dist));
+
+    camera.near = Math.max(0.001, dist - r * 2);
+    camera.far  = Math.max(camera.near + 1, dist + r * 4);
     camera.updateProjectionMatrix();
-
-    const viewDir = new THREE.Vector3(1, 0.9, 1).normalize();
-    const dist = size.length() * 0.9;
-    camera.position.copy(center.clone().add(viewDir.multiplyScalar(dist)));
   }
 
   controls.target.copy(center);
@@ -488,7 +509,7 @@ function setSelectedMeshes(meshes, root = null) {
   return true;
 }
 
-
+  
   function restoreAll() {
     bulkSetVisible(true);
     if (savedPos && savedTarget) {
