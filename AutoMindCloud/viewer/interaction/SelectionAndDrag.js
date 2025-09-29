@@ -213,6 +213,7 @@ export function attachInteraction({
   }
   function setSelectedMeshes(meshes) {
     selectedMeshes = (meshes || []).filter(Boolean);
+    console.log("insolate setSelectedMeshes = ");
     console.log(typeof meshes);
     console.log(typeof selectedMeshes);
     //global_target = meshes
@@ -397,6 +398,7 @@ export function attachInteraction({
 
   function isolateCurrent() {
     const target = getLinkRoot(lastHoverMesh || centerPick());//importante
+    console.log("insolate current type = ");
     console.log(typeof target);
     if (!target) return false;
 
