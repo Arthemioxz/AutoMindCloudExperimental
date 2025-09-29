@@ -404,42 +404,66 @@ export function attachInteraction({
   }
 
   function isolateCurrent() {
-    const target = global_target || getLinkRoot(lastHoverMesh || centerPick());//getLinkRoot(lastHoverMesh || centerPick());//importante
-    console.log("insolate current type = ");
-    console.log(typeof target);
-    if (!target) return false;
+  const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
+  if (!target) return false;
 
-    if (!isolating) {
-      savedPos = camera.position.clone();
-      savedTarget = controls.target.clone();
-    }
-
-    bulkSetVisible(false);
-    setVisibleSubtree(target, true);
-
-    // Quick frame (no custom tween here; delegate to upper UI tween if needed)
-    const box = new THREE.Box3().setFromObject(target);
-    // box ajustada
-    console.log("1");
-    
-    const c = box.getCenter(new THREE.Vector3());
-    const s = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(s.x, s.y, s.z) || 1;
-    if (camera.isPerspectiveCamera) {
-      const fov = (camera.fov || 60) * Math.PI / 180;
-      const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
-      camera.position.copy(c.clone().add(new THREE.Vector3(1, 0.7, 1).normalize().multiplyScalar(dist)));
-    } else {
-      camera.left = -maxDim; camera.right = maxDim; camera.top = maxDim; camera.bottom = -maxDim;
-      camera.near = Math.max(maxDim / 1000, 0.001); camera.far = Math.max(maxDim * 1500, 1500);
-      camera.updateProjectionMatrix();
-      camera.position.copy(c.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
-    }
-    controls.target.copy(c); controls.update();
-
-    isolating = true; isolatedRoot = target;
-    return true;
+  if (!isolating) {
+    savedPos = camera.position.clone();
+    savedTarget = controls.target.clone();
   }
+
+  // show only the selected subtree
+  bulkSetVisible(false);
+  setVisibleSubtree(target, true);
+
+  // --- crucial: ensure world matrices are fresh before measuring ---
+  target.updateWorldMatrix(true, true);
+  scene.updateMatrixWorld(true);
+
+  // measure and frame with aspect-aware distance
+  const box = new THREE.Box3().setFromObject(target);
+  const center = box.getCenter(new THREE.Vector3());
+  const size   = box.getSize(new THREE.Vector3());
+
+  if (camera.isPerspectiveCamera) {
+    const fov = THREE.MathUtils.degToRad(camera.fov || 60);
+    const halfH = size.y * 0.5;
+    const halfW = size.x * 0.5;
+
+    const distH = halfH / Math.tan(fov * 0.5);
+    const distW = halfW / (Math.tan(fov * 0.5) * camera.aspect);
+    const dist  = Math.max(distH, distW) * 1.15; // small padding
+
+    const viewDir = new THREE.Vector3(1, 0.7, 1).normalize(); // keep your preferred angle
+    camera.position.copy(center.clone().add(viewDir.multiplyScalar(dist)));
+  } else {
+    // orthographic fit (simple padding)
+    const pad = 1.10;
+    const halfW = (size.x * 0.5) * pad;
+    const halfH = (size.y * 0.5) * pad;
+
+    camera.left   = -Math.max(halfW, halfH * camera.aspect);
+    camera.right  =  Math.max(halfW, halfH * camera.aspect);
+    camera.top    =  Math.max(halfH, halfW / camera.aspect);
+    camera.bottom = -Math.max(halfH, halfW / camera.aspect);
+
+    camera.near = Math.max(0.001, camera.near);
+    camera.far  = Math.max(camera.far, size.length() * 5);
+    camera.updateProjectionMatrix();
+
+    const viewDir = new THREE.Vector3(1, 0.9, 1).normalize();
+    const dist = size.length() * 0.9;
+    camera.position.copy(center.clone().add(viewDir.multiplyScalar(dist)));
+  }
+
+  controls.target.copy(center);
+  controls.update();
+
+  isolating = true;
+  isolatedRoot = target;
+  return true;
+}
+
 
   function restoreAll() {
     bulkSetVisible(true);
