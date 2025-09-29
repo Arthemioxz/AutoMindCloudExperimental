@@ -142,11 +142,6 @@ export function createComponentsPanel(app, theme) {
   function openPanel() { set(true); maybeBuild(); }
   function closePanel() { set(false); }
 
-  // cambio
-    // Floating toggle button (with hover)
-  ui.btn.textContent = 'Open Tools';
- 
-  
   ui.btn.addEventListener('click', () => {
     set(ui.panel.style.display === 'none');
     if (open) maybeBuild();
