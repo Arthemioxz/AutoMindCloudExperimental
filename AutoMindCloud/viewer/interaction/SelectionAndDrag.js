@@ -566,7 +566,7 @@ function isolateCurrent() {
     camera.top    =  maxHalfH;
     camera.bottom = -maxHalfH;
 
-    const dist = Math.max(size.length(), r) * 1.2;
+    const dist = Math.max(size.length(), r) * 3;
     destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
 
     camera.near = Math.max(0.001, dist - r * 3);
