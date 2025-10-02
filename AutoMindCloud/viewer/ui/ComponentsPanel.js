@@ -152,8 +152,6 @@ export function createComponentsPanel(app, theme) {
 let open = false;        // start hidden
 let building = false;    // guard to avoid concurrent builds
 let disposed = false;    // if you use it in destroy()
-
-maybeBuild();
   
 // ---- Right-side slide config
 const CLOSED_TX = 520; // px; off-screen to the RIGHT
@@ -450,5 +448,5 @@ function makeThumbFallback(label, theme) {
 
 
 
-
+maybeBuild();
 
