@@ -153,6 +153,8 @@ let open = false;        // start hidden
 let building = false;    // guard to avoid concurrent builds
 let disposed = false;    // if you use it in destroy()
 
+maybeBuild();
+  
 // ---- Right-side slide config
 const CLOSED_TX = 520; // px; off-screen to the RIGHT
 
@@ -179,7 +181,7 @@ function set(isOpen) {
     ui.panel.style.opacity = '1';
     ui.panel.style.transform = 'translateX(0)';               // slide in (right → left)
     ui.panel.style.pointerEvents = 'auto';
-    maybeBuild();
+    //maybeBuild();
   } else {
     ui.panel.style.opacity = '0';
     ui.panel.style.transform = `translateX(${CLOSED_TX}px)`;  // slide out to the right
