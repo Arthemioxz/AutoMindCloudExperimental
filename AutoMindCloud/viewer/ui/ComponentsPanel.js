@@ -147,6 +147,12 @@ export function createComponentsPanel(app, theme) {
   // Attach to the same container as the viewer canvas (assume renderer DOM parent)
   const host = (app?.renderer?.domElement?.parentElement) || document.body;
   host.appendChild(ui.root);
+
+
+// ---- State (must be declared before set()/maybeBuild()/hotkeys)
+let open = true;       // start visible
+let building = false;  // guard to avoid concurrent builds
+let disposed = false;  // if you use it in destroy()
   
   // ---- Right-side slide config
 const CLOSED_TX = 520; // px; off-screen to the RIGHT
@@ -208,10 +214,10 @@ set(true);
       ui.btn.style.borderColor = theme.stroke;
     });
   
-  ui.btn.addEventListener('click', () => {
-    set(ui.panel.style.display === 'none');
-    if (open) maybeBuild();
-  });
+  //ui.btn.addEventListener('click', () => {
+   // set(ui.panel.style.display === 'none');
+    //if (open) maybeBuild();
+  //});
 
   
   ui.showAllBtn.addEventListener('click', () => {
@@ -370,8 +376,6 @@ document.addEventListener('keydown', onHotkeyC, true);
   return { open: openPanel, close: closePanel, set, refresh, destroy };
 
 
-
-x
 
 }
 
