@@ -149,7 +149,7 @@ export function createComponentsPanel(app, theme) {
   host.appendChild(ui.root);
 
 // ---- State (must be declared before set()/maybeBuild()/hotkeys)
-maybeBuild();
+
 
 let open = false;        // start hidden
 let building = false;    // guard to avoid concurrent builds
@@ -194,7 +194,8 @@ ui.btn.addEventListener('click', () => set(!open));
 
 // Ensure initial hidden state is applied
 set(false);
-
+  
+maybeBuild();
 
   
 
