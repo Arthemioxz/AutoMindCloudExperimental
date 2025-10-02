@@ -455,9 +455,37 @@ function setSelectedMeshes(meshes, root = null) {
 
 
 
-// -------- isolateCurrent using your original math, with toggle + zoom repaired --------
+
+// =================== CAMERA TWEEN HELPER ===================
+function tweenCameraTo(camera, controls, destPos, destTarget, duration = 500) {
+  const startPos    = camera.position.clone();
+  const startTarget = controls.target.clone();
+  const endPos      = destPos.clone();
+  const endTarget   = destTarget.clone();
+  const startTime   = performance.now();
+
+  function animate() {
+    const now = performance.now();
+    const t = Math.min(1, (now - startTime) / duration);
+
+    // easeInOutCubic
+    const k = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+    camera.position.lerpVectors(startPos, endPos, k);
+    controls.target.lerpVectors(startTarget, endTarget, k);
+
+    camera.lookAt(controls.target);
+    controls.update();
+
+    if (t < 1) requestAnimationFrame(animate);
+  }
+
+  requestAnimationFrame(animate);
+}
+
+// =================== ISOLATE FUNCTION ===================
 function isolateCurrent() {
-  // if already isolating, pressing 'i' again RESTORES everything (toggle)
+  // --- toggle back if already isolating ---
   if (isolating) {
     bulkSetVisible(true);
 
@@ -477,6 +505,7 @@ function isolateCurrent() {
     return true;
   }
 
+  // --- isolate new target ---
   const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
   if (!target) return false;
 
@@ -544,6 +573,7 @@ function isolateCurrent() {
   camera.far  = d + r * 30;
   camera.updateProjectionMatrix();
 
+  // animate to isolated target
   tweenCameraTo(camera, controls, destPos, center, 450);
 
   isolating = true;
