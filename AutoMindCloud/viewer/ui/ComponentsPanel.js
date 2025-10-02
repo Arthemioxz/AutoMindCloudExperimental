@@ -29,26 +29,6 @@
  */
 
 
-// Reusable hover effect for any clickable element
-function addHover(el, {
-  bgHover = theme.tealFaint,
-  borderHover = (theme.tealSoft ?? theme.teal),
-  bgIdle = theme.bgPanel,
-  borderIdle = theme.stroke,
-  lift = true
-} = {}) {
-  el.style.transition = 'transform .08s ease, box-shadow .12s ease, background .12s ease, border-color .12s ease';
-  el.addEventListener('mouseenter', () => {
-    if (lift) el.style.transform = 'translateY(-1px) scale(1.02)';
-    el.style.background = bgHover;
-    el.style.borderColor = borderHover;
-  });
-  el.addEventListener('mouseleave', () => {
-    if (lift) el.style.transform = 'none';
-    el.style.background = bgIdle;
-    el.style.borderColor = borderIdle;
-  });
-}
 
 
 export function createComponentsPanel(app, theme) {
@@ -79,9 +59,6 @@ export function createComponentsPanel(app, theme) {
     ui.showAllBtn.style.background = theme.bgPanel;
     ui.showAllBtn.style.borderColor = theme.stroke;
   });
-
-  // Top-left launcher button
-  addHover(ui.btn);
 
   
   // ---- Styles
