@@ -155,7 +155,6 @@ export function createComponentsPanel(app, theme) {
 
   // ---- Behavior
   function set(isOpen) {
-    if (open) maybeBuild();
     open = !!isOpen;
     ui.panel.style.display = open ? 'block' : 'none';
   }
@@ -329,7 +328,7 @@ function onHotkeyC(e) {
 
     // Call the tween function (pass your own elements/params)
     set(!open);
-    //if (open) maybeBuild();
+    if (open) maybeBuild();
   }
 }
 
