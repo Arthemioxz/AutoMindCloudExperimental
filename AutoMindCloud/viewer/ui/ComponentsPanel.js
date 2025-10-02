@@ -310,11 +310,7 @@ export function createComponentsPanel(app, theme) {
   // Initial defaults
   set(false);
 
-  return { open: openPanel, close: closePanel, set, refresh, destroy };
-
-
-
-  
+    
 // 1) Hotkey handler: ONLY detects "c" and calls the tween
 //function onHotkeyH(e) {set(!isOpen)}
 
@@ -339,6 +335,13 @@ function onHotkeyC(e) {
 
 // Wire the hotkey:
 document.addEventListener('keydown', onHotkeyC, true);
+
+  
+  return { open: openPanel, close: closePanel, set, refresh, destroy };
+
+
+
+x
 
 }
 
