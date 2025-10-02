@@ -96,7 +96,7 @@ export function createComponentsPanel(app, theme) {
       boxShadow: theme.shadow,
       borderRadius: '18px',
       overflow: 'hidden',
-      display: 'none',
+      display: 'true',
       pointerEvents: 'auto'
     },
     header: {
@@ -155,7 +155,7 @@ export function createComponentsPanel(app, theme) {
   let disposed = false;
 
   // ---- Behavior
-  ui.panel.style.display = true ? 'block' : 'none';
+  //ui.panel.style.display = true ? 'block' : 'none';
   
   function set(isOpen) {
     open = !!isOpen;
