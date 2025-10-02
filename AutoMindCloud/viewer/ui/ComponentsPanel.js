@@ -148,12 +148,6 @@ export function createComponentsPanel(app, theme) {
   const host = (app?.renderer?.domElement?.parentElement) || document.body;
   host.appendChild(ui.root);
 
-  // ---- State
-  const CLOSED_TX = -520;
-  let open = false;
-  let building = false; // prevent concurrent refresh
-  let disposed = false;
-
 // ---- Right-side slide config
 const CLOSED_TX = 520; // px; off-screen to the RIGHT
 
