@@ -453,66 +453,127 @@ function setSelectedMeshes(meshes, root = null) {
 
 
 
-// -------- tiny tween system (no deps) --------
-// -------- tiny tween system (single copy) --------
-let _activeTweens = [];
 
-function easeInOutCubic(t) {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
 
-function tweenVec3(start, end, ms, onUpdate, onComplete, ease = easeInOutCubic) {
-  const s = start.clone();
-  const e = end.clone();
-  const st = performance.now();
-  let stopped = false;
 
-  function step(now) {
-    if (stopped) return;
-    const t = Math.min(1, (now - st) / ms);
-    const k = ease(t);
-    const v = s.clone().lerp(e, k);
-    onUpdate(v, t);
-    if (t < 1) {
-      requestAnimationFrame(step);
-    } else {
-      if (onComplete) onComplete();
-    }
+
+
+
+// -------- isolateCurrent using your original math, with robust zoom/clip --------
+function isolateCurrent() {
+  const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
+  if (!target) return false;
+
+  if (!isolating) {
+    savedPos    = camera.position.clone();
+    savedTarget = controls.target.clone();
   }
 
-  const handle = { stop() { stopped = true; } };
-  _activeTweens.push(handle);
-  requestAnimationFrame(step);
-  return handle;
-}
+  // keep previous orientation
+  let viewDir = camera.position.clone().sub(controls.target).normalize();
+  if (viewDir.lengthSq() < 1e-6) viewDir.set(1, 0.7, 1).normalize();
 
-function stopAllTweens() {
-  _activeTweens.forEach(t => t.stop && t.stop());
-  _activeTweens.length = 0;
-}
+  // visibility (unchanged)
+  bulkSetVisible(false);
+  setVisibleSubtree(target, true);
 
-// Tween camera+target together; disables orbit during animation
-function tweenCameraTo(camera, controls, newPos, newTarget, ms = 420) {
-  stopAllTweens();
-  const wasEnabled = controls.enabled;
-  controls.enabled = false;
+  // refresh transforms before measuring
+  target.updateWorldMatrix(true, true);
+  scene.updateMatrixWorld(true);
 
-  const startPos = camera.position.clone();
-  const startTgt = controls.target.clone();
+  // bounds (unchanged)
+  const box    = new THREE.Box3().setFromObject(target);
+  const center = box.getCenter(new THREE.Vector3());
+  const size   = box.getSize(new THREE.Vector3());
 
-  const tick = () => {
-    if (camera.updateProjectionMatrix) camera.updateProjectionMatrix();
-    if (controls.update) controls.update();
+  // also get a robust radius (used for zoom/near/far)
+  const sphere = new THREE.Sphere();
+  box.getBoundingSphere(sphere);
+  const r = Math.max(1e-4, sphere.radius);
+
+  // destination camera position (your formula) + tiny depth allowance
+  let destPos, dist;
+  if (camera.isPerspectiveCamera) {
+    const fov   = THREE.MathUtils.degToRad(camera.fov || 60);
+    const halfH = size.y * 0.5;
+    const halfW = size.x * 0.5;
+    const distH = halfH / Math.tan(fov * 0.5);
+    const distW = halfW / (Math.tan(fov * 0.5) * (camera.aspect || 1));
+    dist        = Math.max(distH, distW) * 3 + size.z * 0.5; // keep your *3 padding, add depth
+    destPos     = center.clone().add(viewDir.clone().multiplyScalar(dist));
+  } else {
+    const pad   = 1.10;
+    const halfW = (size.x * 0.5) * pad;
+    const halfH = (size.y * 0.5) * pad;
+
+    camera.left   = -Math.max(halfW, halfH * (camera.aspect || 1));
+    camera.right  =  Math.max(halfW, halfH * (camera.aspect || 1));
+    camera.top    =  Math.max(halfH, halfW / (camera.aspect || 1));
+    camera.bottom = -Math.max(halfH, halfW / (camera.aspect || 1));
+    camera.updateProjectionMatrix();
+
+    dist    = size.length() * 0.9;
+    destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
+  }
+
+  // --- make OrbitControls behave while zooming ---
+  // aim interaction at the object center so dolly/zoom stays on target
+  controls.target.copy(center);
+
+  // keep the camera from going inside or infinitely far
+  controls.minDistance = Math.max(0.02, r * 0.25);
+  controls.maxDistance = r * 50;
+
+  // set initial near/far tight to current distance to avoid clipping/z-fight
+  const initialD = Math.max(controls.minDistance, dist);
+  camera.near = Math.max(0.001, initialD / 200);
+  camera.far  = initialD + r * 10;
+  camera.updateProjectionMatrix();
+
+  // keep near/far correct while the user zooms (attach once; reuse if present)
+  if (controls._isoClipHandler) {
+    controls.removeEventListener('change', controls._isoClipHandler);
+  }
+  controls._isoClipHandler = () => {
+    const d = camera.position.distanceTo(controls.target);
+    const newNear = Math.max(0.001, d / 200);
+    const newFar  = d + r * 10;
+    if (Math.abs(camera.near - newNear) > 1e-5 || Math.abs(camera.far - newFar) > 1e-3) {
+      camera.near = newNear;
+      camera.far  = Math.max(camera.near + 1e-3, newFar);
+      camera.updateProjectionMatrix();
+    }
   };
+  controls.addEventListener('change', controls._isoClipHandler);
 
-  tweenVec3(startPos, newPos, ms, (v) => { camera.position.copy(v); tick(); });
-  tweenVec3(startTgt, newTarget, ms, (v, t) => {
-    controls.target.copy(v);
-    tick();
-    if (t === 1) controls.enabled = wasEnabled;
-  });
+  // animate instead of snapping
+  tweenCameraTo(camera, controls, destPos, center, 450);
+
+  isolating = true;
+  isolatedRoot = target;
+  return true;
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
 
 
 
