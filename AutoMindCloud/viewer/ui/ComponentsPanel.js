@@ -149,14 +149,17 @@ export function createComponentsPanel(app, theme) {
   host.appendChild(ui.root);
 
   // ---- State
+  const CLOSED_TX = -520;
   let open = false;
   let building = false; // prevent concurrent refresh
   let disposed = false;
 
   // ---- Behavior
+  ui.panel.style.display = open
+  
   function set(isOpen) {
     open = !!isOpen;
-    ui.panel.style.display = open ? 'block' : 'none';
+    //ui.panel.style.display = open ? 'block' : 'none';
   }
   
   function openPanel() { set(true); maybeBuild(); }
