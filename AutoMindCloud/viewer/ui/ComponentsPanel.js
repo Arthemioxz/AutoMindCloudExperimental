@@ -395,7 +395,7 @@ function onHotkeyC(e) {
     try { console.log('pressed c'); } catch {}
 
     // Call the tween function (pass your own elements/params)
-    set(ui.panel.style.display === 'none');
+    set(!open);
     if (open) maybeBuild();
   }
 }
