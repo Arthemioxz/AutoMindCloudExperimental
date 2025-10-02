@@ -150,7 +150,7 @@ export function createComponentsPanel(app, theme) {
 
 
 // ---- State (must be declared before set()/maybeBuild()/hotkeys)
-let open = true;       // start visible
+let open = false;       // start visible
 let building = false;  // guard to avoid concurrent builds
 let disposed = false;  // if you use it in destroy()
   
@@ -192,7 +192,7 @@ function set(isOpen) {
 ui.btn.addEventListener('click', () => set(!open));
 
 // START VISIBLE
-set(true);
+set(false);
 
 
   
