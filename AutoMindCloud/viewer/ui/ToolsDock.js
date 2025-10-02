@@ -280,7 +280,8 @@ function set(open) {
     ui.dock.style.pointerEvents = 'auto';
     ui.toggleBtn.textContent = 'Close Tools';
     try { styleDockLeft(ui.dock); } catch(_) {}
-    try { explode.prepare(); } catch(_) {}
+    //try { explode.prepare(); } catch(_) {}
+    syncExplodeUI();
   } else {
     // CLOSE tween
     ui.dock.style.opacity = '0';
@@ -495,6 +496,13 @@ function initDefaultRadius(app) {
   //  - No double-application on nested meshes
   //  - Recalibrates baseline when amount≈0 or on demand
   // ============================================================
+
+   function amount() {
+    // Use `current` so the UI reflects the settled spring position.
+    // (If you prefer the intended position, return `target` instead.)
+    return current;
+  }
+  
   function makeExplodeManager() {
     // Internals
     const registry = []; // { node, baseLocal:Vector3, dirLocal:Vector3 }
@@ -665,7 +673,7 @@ function initDefaultRadius(app) {
       raf = null;
     }
 
-    return { prepare, setTarget, immediate, recalibrate, destroy };
+    return { prepare, setTarget, immediate, recalibrate, destroy, amount };
   }
 
   const explode = makeExplodeManager();
@@ -686,6 +694,13 @@ function initDefaultRadius(app) {
   //     div.addEventListener('dblclick', () => explode.recalibrate());
   //   }
   // });
+
+  function syncExplodeUI() {
+  try {
+    const a = explode.amount();
+    if (!Number.isNaN(a)) explodeSlider.value = String(Math.max(0, Math.min(1, a)));
+  } catch {}
+}
 
   // ---------- Utilities ----------
   function styleDockLeft(dockEl) {
