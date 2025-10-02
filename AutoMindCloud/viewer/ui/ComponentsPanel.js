@@ -158,10 +158,41 @@ export function createComponentsPanel(app, theme) {
   ui.panel.style.display = 'block';
   maybeBuild();  
   open = true;  // keep state consistent with what the user sees
+
+  // Prepare dock styles once
+Object.assign(ui.panel.style, {
+  display: 'block',
+  willChange: 'transform, opacity',
+  transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
+  transform: `translateX(${CLOSED_TX}px)`,
+  opacity: '0',
+  pointerEvents: 'none'
+});
+
+    // ---------- Utilities ----------
+  function styleDockLeft(dockEl) {
+    dockEl.classList.add('viewer-dock-fix');
+    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
+  }
   
   function set(isOpen) {
     open = !!isOpen;
-    ui.panel.style.display = open ? 'block' : 'none';
+    //ui.panel.style.display = open ? 'block' : 'none';
+      if (open) {
+    // OPEN tween
+    ui.panel.style.opacity = '1';
+    ui.panel.style.transform = 'translateX(0)';
+    ui.panel.style.pointerEvents = 'auto';
+   
+    try { styleDockLeft(ui.panel); } catch(_) {}
+    try { explode.prepare(); } catch(_) {}
+  } else {
+    // CLOSE tween
+    ui.panel.style.opacity = '0';
+    ui.panel.style.transform = `translateX(${CLOSED_TX}px)`;
+    ui.panel.style.pointerEvents = 'none';
+
+  }
   }
   
   function openPanel() { set(true); maybeBuild(); }
