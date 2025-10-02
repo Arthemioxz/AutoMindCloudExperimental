@@ -1,4 +1,4 @@
-// /viewer/ui/ComponentsPanel.js
+// /viewer/ui/ComponentsPanel.js 
 // Floating gallery of components (assets) with thumbnails + isolate/show-all
 // Dependencies: None (expects an app facade and a theme object)
 
