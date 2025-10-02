@@ -313,7 +313,7 @@ export function createComponentsPanel(app, theme) {
   }
 
   // Initial defaults
-  set(false);
+  //set(false);
 
     
 // 1) Hotkey handler: ONLY detects "c" and calls the tween
