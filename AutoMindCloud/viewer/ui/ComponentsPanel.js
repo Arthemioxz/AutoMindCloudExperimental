@@ -324,7 +324,7 @@ function onHotkeyC(e) {
 
     // Call the tween function (pass your own elements/params)
     set(!open);
-    if (open) maybeBuild();
+    //if (open) maybeBuild();
   }
 }
 
@@ -336,6 +336,7 @@ function onHotkeyC(e) {
 // Wire the hotkey:
 document.addEventListener('keydown', onHotkeyC, true);
 
+maybeBuild();
   
   return { open: openPanel, close: closePanel, set, refresh, destroy };
 
