@@ -81,7 +81,7 @@ export function createComponentsPanel(app, theme) {
   });
 
   // Top-left launcher button
-addHover(ui.btn);
+  addHover(ui.btn);
 
   
   // ---- Styles
