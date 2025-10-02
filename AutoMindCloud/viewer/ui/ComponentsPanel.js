@@ -155,7 +155,7 @@ export function createComponentsPanel(app, theme) {
   let disposed = false;
 
   // ---- Behavior
-  ui.panel.style.display = true
+  ui.panel.style.display = true ? 'block' : 'none';
   
   function set(isOpen) {
     open = !!isOpen;
