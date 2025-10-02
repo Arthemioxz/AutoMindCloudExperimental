@@ -42,6 +42,7 @@ export function createComponentsPanel(app, theme) {
     list: document.createElement('div')
   };
 
+  
   //efecto botones
 
     ui.showAllBtn.addEventListener('mouseenter', () => {
@@ -53,6 +54,19 @@ export function createComponentsPanel(app, theme) {
     ui.showAllBtn.style.transform = 'none';
     ui.showAllBtn.style.background = theme.bgPanel;
     ui.showAllBtn.style.borderColor = theme.stroke;
+  });
+
+    //efecto botones
+
+    ui.btn.addEventListener('mouseenter', () => {
+    ui.btn.style.transform = 'translateY(-1px) scale(1.02)';
+    ui.btn.style.background = theme.tealFaint;
+    ui.btn.style.borderColor = theme.tealSoft ?? theme.teal;
+  });
+  ui.btn.addEventListener('mouseleave', () => {
+    ui.btn.style.transform = 'none';
+    ui.btn.style.background = theme.bgPanel;
+    ui.btn.style.borderColor = theme.stroke;
   });
   
   // ---- Styles
