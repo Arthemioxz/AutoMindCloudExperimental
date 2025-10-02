@@ -588,7 +588,7 @@ function isolateCurrent() {
 
 
 
-// -------- isolateCurrent: robust "fit to object" with tween ----------
+// -------- isolateCurrent using your original math, zoom repaired (safe & minimal) --------
 function isolateCurrent() {
   const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
   if (!target) return false;
@@ -598,93 +598,77 @@ function isolateCurrent() {
     savedTarget = controls.target.clone();
   }
 
-  // Keep previous orientation; if degenerate, pick a sane dir
+  // keep previous orientation
   let viewDir = camera.position.clone().sub(controls.target).normalize();
   if (viewDir.lengthSq() < 1e-6) viewDir.set(1, 0.7, 1).normalize();
 
-  // Visibility (unchanged)
+  // visibility (unchanged)
   bulkSetVisible(false);
   setVisibleSubtree(target, true);
 
-  // Refresh transforms before measuring
+  // refresh transforms before measuring
   target.updateWorldMatrix(true, true);
   scene.updateMatrixWorld(true);
 
-  // Bounds
+  // bounds (unchanged)
   const box    = new THREE.Box3().setFromObject(target);
   const center = box.getCenter(new THREE.Vector3());
   const size   = box.getSize(new THREE.Vector3());
 
-  // Guard for very small boxes
-  const eps = 1e-6;
-  if (size.x < eps && size.y < eps && size.z < eps) {
-    // Just fly to the node with a small offset
-    const fallbackDist = 0.5;
-    const destPos = center.clone().add(viewDir.clone().multiplyScalar(fallbackDist));
-    tweenCameraTo(camera, controls, destPos, center, 450);
-    isolating = true;
-    isolatedRoot = target;
-    return true;
-  }
-
-  const PAD = 1.15; // 15% padding around the fitted bounds
-
-  let destPos;
-
+  // destination camera position (your formula)
+  let destPos, dist;
   if (camera.isPerspectiveCamera) {
-    // Use BOTH vertical & horizontal constraints
-    const vFovRad = THREE.MathUtils.degToRad(camera.fov || 60);
-    const halfFov = vFovRad * 0.5;
-    const tanHalf = Math.tan(halfFov);
-
-    // Distance needed so that height fits:
-    const distForHeight = (size.y * 0.5 * PAD) / tanHalf;
-
-    // Distance needed so that width fits (convert horizontal fit to vertical FOV domain via aspect):
-    const distForWidth  = (size.x * 0.5 * PAD) / (tanHalf * camera.aspect || 1);
-
-    // Choose the stricter one, and add a small depth allowance
-    const depthAllowance = (size.z * 0.5);
-    const dist = Math.max(distForHeight, distForWidth) + depthAllowance;
-
-    // Move along current view direction
-    destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
-
-    // Tighten near/far to avoid clipping & z-fighting during isolate
-    const newNear = Math.max(0.01, dist / 100);
-    const newFar  = dist + size.length() * 4;
-    camera.near = newNear;
-    camera.far  = Math.max(camera.near + 1, newFar);
-    camera.updateProjectionMatrix();
-
+    const fov   = THREE.MathUtils.degToRad(camera.fov || 60);
+    const halfH = size.y * 0.5;
+    const halfW = size.x * 0.5;
+    const distH = halfH / Math.tan(fov * 0.5);
+    const distW = halfW / (Math.tan(fov * 0.5) * (camera.aspect || 1));
+    dist        = Math.max(distH, distW) * 3;  // your padding
+    destPos     = center.clone().add(viewDir.clone().multiplyScalar(dist));
   } else {
-    // Orthographic: fit box into frustum with padding
-    const pad = PAD;
+    const pad   = 1.10;
     const halfW = (size.x * 0.5) * pad;
     const halfH = (size.y * 0.5) * pad;
 
-    const horiz = Math.max(halfW, halfH * camera.aspect);
-    const vert  = Math.max(halfH, halfW / camera.aspect);
-
-    camera.left   = -horiz;
-    camera.right  =  horiz;
-    camera.top    =  vert;
-    camera.bottom = -vert;
+    camera.left   = -Math.max(halfW, halfH * (camera.aspect || 1));
+    camera.right  =  Math.max(halfW, halfH * (camera.aspect || 1));
+    camera.top    =  Math.max(halfH, halfW / (camera.aspect || 1));
+    camera.bottom = -Math.max(halfH, halfW / (camera.aspect || 1));
     camera.updateProjectionMatrix();
 
-    // Place camera along the existing view direction with a depth allowance
-    const dist = (size.z * 0.5) + (size.length() * 0.2);
+    dist    = size.length() * 0.9;
     destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
   }
 
-  // Smooth move
+  // --- minimal, robust zoom fixes (no event listeners) -------------------
+  // 1) Aim OrbitControls at the fitted center so dolly/zoom stays on target
+  controls.target.copy(center);
+  if (typeof controls.update === 'function') controls.update();
+
+  // 2) Set sane zoom bounds from object size (prevents going inside / too far)
+  const sphere = new THREE.Sphere(); box.getBoundingSphere(sphere);
+  const r = Math.max(1e-3, sphere.radius);
+  controls.minDistance = Math.max(0.02, r * 0.25);
+  controls.maxDistance = Math.max(controls.minDistance * 4, r * 50);
+
+  // 3) Loosen near/far ONCE around the new distance (avoid clipping/pop)
+  const d = Math.max(controls.minDistance, dist);
+  const safeNear = Math.max(0.001, d / 300);
+  const safeFar  = d + r * 20;
+  // keep previous planes if they are already safer
+  camera.near = Math.min(camera.near || safeNear, safeNear);
+  camera.far  = Math.max(camera.far  || safeFar,  safeFar);
+  if (camera.far <= camera.near + 1e-3) camera.far = camera.near + 1; // guard
+  camera.updateProjectionMatrix();
+  // ----------------------------------------------------------------------
+
+  // animate instead of snapping
   tweenCameraTo(camera, controls, destPos, center, 450);
 
   isolating = true;
   isolatedRoot = target;
   return true;
 }
-
 
   
 
