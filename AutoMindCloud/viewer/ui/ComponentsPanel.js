@@ -147,8 +147,8 @@ export function createComponentsPanel(app, theme) {
   // Attach to the same container as the viewer canvas (assume renderer DOM parent)
   const host = (app?.renderer?.domElement?.parentElement) || document.body;
   host.appendChild(ui.root);
-
-// ---- Right-side slide config
+  
+  // ---- Right-side slide config
 const CLOSED_TX = 520; // px; off-screen to the RIGHT
 
 // Prepare panel styles once (bottom-right)
@@ -159,9 +159,11 @@ Object.assign(ui.panel.style, {
   display: 'block', // keep in DOM; we animate visibility via opacity/transform
   willChange: 'transform, opacity',
   transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
-  transform: `translateX(${CLOSED_TX}px)`, // start off to the RIGHT
-  opacity: '0',
-  pointerEvents: 'none'
+
+  // START VISIBLE
+  transform: 'translateX(0)',
+  opacity: '1',
+  pointerEvents: 'auto'
 });
 
 // --- Behavior (open/close with tween from right)
@@ -170,9 +172,8 @@ function set(isOpen) {
 
   if (open) {
     ui.panel.style.opacity = '1';
-    ui.panel.style.transform = 'translateX(0)';          // slide in from right → left
+    ui.panel.style.transform = 'translateX(0)';           // slide in from right → left
     ui.panel.style.pointerEvents = 'auto';
-    // ensure content exists when opening
     maybeBuild();
   } else {
     ui.panel.style.opacity = '0';
@@ -181,14 +182,12 @@ function set(isOpen) {
   }
 }
 
-// Button toggler: right-to-left open / right close
+// Button toggler
 ui.btn.addEventListener('click', () => set(!open));
 
-// If you want it START HIDDEN (off to the right), do:
-set(false);
+// START VISIBLE
+set(true);
 
-// If instead you want it START VISIBLE, do:
-// set(true);
 
   
   function openPanel() { set(true); maybeBuild(); }
