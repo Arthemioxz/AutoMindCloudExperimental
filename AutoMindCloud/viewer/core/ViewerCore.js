@@ -152,7 +152,7 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   // Renderer
   const renderer = new THREE.WebGLRenderer({
     antialias: true,
-    preserveDrawingBuffer: true
+    preserveDrawingBuffer: false
   });
   renderer.setPixelRatio(pixelRatio || window.devicePixelRatio || 1);
   renderer.setSize(rootEl.clientWidth || 1, rootEl.clientHeight || 1);
