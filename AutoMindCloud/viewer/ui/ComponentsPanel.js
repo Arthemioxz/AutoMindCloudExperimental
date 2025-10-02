@@ -27,6 +27,30 @@
  *   destroy: () => void
  * }}
  */
+
+
+// Reusable hover effect for any clickable element
+function addHover(el, {
+  bgHover = theme.tealFaint,
+  borderHover = (theme.tealSoft ?? theme.teal),
+  bgIdle = theme.bgPanel,
+  borderIdle = theme.stroke,
+  lift = true
+} = {}) {
+  el.style.transition = 'transform .08s ease, box-shadow .12s ease, background .12s ease, border-color .12s ease';
+  el.addEventListener('mouseenter', () => {
+    if (lift) el.style.transform = 'translateY(-1px) scale(1.02)';
+    el.style.background = bgHover;
+    el.style.borderColor = borderHover;
+  });
+  el.addEventListener('mouseleave', () => {
+    if (lift) el.style.transform = 'none';
+    el.style.background = bgIdle;
+    el.style.borderColor = borderIdle;
+  });
+}
+
+
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll)
     throw new Error('[ComponentsPanel] Missing required app APIs');
@@ -56,18 +80,9 @@ export function createComponentsPanel(app, theme) {
     ui.showAllBtn.style.borderColor = theme.stroke;
   });
 
-    //efecto botones
+  // Top-left launcher button
+addHover(ui.btn);
 
-    ui.btn.addEventListener('mouseenter', () => {
-    ui.btn.style.transform = 'translateY(-1px) scale(1.02)';
-    ui.btn.style.background = theme.tealFaint;
-    ui.btn.style.borderColor = theme.tealSoft ?? theme.teal;
-  });
-  ui.btn.addEventListener('mouseleave', () => {
-    ui.btn.style.transform = 'none';
-    ui.btn.style.background = theme.bgPanel;
-    ui.btn.style.borderColor = theme.stroke;
-  });
   
   // ---- Styles
   const css = {
