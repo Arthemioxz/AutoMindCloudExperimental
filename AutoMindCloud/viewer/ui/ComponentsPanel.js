@@ -154,46 +154,48 @@ export function createComponentsPanel(app, theme) {
   let building = false; // prevent concurrent refresh
   let disposed = false;
 
-  // ---- Behavior
-  ui.panel.style.display = 'block';
-  maybeBuild();  
-  open = true;  // keep state consistent with what the user sees
+// ---- Right-side slide config
+const CLOSED_TX = 520; // px; off-screen to the RIGHT
 
-  // Prepare dock styles once
+// Prepare panel styles once (bottom-right)
 Object.assign(ui.panel.style, {
-  display: 'block',
+  position: 'absolute',
+  right: '14px',
+  bottom: '14px',
+  display: 'block', // keep in DOM; we animate visibility via opacity/transform
   willChange: 'transform, opacity',
   transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
-  transform: `translateX(${CLOSED_TX}px)`,
+  transform: `translateX(${CLOSED_TX}px)`, // start off to the RIGHT
   opacity: '0',
   pointerEvents: 'none'
 });
 
-    // ---------- Utilities ----------
-  function styleDockLeft(dockEl) {
-    dockEl.classList.add('viewer-dock-fix');
-    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
-  }
-  
-  function set(isOpen) {
-    open = !!isOpen;
-    //ui.panel.style.display = open ? 'block' : 'none';
-      if (open) {
-    // OPEN tween
-    ui.panel.style.opacity = '1';
-    ui.panel.style.transform = 'translateX(0)';
-    ui.panel.style.pointerEvents = 'auto';
-   
-    try { styleDockLeft(ui.panel); } catch(_) {}
-    try { explode.prepare(); } catch(_) {}
-  } else {
-    // CLOSE tween
-    ui.panel.style.opacity = '0';
-    ui.panel.style.transform = `translateX(${CLOSED_TX}px)`;
-    ui.panel.style.pointerEvents = 'none';
+// --- Behavior (open/close with tween from right)
+function set(isOpen) {
+  open = !!isOpen;
 
+  if (open) {
+    ui.panel.style.opacity = '1';
+    ui.panel.style.transform = 'translateX(0)';          // slide in from right → left
+    ui.panel.style.pointerEvents = 'auto';
+    // ensure content exists when opening
+    maybeBuild();
+  } else {
+    ui.panel.style.opacity = '0';
+    ui.panel.style.transform = `translateX(${CLOSED_TX}px)`; // slide back to the right
+    ui.panel.style.pointerEvents = 'none';
   }
-  }
+}
+
+// Button toggler: right-to-left open / right close
+ui.btn.addEventListener('click', () => set(!open));
+
+// If you want it START HIDDEN (off to the right), do:
+set(false);
+
+// If instead you want it START VISIBLE, do:
+// set(true);
+
   
   function openPanel() { set(true); maybeBuild(); }
   function closePanel() { set(false); }
