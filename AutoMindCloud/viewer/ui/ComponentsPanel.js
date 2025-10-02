@@ -96,7 +96,7 @@ export function createComponentsPanel(app, theme) {
       boxShadow: theme.shadow,
       borderRadius: '18px',
       overflow: 'hidden',
-      display: 'true',
+      display: 'none',
       pointerEvents: 'auto'
     },
     header: {
@@ -155,7 +155,9 @@ export function createComponentsPanel(app, theme) {
   let disposed = false;
 
   // ---- Behavior
-  //ui.panel.style.display = true ? 'block' : 'none';
+  ui.panel.style.display = 'block';
+  maybeBuild();  
+  open = true;  // keep state consistent with what the user sees
   
   function set(isOpen) {
     open = !!isOpen;
