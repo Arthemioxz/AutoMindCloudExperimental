@@ -376,3 +376,34 @@ function makeThumbFallback(label, theme) {
   wrap.textContent = label || '—';
   return wrap;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // 1) Hotkey handler: ONLY detects "c" and calls the tween
+//function onHotkeyH(e) {set(!isOpen)}
+
+function onHotkeyC(e) {
+  const tag = (e.target && e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+
+  if (e.key === 'c' || e.key === 'C' || e.code === 'KeyC') {
+    e.preventDefault();
+    try { console.log('pressed c'); } catch {}
+
+    // Call the tween function (pass your own elements/params)
+    set(!isOpen);
+  }
+}
+  
+// Wire the hotkey:
+document.addEventListener('keydown', onHotkeyC, true);
