@@ -455,7 +455,6 @@ function setSelectedMeshes(meshes, root = null) {
 
 
 
-
 // =================== CAMERA TWEEN HELPER ===================
 function tweenCameraTo(camera, controls, destPos, destTarget, duration = 500) {
   const startPos    = camera.position.clone();
@@ -485,16 +484,9 @@ function tweenCameraTo(camera, controls, destPos, destTarget, duration = 500) {
 
 // =================== ISOLATE FUNCTION ===================
 function isolateCurrent() {
-  // --- toggle back if already isolating ---
+  // toggle back if already isolating
   if (isolating) {
     bulkSetVisible(true);
-
-    if (_prevNear != null) camera.near = _prevNear;
-    if (_prevFar  != null) camera.far  = _prevFar;
-    camera.updateProjectionMatrix();
-
-    if (_prevMinDist != null) controls.minDistance = _prevMinDist;
-    if (_prevMaxDist != null) controls.maxDistance = _prevMaxDist;
 
     if (savedPos && savedTarget) {
       tweenCameraTo(camera, controls, savedPos, savedTarget, 450);
@@ -505,18 +497,18 @@ function isolateCurrent() {
     return true;
   }
 
-  // --- isolate new target ---
+  // get target component
   const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
   if (!target) return false;
 
   savedPos    = camera.position.clone();
   savedTarget = controls.target.clone();
 
-  // keep previous orientation
+  // keep current orientation (just move along current view direction)
   let viewDir = camera.position.clone().sub(controls.target).normalize();
   if (viewDir.lengthSq() < 1e-6) viewDir.set(1, 0.7, 1).normalize();
 
-  // visibility
+  // isolate visibility
   bulkSetVisible(false);
   setVisibleSubtree(target, true);
 
@@ -529,7 +521,7 @@ function isolateCurrent() {
   const center = box.getCenter(new THREE.Vector3());
   const size   = box.getSize(new THREE.Vector3());
 
-  // destination position
+  // destination position (use same orientation, only change distance)
   let destPos, dist;
   if (camera.isPerspectiveCamera) {
     const fov   = THREE.MathUtils.degToRad(camera.fov || 60);
@@ -554,32 +546,14 @@ function isolateCurrent() {
     destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
   }
 
-  // zoom robustness
-  controls.target.copy(center);
-  if (typeof controls.update === 'function') controls.update();
-
-  _prevMinDist = controls.minDistance;
-  _prevMaxDist = controls.maxDistance;
-  _prevNear    = camera.near;
-  _prevFar     = camera.far;
-
-  const sphere = new THREE.Sphere(); box.getBoundingSphere(sphere);
-  const r = Math.max(1e-3, sphere.radius);
-  controls.minDistance = Math.max(0.01, r * 0.05);
-  controls.maxDistance = Math.max(controls.minDistance * 8, r * 200);
-
-  const d = Math.max(controls.minDistance, dist);
-  camera.near = Math.max(0.001, d / 300);
-  camera.far  = d + r * 30;
-  camera.updateProjectionMatrix();
-
-  // animate to isolated target
+  // tween only distance → no reset, no rotation
   tweenCameraTo(camera, controls, destPos, center, 450);
 
   isolating = true;
   isolatedRoot = target;
   return true;
 }
+
 
 
 
