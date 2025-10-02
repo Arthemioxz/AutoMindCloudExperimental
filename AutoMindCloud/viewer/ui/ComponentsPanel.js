@@ -268,6 +268,19 @@ export function createComponentsPanel(app, theme) {
         try { app.isolate.asset?.(ent.assetKey); } catch (_) {}
       });
 
+        //efecto botones2
+
+    row.addEventListener('mouseenter', () => {
+    row.style.transform = 'translateY(-1px) scale(1.02)';
+    row.style.background = theme.tealFaint;
+    row.style.borderColor = theme.tealSoft ?? theme.teal;
+  });
+  row.addEventListener('mouseleave', () => {
+    row.style.transform = 'none';
+    row.style.background = theme.bgPanel;
+    row.style.borderColor = theme.stroke;
+  });
+      
       // Async thumbnail
       try {
         const url = await app.assets.thumbnail?.(ent.assetKey);
