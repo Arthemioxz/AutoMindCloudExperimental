@@ -455,23 +455,12 @@ function setSelectedMeshes(meshes, root = null) {
 
 
 
-
-
-
-// --- state used by isolate toggle ---
-let isolating = false;
-let isolatedRoot = null;
-let savedPos = null, savedTarget = null;
-let _prevMinDist = null, _prevMaxDist = null, _prevNear = null, _prevFar = null;
-
-// -------- isolateCurrent using your original math, but with toggle + zoom fixed --------
+// -------- isolateCurrent using your original math, with toggle + zoom repaired --------
 function isolateCurrent() {
-  // --- if already isolating, pressing 'i' again RESTORES everything (toggle) ---
+  // if already isolating, pressing 'i' again RESTORES everything (toggle)
   if (isolating) {
-    // full visibility back
     bulkSetVisible(true);
 
-    // restore camera clip + orbit limits
     if (_prevNear != null) camera.near = _prevNear;
     if (_prevFar  != null) camera.far  = _prevFar;
     camera.updateProjectionMatrix();
@@ -479,15 +468,15 @@ function isolateCurrent() {
     if (_prevMinDist != null) controls.minDistance = _prevMinDist;
     if (_prevMaxDist != null) controls.maxDistance = _prevMaxDist;
 
-    // tween back to the saved vantage point
-    if (savedPos && savedTarget) tweenCameraTo(camera, controls, savedPos, savedTarget, 450);
+    if (savedPos && savedTarget) {
+      tweenCameraTo(camera, controls, savedPos, savedTarget, 450);
+    }
 
     isolating = false;
     isolatedRoot = null;
     return true;
   }
 
-  // --- NORMAL ISOLATE PATH ---
   const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
   if (!target) return false;
 
@@ -498,20 +487,20 @@ function isolateCurrent() {
   let viewDir = camera.position.clone().sub(controls.target).normalize();
   if (viewDir.lengthSq() < 1e-6) viewDir.set(1, 0.7, 1).normalize();
 
-  // visibility (unchanged)
+  // visibility
   bulkSetVisible(false);
   setVisibleSubtree(target, true);
 
-  // refresh transforms before measuring
+  // refresh transforms
   target.updateWorldMatrix(true, true);
   scene.updateMatrixWorld(true);
 
-  // bounds (unchanged)
+  // bounds
   const box    = new THREE.Box3().setFromObject(target);
   const center = box.getCenter(new THREE.Vector3());
   const size   = box.getSize(new THREE.Vector3());
 
-  // destination camera position (your formula)
+  // destination position
   let destPos, dist;
   if (camera.isPerspectiveCamera) {
     const fov   = THREE.MathUtils.degToRad(camera.fov || 60);
@@ -519,7 +508,7 @@ function isolateCurrent() {
     const halfW = size.x * 0.5;
     const distH = halfH / Math.tan(fov * 0.5);
     const distW = halfW / (Math.tan(fov * 0.5) * (camera.aspect || 1));
-    dist        = Math.max(distH, distW) * 3; // your padding
+    dist        = Math.max(distH, distW) * 3;
     destPos     = center.clone().add(viewDir.clone().multiplyScalar(dist));
   } else {
     const pad   = 1.10;
@@ -536,41 +525,31 @@ function isolateCurrent() {
     destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
   }
 
-  // --- minimal zoom robustness (no listeners) ---
-  // Aim OrbitControls at the isolated center so wheel/dolly stays on target
+  // zoom robustness
   controls.target.copy(center);
   if (typeof controls.update === 'function') controls.update();
 
-  // Save current limits to restore on unisolate
   _prevMinDist = controls.minDistance;
   _prevMaxDist = controls.maxDistance;
   _prevNear    = camera.near;
   _prevFar     = camera.far;
 
-  // Make zoom usable but not extreme (soft bounds from object size)
   const sphere = new THREE.Sphere(); box.getBoundingSphere(sphere);
   const r = Math.max(1e-3, sphere.radius);
-  controls.minDistance = Math.max(0.01, r * 0.05);     // allow getting close
-  controls.maxDistance = Math.max(controls.minDistance * 8, r * 200); // allow far zoom-out
+  controls.minDistance = Math.max(0.01, r * 0.05);
+  controls.maxDistance = Math.max(controls.minDistance * 8, r * 200);
 
-  // Relax clip planes once around the current distance so things don't pop
   const d = Math.max(controls.minDistance, dist);
-  const nearSafe = Math.max(0.001, Math.min(camera.near || Infinity, d / 300));
-  const farSafe  = Math.max(camera.far || 0, d + r * 30);
-  camera.near = nearSafe;
-  camera.far  = Math.max(camera.near + 1, farSafe);
+  camera.near = Math.max(0.001, d / 300);
+  camera.far  = d + r * 30;
   camera.updateProjectionMatrix();
 
-  // animate instead of snapping (keeps your zoom/tween animation)
   tweenCameraTo(camera, controls, destPos, center, 450);
 
   isolating = true;
   isolatedRoot = target;
   return true;
 }
-
-
-
 
 
 
