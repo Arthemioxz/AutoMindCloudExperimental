@@ -458,16 +458,41 @@ function setSelectedMeshes(meshes, root = null) {
 
 
 
+// --- state used by isolate toggle ---
+let isolating = false;
+let isolatedRoot = null;
+let savedPos = null, savedTarget = null;
+let _prevMinDist = null, _prevMaxDist = null, _prevNear = null, _prevFar = null;
 
-// -------- isolateCurrent using your original math, with robust zoom/clip --------
+// -------- isolateCurrent using your original math, but with toggle + zoom fixed --------
 function isolateCurrent() {
+  // --- if already isolating, pressing 'i' again RESTORES everything (toggle) ---
+  if (isolating) {
+    // full visibility back
+    bulkSetVisible(true);
+
+    // restore camera clip + orbit limits
+    if (_prevNear != null) camera.near = _prevNear;
+    if (_prevFar  != null) camera.far  = _prevFar;
+    camera.updateProjectionMatrix();
+
+    if (_prevMinDist != null) controls.minDistance = _prevMinDist;
+    if (_prevMaxDist != null) controls.maxDistance = _prevMaxDist;
+
+    // tween back to the saved vantage point
+    if (savedPos && savedTarget) tweenCameraTo(camera, controls, savedPos, savedTarget, 450);
+
+    isolating = false;
+    isolatedRoot = null;
+    return true;
+  }
+
+  // --- NORMAL ISOLATE PATH ---
   const target = global_target || getLinkRoot(lastHoverMesh || centerPick());
   if (!target) return false;
 
-  if (!isolating) {
-    savedPos    = camera.position.clone();
-    savedTarget = controls.target.clone();
-  }
+  savedPos    = camera.position.clone();
+  savedTarget = controls.target.clone();
 
   // keep previous orientation
   let viewDir = camera.position.clone().sub(controls.target).normalize();
@@ -486,12 +511,7 @@ function isolateCurrent() {
   const center = box.getCenter(new THREE.Vector3());
   const size   = box.getSize(new THREE.Vector3());
 
-  // also get a robust radius (used for zoom/near/far)
-  const sphere = new THREE.Sphere();
-  box.getBoundingSphere(sphere);
-  const r = Math.max(1e-4, sphere.radius);
-
-  // destination camera position (your formula) + tiny depth allowance
+  // destination camera position (your formula)
   let destPos, dist;
   if (camera.isPerspectiveCamera) {
     const fov   = THREE.MathUtils.degToRad(camera.fov || 60);
@@ -499,7 +519,7 @@ function isolateCurrent() {
     const halfW = size.x * 0.5;
     const distH = halfH / Math.tan(fov * 0.5);
     const distW = halfW / (Math.tan(fov * 0.5) * (camera.aspect || 1));
-    dist        = Math.max(distH, distW) * 3 + size.z * 0.5; // keep your *3 padding, add depth
+    dist        = Math.max(distH, distW) * 3; // your padding
     destPos     = center.clone().add(viewDir.clone().multiplyScalar(dist));
   } else {
     const pad   = 1.10;
@@ -516,50 +536,38 @@ function isolateCurrent() {
     destPos = center.clone().add(viewDir.clone().multiplyScalar(dist));
   }
 
-  // --- make OrbitControls behave while zooming ---
-  // aim interaction at the object center so dolly/zoom stays on target
+  // --- minimal zoom robustness (no listeners) ---
+  // Aim OrbitControls at the isolated center so wheel/dolly stays on target
   controls.target.copy(center);
+  if (typeof controls.update === 'function') controls.update();
 
-  // keep the camera from going inside or infinitely far
-  controls.minDistance = Math.max(0.02, r * 0.25);
-  controls.maxDistance = r * 50;
+  // Save current limits to restore on unisolate
+  _prevMinDist = controls.minDistance;
+  _prevMaxDist = controls.maxDistance;
+  _prevNear    = camera.near;
+  _prevFar     = camera.far;
 
-  // set initial near/far tight to current distance to avoid clipping/z-fight
-  const initialD = Math.max(controls.minDistance, dist);
-  camera.near = Math.max(0.001, initialD / 200);
-  camera.far  = initialD + r * 10;
+  // Make zoom usable but not extreme (soft bounds from object size)
+  const sphere = new THREE.Sphere(); box.getBoundingSphere(sphere);
+  const r = Math.max(1e-3, sphere.radius);
+  controls.minDistance = Math.max(0.01, r * 0.05);     // allow getting close
+  controls.maxDistance = Math.max(controls.minDistance * 8, r * 200); // allow far zoom-out
+
+  // Relax clip planes once around the current distance so things don't pop
+  const d = Math.max(controls.minDistance, dist);
+  const nearSafe = Math.max(0.001, Math.min(camera.near || Infinity, d / 300));
+  const farSafe  = Math.max(camera.far || 0, d + r * 30);
+  camera.near = nearSafe;
+  camera.far  = Math.max(camera.near + 1, farSafe);
   camera.updateProjectionMatrix();
 
-  // keep near/far correct while the user zooms (attach once; reuse if present)
-  if (controls._isoClipHandler) {
-    controls.removeEventListener('change', controls._isoClipHandler);
-  }
-  controls._isoClipHandler = () => {
-    const d = camera.position.distanceTo(controls.target);
-    const newNear = Math.max(0.001, d / 200);
-    const newFar  = d + r * 10;
-    if (Math.abs(camera.near - newNear) > 1e-5 || Math.abs(camera.far - newFar) > 1e-3) {
-      camera.near = newNear;
-      camera.far  = Math.max(camera.near + 1e-3, newFar);
-      camera.updateProjectionMatrix();
-    }
-  };
-  controls.addEventListener('change', controls._isoClipHandler);
-
-  // animate instead of snapping
+  // animate instead of snapping (keeps your zoom/tween animation)
   tweenCameraTo(camera, controls, destPos, center, 450);
 
   isolating = true;
   isolatedRoot = target;
   return true;
 }
-
-
-
-
-
-
-
 
 
 
