@@ -149,6 +149,8 @@ export function createComponentsPanel(app, theme) {
   host.appendChild(ui.root);
 
 // ---- State (must be declared before set()/maybeBuild()/hotkeys)
+maybeBuild();
+
 let open = false;        // start hidden
 let building = false;    // guard to avoid concurrent builds
 let disposed = false;    // if you use it in destroy()
@@ -448,5 +450,4 @@ function makeThumbFallback(label, theme) {
 
 
 
-maybeBuild();
 
