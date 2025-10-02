@@ -148,13 +148,12 @@ export function createComponentsPanel(app, theme) {
   const host = (app?.renderer?.domElement?.parentElement) || document.body;
   host.appendChild(ui.root);
 
-
 // ---- State (must be declared before set()/maybeBuild()/hotkeys)
-let open = false;       // start visible
-let building = false;  // guard to avoid concurrent builds
-let disposed = false;  // if you use it in destroy()
-  
-  // ---- Right-side slide config
+let open = false;        // start hidden
+let building = false;    // guard to avoid concurrent builds
+let disposed = false;    // if you use it in destroy()
+
+// ---- Right-side slide config
 const CLOSED_TX = 520; // px; off-screen to the RIGHT
 
 // Prepare panel styles once (bottom-right)
@@ -162,14 +161,14 @@ Object.assign(ui.panel.style, {
   position: 'absolute',
   right: '14px',
   bottom: '14px',
-  display: 'block', // keep in DOM; we animate visibility via opacity/transform
+  display: 'block', // keep in DOM; animate visibility with opacity/transform
   willChange: 'transform, opacity',
   transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
 
-  // START VISIBLE
-  transform: 'translateX(0)',
-  opacity: '1',
-  pointerEvents: 'auto'
+  // START HIDDEN (off-screen to the right)
+  transform: `translateX(${CLOSED_TX}px)`,
+  opacity: '0',
+  pointerEvents: 'none'
 });
 
 // --- Behavior (open/close with tween from right)
@@ -178,12 +177,12 @@ function set(isOpen) {
 
   if (open) {
     ui.panel.style.opacity = '1';
-    ui.panel.style.transform = 'translateX(0)';           // slide in from right → left
+    ui.panel.style.transform = 'translateX(0)';               // slide in (right → left)
     ui.panel.style.pointerEvents = 'auto';
     maybeBuild();
   } else {
     ui.panel.style.opacity = '0';
-    ui.panel.style.transform = `translateX(${CLOSED_TX}px)`; // slide back to the right
+    ui.panel.style.transform = `translateX(${CLOSED_TX}px)`;  // slide out to the right
     ui.panel.style.pointerEvents = 'none';
   }
 }
@@ -191,11 +190,12 @@ function set(isOpen) {
 // Button toggler
 ui.btn.addEventListener('click', () => set(!open));
 
-// START VISIBLE
+// Ensure initial hidden state is applied
 set(false);
 
 
   
+
   function openPanel() { set(true); maybeBuild(); }
   function closePanel() { set(false); }
   
