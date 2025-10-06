@@ -27,6 +27,9 @@
  *   destroy: () => void
  * }}
  */
+
+import { sayHello } from './interaction/SelectionAndDrag.js';
+
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll)
     throw new Error('[ComponentsPanel] Missing required app APIs');
