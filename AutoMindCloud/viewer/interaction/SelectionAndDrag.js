@@ -506,3 +506,10 @@ export function attachInteraction({
   };
 }
 
+// hello.js
+
+function sayHello() {
+  console.log("hello world");
+}
+
+
