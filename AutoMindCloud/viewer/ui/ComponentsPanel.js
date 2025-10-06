@@ -28,7 +28,7 @@
  * }}
  */
 
-import { sayHello } from './interaction/SelectionAndDrag.js';
+import { sayHello } from '../interaction/SelectionAndDrag.js';
 
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll)
