@@ -153,6 +153,8 @@ export function createComponentsPanel(app, theme) {
   ui.showAllBtn.addEventListener('click', () => {
     // Example of calling it:
     sayHello();
+    console.log("hello world");
+
     try { app.showAll?.(); } catch (_) {}
   });
 
