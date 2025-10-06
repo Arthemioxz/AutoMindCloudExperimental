@@ -508,7 +508,7 @@ export function attachInteraction({
 
 // hello.js
 
-function sayHello() {
+export function sayHello() {
   console.log("hello world");
 }
 
