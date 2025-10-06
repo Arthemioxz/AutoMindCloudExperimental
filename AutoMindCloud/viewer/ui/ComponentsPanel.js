@@ -151,8 +151,6 @@ export function createComponentsPanel(app, theme) {
   });
 
   ui.showAllBtn.addEventListener('click', () => {
-    // Example of calling it:
-    sayHello();
     try { app.showAll?.(); } catch (_) {}
   });
 
@@ -236,6 +234,8 @@ export function createComponentsPanel(app, theme) {
 
       // Click → isolate this asset
       row.addEventListener('click', () => {
+        // Example of calling it:
+        sayHello();
         try { app.isolate.asset?.(ent.assetKey); } catch (_) {}
       });
 
