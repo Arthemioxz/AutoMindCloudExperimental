@@ -164,7 +164,7 @@ export function createComponentsPanel(app, theme) {
     }
   }
 
-  async function renderList() {
+  export async function renderList() {
     clearElement(ui.list);
 
     // Retrieve assets list; support sync or async
