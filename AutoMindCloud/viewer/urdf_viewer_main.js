@@ -192,98 +192,79 @@ function frameMeshes(core, meshes) {
 
 
 
-/* -------------------- Offscreen thumbnails (exact viewer look) --------------------- */
+
+
+
+
+
+
 function buildOffscreenForThumbnails(core, assetToMeshes) {
-  if (!core?.robot || !core?.renderer || !core?.scene) return null;
+  if (!core.robot) return null;
 
+  // Small helper for waiting
+  const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
+  // Offscreen renderer & scene
   const OFF_W = 640, OFF_H = 480;
-  const renderer = core.renderer;
-  const scene    = core.scene;
 
-  // Reusable RT
-  const rt = new THREE.WebGLRenderTarget(OFF_W, OFF_H, { depthBuffer: true });
-  if ('colorSpace' in rt.texture && THREE.SRGBColorSpace) rt.texture.colorSpace = THREE.SRGBColorSpace;
+  const canvas = document.createElement('canvas');
+  canvas.width = OFF_W; canvas.height = OFF_H;
 
-  // Separate camera for thumbs (viewer camera left untouched)
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(OFF_W, OFF_H, false);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xffffff);
+
+  const amb = new THREE.AmbientLight(0xffffff, 0.95);
+  const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(2.5, 2.5, 2.5);
+  scene.add(amb); scene.add(d);
+
   const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-  // ---- helpers ----
-  const _box = new THREE.Box3();
-  const _tmp = new THREE.Box3();
+  // Clone the whole robot to isolate assets per snapshot
+  const robotClone = core.robot.clone(true);
+  scene.add(robotClone);
 
-  function computeBounds(meshes) {
-    _box.makeEmpty();
-    let any = false;
-    for (const m of meshes) {
-      if (!m?.isObject3D) continue;
-      m.updateWorldMatrix(true, false);
-      _tmp.setFromObject(m);
-      if (_tmp.isEmpty()) continue;
-      _box.union(_tmp);
-      any = true;
+  // Map assetKey → meshes[] in the clone (using __assetKey tags copied by clone)
+  const cloneAssetToMeshes = new Map();
+  robotClone.traverse(o => {
+    const k = o?.userData?.__assetKey;
+    if (k && o.isMesh && o.geometry) {
+      const arr = cloneAssetToMeshes.get(k) || [];
+      arr.push(o); cloneAssetToMeshes.set(k, arr);
     }
-    return any ? _box.clone() : null;
-  }
-
-  // Hide ONLY meshes that aren't in the target; never touch lights/cameras/helpers.
-  function isolateMeshes(meshes) {
-    const targetSet = new Set(meshes);
-    // collect ancestors to ensure chain visible
-    const ancestorSet = new Set();
-    for (const m of meshes) {
-      let p = m.parent;
-      while (p && p !== scene) { ancestorSet.add(p); p = p.parent; }
-    }
-
-    const changed = [];
-    core.robot.traverse(o => {
-      if (o.isMesh) {
-        const shouldShow = targetSet.has(o) || ancestorSet.has(o);
-        changed.push([o, o.visible]);
-        o.visible = shouldShow;
-      }
-    });
-
-    // If some lights are parented under robot, force them on.
-    core.robot.traverse(o => { if (o.isLight) o.visible = true; });
-
-    return () => { for (const [o, v] of changed) o.visible = v; };
-  }
-
-  // Optional: temporarily add neutral env if none (PBR metals need it)
-  function ensureEnvForRender() {
-    if (scene.environment) return () => {};
-    let pmrem = null, envRT = null;
-    try {
-      pmrem = new THREE.PMREMGenerator(renderer);
-      envRT = pmrem.fromScene(new THREE.RoomEnvironment(renderer), 0.04);
-      const prevEnv = scene.environment;
-      scene.environment = envRT.texture;
-      return () => { scene.environment = prevEnv; if (envRT) envRT.dispose(); if (pmrem) pmrem.dispose(); };
-    } catch {
-      return () => {};
-    }
-  }
+  });
 
   function snapshotAsset(assetKey) {
-    const meshes = assetToMeshes?.get(assetKey) || [];
+    const meshes = cloneAssetToMeshes.get(assetKey) || [];
     if (!meshes.length) return null;
 
-    // Isolate only meshes (lights untouched)
-    const restoreVis = isolateMeshes(meshes);
+    // Toggle visibility: only keep target asset
+    const vis = [];
+    robotClone.traverse(o => {
+      if (o.isMesh && o.geometry) vis.push([o, o.visible]);
+    });
+    for (const [m] of vis) m.visible = false;
+    for (const m of meshes) m.visible = true;
 
-    // ---- Camera fit (UNCHANGED from your code) ----
-    const box = computeBounds(meshes);
-    if (!box) { restoreVis(); return null; }
+    // Fit camera to these meshes
+    const box = new THREE.Box3();
+    const tmp = new THREE.Box3();
+    let has = false;
+    for (const m of meshes) {
+      tmp.setFromObject(m);
+      if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
+    }
+    if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
 
     const center = box.getCenter(new THREE.Vector3());
-    const size   = box.getSize(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist   = maxDim * 2.0;
+    const dist = maxDim * 2.0;
 
-    camera.aspect = OFF_W / OFF_H;
-    camera.near   = Math.max(maxDim / 1000, 0.001);
-    camera.far    = Math.max(maxDim * 1000, 1000);
+    camera.near = Math.max(maxDim / 1000, 0.001);
+    camera.far = Math.max(maxDim * 1000, 1000);
     camera.updateProjectionMatrix();
 
     const az = Math.PI * 0.25, el = Math.PI * 0.18;
@@ -294,68 +275,32 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     ).multiplyScalar(dist);
     camera.position.copy(center.clone().add(dir));
     camera.lookAt(center);
-    camera.updateMatrixWorld(true);
 
-    // Save renderer state
-    const prevTarget   = renderer.getRenderTarget();
-    const prevAuto     = renderer.autoClear;
-    const prevClearCol = renderer.getClearColor(new THREE.Color());
-    const prevClearA   = renderer.getClearAlpha();
-
-    // Temporary env if you don't have one
-    const restoreEnv = ensureEnvForRender();
-
-    // Render with EXACT same materials/env/lights/background
-    renderer.setRenderTarget(rt);
-    renderer.autoClear = true;
-    renderer.clear();
     renderer.render(scene, camera);
+    const url = renderer.domElement.toDataURL('image/png');
 
-    // Readback → dataURL (flip Y)
-    const pixels = new Uint8Array(OFF_W * OFF_H * 4);
-    renderer.readRenderTargetPixels(rt, 0, 0, OFF_W, OFF_H, pixels);
-
-    const can = document.createElement('canvas');
-    can.width = OFF_W; can.height = OFF_H;
-    const ctx = can.getContext('2d');
-    const imgData = ctx.createImageData(OFF_W, OFF_H);
-    for (let y = 0; y < OFF_H; y++) {
-      const srcY = OFF_H - 1 - y;
-      imgData.data.set(
-        pixels.subarray(srcY * OFF_W * 4, (srcY + 1) * OFF_W * 4),
-        y * OFF_W * 4
-      );
-    }
-    ctx.putImageData(imgData, 0, 0);
-    const url = can.toDataURL('image/png');
-
-    // Restore state
-    renderer.setRenderTarget(prevTarget);
-    renderer.setClearColor(prevClearCol, prevClearA);
-    renderer.autoClear = prevAuto;
-    restoreEnv();
-    restoreVis();
+    // Restore visibility
+    for (const [o, v] of vis) o.visible = v;
 
     return url;
   }
 
   return {
+    // Wait 2 seconds before capturing the thumbnail
     thumbnail: async (assetKey) => {
-      try { return snapshotAsset(assetKey); } catch (e) { console.warn('[thumbs] snapshot error', e); return null; }
+      try {
+        await sleep(2000); // <<< 2-second waiter
+        return snapshotAsset(assetKey);
+      } catch (_) {
+        return null;
+      }
     },
-    destroy: () => { try { rt.dispose(); } catch (_) {} }
+    destroy: () => {
+      try { renderer.dispose(); } catch (_) {}
+      try { scene.clear(); } catch (_) {}
+    }
   };
 }
-
-
-
-
-
-
-
-
-
-
 
 
 
