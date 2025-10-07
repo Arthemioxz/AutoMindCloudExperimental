@@ -189,13 +189,6 @@ function set(isOpen) {
   }
 }
 
-// Button toggler
-ui.btn.addEventListener('click', () => set(!open));
-
-// Ensure initial hidden state is applied
-set(false);
-  
-maybeBuild();
 
   
 
@@ -449,6 +442,13 @@ function makeThumbFallback(label, theme) {
 }
 
 
+// Button toggler
+ui.btn.addEventListener('click', () => set(!open));
+
+// Ensure initial hidden state is applied
+set(false);
+  
+maybeBuild();
 
 
 
