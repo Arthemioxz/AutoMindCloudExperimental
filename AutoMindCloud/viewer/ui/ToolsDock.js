@@ -223,7 +223,7 @@ export function createToolsDock(app, theme) {
 
   // Section
   const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
-  const secDist = mkSlider(-1, 1, 0.001, 0);
+  const secDist = mkSlider(-1, 1, 0.01, 0);
   const secEnable = mkToggle('Enable section');
   const secShowPlane = mkToggle('Show slice plane');
 
