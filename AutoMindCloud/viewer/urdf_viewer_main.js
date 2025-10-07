@@ -190,236 +190,217 @@ function frameMeshes(core, meshes) {
 
 
 
-/* ===========================================================
-   ToolsDock.js  — classic script build (no ES modules)
-   Exposes: window.createToolsDock, window.buildOffscreenForThumbnails
-   Requires global THREE and your existing `core` (scene, renderer, robot)
-   =========================================================== */
-(function (global) {
-  'use strict';
 
-  // -------------------- Utilities --------------------
-  function normalizeTheme(theme) {
-    if (!theme) theme = {};
-    const t = theme;
-    if (t.colors) {
-      t.teal       ??= t.colors.teal;
-      t.tealSoft   ??= t.colors.tealSoft;
-      t.tealFaint  ??= t.colors.tealFaint;
-      t.bgPanel    ??= t.colors.panelBg;
-      t.bgCanvas   ??= t.colors.canvasBg;
-      t.stroke     ??= t.colors.stroke;
-      t.text       ??= t.colors.text;
-      t.textMuted  ??= t.colors.textMuted;
-    }
-    if (t.shadows) {
-      t.shadow ??= (t.shadows.lg || t.shadows.md || '0 6px 16px rgba(0,0,0,.12)');
-    }
-    // sensible defaults
-    t.teal       ??= '#10b7b1';
-    t.tealSoft   ??= '#74d9d6';
-    t.tealFaint  ??= '#e5fbfa';
-    t.bgPanel    ??= '#ffffff';
-    t.bgCanvas   ??= '#f3f7fb';
-    t.stroke     ??= '#d8e2ea';
-    t.text       ??= '#0b2537';
-    t.textMuted  ??= '#5b6c79';
-    t.shadow     ??= '0 6px 16px rgba(0,0,0,.12)';
-    return t;
+
+
+
+
+
+
+
+
+
+
+
+
+/* -------------------- Offscreen thumbnails (camera kept unchanged) --------------------- */
+function buildOffscreenForThumbnails(core, assetToMeshes) {
+  if (!core || !core.robot) return null;
+
+  const OFF_W = 640, OFF_H = 480;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = OFF_W; canvas.height = OFF_H;
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(OFF_W, OFF_H, false);
+
+  // Color/tone (safe across three versions)
+  if ('outputColorSpace' in renderer) {
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+  } else if ('sRGBEncoding' in THREE) {
+    renderer.outputEncoding = THREE.sRGBEncoding;
   }
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  renderer.physicallyCorrectLights = true;
 
-  // -------------------- Offscreen thumbnails ---------------------
-  // NOTE: camera math is kept EXACTLY as your version. Only lighting/env fixed.
-  function buildOffscreenForThumbnails(core/*, assetToMeshes (unused here, we clone) */) {
-    if (!core || !core.robot) return null;
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xE9EEF3); // not pure white so light parts pop
 
-    const OFF_W = 640, OFF_H = 480;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = OFF_W; canvas.height = OFF_H;
-
-    const renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: true,
-      preserveDrawingBuffer: true
-    });
-    renderer.setSize(OFF_W, OFF_H, false);
-
-    // Modern color/tone settings (support old three too)
-    if ('outputColorSpace' in renderer) {
-      renderer.outputColorSpace = THREE.SRGBColorSpace;
-    } else {
-      renderer.outputEncoding = THREE.sRGBEncoding;
-    }
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.0;
-    renderer.physicallyCorrectLights = true;
-
-    const scene = new THREE.Scene();
-    // Slightly off-white so light parts aren’t lost
-    scene.background = new THREE.Color(0xEEF3F7);
-
-    // Reuse main env if present; else neutral PMREM if available
-    if (core.scene && core.scene.environment) {
-      scene.environment = core.scene.environment;
-    } else {
-      try {
-        const pmrem = new THREE.PMREMGenerator(renderer);
-        const envRT = pmrem.fromScene(new THREE.RoomEnvironment(renderer), 0.04);
-        scene.environment = envRT.texture;
-      } catch (_) { /* ok if not available */ }
-    }
-
-    // Soft light rig (helps even when env exists)
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x92a1b1, 0.75);
-    const key  = new THREE.DirectionalLight(0xffffff, 1.15); key.position.set(3, 4, 2);
-    const rim  = new THREE.DirectionalLight(0xffffff, 0.35); rim.position.set(-2, 3, -3);
+  // Try to reuse viewer's env; if missing, add soft lights
+  if (core.scene && core.scene.environment) {
+    scene.environment = core.scene.environment;
+  } else {
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x8fa3b5, 0.9);
+    const key  = new THREE.DirectionalLight(0xffffff, 1.4); key.position.set(3, 4, 2);
+    const rim  = new THREE.DirectionalLight(0xffffff, 0.5); rim.position.set(-2, 3, -3);
     scene.add(hemi, key, rim);
+  }
 
-    const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
+  const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-    // Clone robot so we can toggle visibility safely per asset
-    const robotClone = core.robot.clone(true);
-    scene.add(robotClone);
+  // Clone the robot (so we can toggle & swap materials safely)
+  const robotClone = core.robot.clone(true);
+  scene.add(robotClone);
 
-    // Map assetKey → meshes[] (based on userData.__assetKey)
-    const cloneAssetToMeshes = new Map();
+  // Build assetKey → meshes[] map in the clone
+  const cloneAssetToMeshes = new Map();
+  robotClone.traverse(o => {
+    const k = o?.userData?.__assetKey;
+    if (k && o.isMesh && o.geometry) {
+      (cloneAssetToMeshes.get(k) || cloneAssetToMeshes.set(k, []).get(k)).push(o);
+    }
+  });
+
+  // ---------- Material swap fallback ----------
+  // If no env-map, PBR metals go black. For the snapshot we can swap to MeshBasicMaterial,
+  // preserving color/texture so thumbnails are clearly visible.
+  function swapToBasic(meshes) {
+    if (scene.environment) return () => {}; // no need if env-map exists
+    const restores = [];
+    for (const m of meshes) {
+      if (!m || !m.material) continue;
+      const mats = Array.isArray(m.material) ? m.material : [m.material];
+      const newMats = [];
+      let changed = false;
+
+      for (let i = 0; i < mats.length; i++) {
+        const mat = mats[i];
+        if (!mat || !mat.isMaterial) { newMats.push(mat); continue; }
+
+        // Only swap common shaded mats
+        const pbr = mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial;
+        const phong = mat.isMeshPhongMaterial || mat.type === 'MeshPhongMaterial';
+        if (pbr || phong) {
+          const basic = new THREE.MeshBasicMaterial({
+            map: mat.map ?? null,
+            color: mat.color ? mat.color.clone() : new THREE.Color(0xffffff),
+            transparent: !!mat.transparent,
+            opacity: (typeof mat.opacity === 'number') ? mat.opacity : 1.0,
+            side: mat.side ?? THREE.FrontSide
+          });
+          newMats.push(basic);
+          restores.push({ mesh: m, index: i, original: mat });
+          changed = true;
+        } else {
+          newMats.push(mat);
+        }
+      }
+
+      if (changed) {
+        m.material = Array.isArray(m.material) ? newMats : newMats[0];
+      }
+    }
+
+    return () => {
+      // put originals back
+      for (const r of restores) {
+        if (!r.mesh) continue;
+        if (Array.isArray(r.mesh.material)) {
+          r.mesh.material[r.index] = r.original;
+        } else {
+          r.mesh.material = r.original;
+        }
+      }
+    };
+  }
+
+  function snapshotAsset(assetKey) {
+    const meshes = cloneAssetToMeshes.get(assetKey) || [];
+    if (!meshes.length) return null;
+
+    // Hide everything then show only target asset
+    const vis = [];
     robotClone.traverse(o => {
-      const k = o && o.userData && o.userData.__assetKey;
-      if (k && o.isMesh && o.geometry) {
-        const arr = cloneAssetToMeshes.get(k) || [];
-        arr.push(o); cloneAssetToMeshes.set(k, arr);
-      }
+      if (o.isMesh && o.geometry) vis.push([o, o.visible]);
     });
+    for (const [m] of vis) m.visible = false;
+    for (const m of meshes) m.visible = true;
 
-    function softenPBRIfNoEnv(meshes) {
-      if (scene.environment) return () => {};
-      const stash = [];
-      for (const m of meshes) {
-        const mats = Array.isArray(m.material) ? m.material : [m.material];
-        for (const mat of mats) {
-          if (!mat || !mat.isMaterial) continue;
-          const isStd  = mat.isMeshStandardMaterial || mat.type === 'MeshStandardMaterial';
-          const isPhys = mat.isMeshPhysicalMaterial || mat.type === 'MeshPhysicalMaterial';
-          if (isStd || isPhys) {
-            stash.push([mat, mat.metalness, mat.roughness]);
-            if (typeof mat.metalness === 'number') mat.metalness = 0.0;
-            if (typeof mat.roughness === 'number') mat.roughness = Math.max(0.6, mat.roughness ?? 0.6);
-            mat.needsUpdate = true;
-          }
-        }
-      }
-      return () => {
-        for (const [mat, met, rou] of stash) {
-          mat.metalness = met;
-          mat.roughness = rou;
-          mat.needsUpdate = true;
-        }
-      };
+    // ---- Camera fit (UNCHANGED) ----
+    const box = new THREE.Box3();
+    const tmp = new THREE.Box3();
+    let has = false;
+    for (const m of meshes) {
+      m.updateWorldMatrix(true, false);
+      tmp.setFromObject(m);
+      if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
     }
+    if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
 
-    function snapshotAsset(assetKey) {
-      const meshes = cloneAssetToMeshes.get(assetKey) || [];
-      if (!meshes.length) return null;
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const dist = maxDim * 2.0;
 
-      // Hide all, show only target meshes
-      const vis = [];
-      robotClone.traverse(o => {
-        if (o.isMesh && o.geometry) vis.push([o, o.visible]);
-      });
-      for (const [m] of vis) m.visible = false;
-      for (const m of meshes) m.visible = true;
+    camera.near = Math.max(maxDim / 1000, 0.001);
+    camera.far = Math.max(maxDim * 1000, 1000);
+    camera.updateProjectionMatrix();
 
-      // ---- Camera fit (UNCHANGED) ----
-      const box = new THREE.Box3();
-      const tmp = new THREE.Box3();
-      let has = false;
-      for (const m of meshes) {
-        m.updateWorldMatrix(true, false); // ensure transforms
-        tmp.setFromObject(m);
-        if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
-      }
-      if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
+    const az = Math.PI * 0.25, el = Math.PI * 0.18;
+    const dir = new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az)
+    ).multiplyScalar(dist);
+    camera.position.copy(center.clone().add(dir));
+    camera.lookAt(center);
 
-      const center = box.getCenter(new THREE.Vector3());
-      const size   = box.getSize(new THREE.Vector3());
-      const maxDim = Math.max(size.x, size.y, size.z) || 1;
-      const dist   = maxDim * 2.0;
+    // Swap to Basic if needed (guaranteed visible)
+    const restoreBasic = swapToBasic(meshes);
 
-      camera.near = Math.max(maxDim / 1000, 0.001);
-      camera.far  = Math.max(maxDim * 1000, 1000);
-      camera.updateProjectionMatrix();
+    // Render and read URL
+    renderer.render(scene, camera);
+    const url = renderer.domElement.toDataURL('image/png');
 
-      const az = Math.PI * 0.25, el = Math.PI * 0.18;
-      const dir = new THREE.Vector3(
-        Math.cos(el) * Math.cos(az),
-        Math.sin(el),
-        Math.cos(el) * Math.sin(az)
-      ).multiplyScalar(dist);
-      camera.position.copy(center.clone().add(dir));
-      camera.lookAt(center);
+    // Restore materials & visibility
+    restoreBasic();
+    for (const [o, v] of vis) o.visible = v;
 
-      // PBR soften (only if no env)
-      const restoreMats = softenPBRIfNoEnv(meshes);
-
-      // Render & grab data URL
-      renderer.render(scene, camera);
-      const url = renderer.domElement.toDataURL('image/png');
-
-      restoreMats();
-
-      // Restore visibilities
-      for (const [o, v] of vis) o.visible = v;
-
-      return url;
-    }
-
-    return {
-      thumbnail: async (assetKey) => {
-        try { return snapshotAsset(assetKey); } catch (e) { console.warn('[thumbs] snapshot error', e); return null; }
-      },
-      destroy: () => {
-        try { renderer.dispose(); } catch (_) {}
-        try { scene.clear(); } catch (_) {}
-      }
-    };
+    return url;
   }
 
-  // -------------------- Tools Dock (minimal shell) --------------------
-  // This keeps your app working without ES modules. Extend as needed.
-  function createToolsDock(app, theme) {
-    if (!app || !app.camera || !app.controls || !app.renderer) {
-      throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
+  return {
+    thumbnail: async (assetKey) => {
+      try { return snapshotAsset(assetKey); } catch (e) { console.warn('[thumbs] snapshot error', e); return null; }
+    },
+    destroy: () => {
+      try { renderer.dispose(); } catch (_) {}
+      try { scene.clear(); } catch (_) {}
     }
-    const t = normalizeTheme(theme);
+  };
+}
 
-    // Example: build a minimal floating container (kept tiny here)
-    const el = document.createElement('div');
-    el.style.cssText = [
-      'position:fixed','top:16px','left:16px','z-index:1000',
-      'background:'+t.bgPanel,'border:1px solid '+t.stroke,
-      'border-radius:12px','box-shadow:'+t.shadow,'padding:10px',
-      'font:14px/1.2 Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif',
-      'color:'+t.text
-    ].join(';');
-    el.innerHTML = `<strong style="color:${t.teal}">Tools</strong>`;
-    document.body.appendChild(el);
 
-    // Return a small API so your other code can call it safely
-    return {
-      el,
-      open(){ el.style.display='block'; },
-      close(){ el.style.display='none'; },
-      set(v){ el.style.display = v ? 'block' : 'none'; },
-      destroy(){ el.remove(); }
-    };
-  }
 
-  // -------------------- Expose globals --------------------
-  global.buildOffscreenForThumbnails = buildOffscreenForThumbnails;
-  global.createToolsDock = createToolsDock;
 
-})(window);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
