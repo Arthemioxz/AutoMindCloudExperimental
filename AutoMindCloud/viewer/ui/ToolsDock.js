@@ -382,7 +382,7 @@ function ensureSectionVisual() {
 
     secVisual = new THREE.Mesh(geometry, material);
     
-    secVisual.visible = false;
+    secVisual.visible = true;
     secVisual.renderOrder = 10000; // Ensures it renders on top of everything
     
     app.scene.add(secVisual);
