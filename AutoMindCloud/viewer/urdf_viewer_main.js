@@ -223,6 +223,66 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   });
 
+  function snapshotAsset(assetKey) {
+    const meshes = cloneAssetToMeshes.get(assetKey) || [];
+    if (!meshes.length) return null;
+
+    // Toggle visibility: only keep target asset
+    const vis = [];
+    robotClone.traverse(o => {
+      if (o.isMesh && o.geometry) vis.push([o, o.visible]);
+    });
+    for (const [m] of vis) m.visible = false;
+    for (const m of meshes) m.visible = true;
+
+    // Fit camera to these meshes
+    const box = new THREE.Box3();
+    const tmp = new THREE.Box3();
+    let has = false;
+    for (const m of meshes) {
+      tmp.setFromObject(m);
+      if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
+    }
+    if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
+
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const dist = maxDim * 2.0;
+
+    camera.near = Math.max(maxDim / 1000, 0.001);
+    camera.far = Math.max(maxDim * 1000, 1000);
+    camera.updateProjectionMatrix();
+
+    const az = Math.PI * 0.25, el = Math.PI * 0.18;
+    const dir = new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az)
+    ).multiplyScalar(dist);
+    camera.position.copy(center.clone().add(dir));
+    camera.lookAt(center);
+
+    renderer.render(scene, camera);
+    const url = renderer.domElement.toDataURL('image/png');
+
+    // Restore visibility
+    for (const [o, v] of vis) o.visible = v;
+
+    return url;
+  }
+
+  return {
+    thumbnail: async (assetKey) => {
+      try { return snapshotAsset(assetKey); } catch (_) { return null; }
+    },
+    destroy: () => {
+      try { renderer.dispose(); } catch (_) {}
+      try { scene.clear(); } catch (_) {}
+    }
+  };
+}
+
 /* ------------------------- Click Sound ------------------------- */
 
 function installClickSound(dataURL) {
@@ -254,4 +314,3 @@ function installClickSound(dataURL) {
 if (typeof window !== 'undefined') {
   window.URDFViewer = { render };
 }
-
