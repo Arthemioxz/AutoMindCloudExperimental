@@ -188,38 +188,66 @@ function frameMeshes(core, meshes) {
 
 /* --------------------- Offscreen thumbnails --------------------- */
 
+// --------------------- Offscreen thumbnails (fixed) ---------------------
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   if (!core.robot) return null;
 
-  // Offscreen renderer & scene
-  const OFF_W = 640, OFF_H = 480;
+  // Try to read theme/bg from main scene color (falls back to white)
+  const bgColor =
+    (core.scene && core.scene.background && core.scene.background.isColor && core.scene.background.getHex()) ||
+    0xffffff;
 
+  // Offscreen canvas + renderer
+  const OFF_W = 640, OFF_H = 480;
   const canvas = document.createElement('canvas');
   canvas.width = OFF_W; canvas.height = OFF_H;
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
   renderer.setSize(OFF_W, OFF_H, false);
 
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xffffff);
+  // IMPORTANT: copy output settings from main renderer so thumbnails match the viewer
+  try {
+    // Three r132–r15x compatibility
+    if ('outputEncoding' in core.renderer) {
+      renderer.outputEncoding = core.renderer.outputEncoding;     // e.g. THREE.sRGBEncoding
+    } else if ('outputColorSpace' in renderer) {
+      renderer.outputColorSpace = core.renderer.outputColorSpace; // e.g. 'srgb'
+    }
+    renderer.toneMapping = core.renderer.toneMapping || THREE.NoToneMapping;
+    renderer.toneMappingExposure = core.renderer.toneMappingExposure ?? 1.0;
+    renderer.physicallyCorrectLights = core.renderer.physicallyCorrectLights ?? true;
+    renderer.shadowMap.enabled = false; // keep it fast/clean for thumbs
+  } catch (_) {}
 
-  const amb = new THREE.AmbientLight(0xffffff, 0.95);
-  const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(2.5, 2.5, 2.5);
-  scene.add(amb); scene.add(d);
+  // Scene + camera
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(bgColor);
+
+  // Lighting that resembles your main viewer (hemi + directional)
+  const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.8);
+  const dir  = new THREE.DirectionalLight(0xffffff, 1.1); dir.position.set(3, 4, 2);
+  scene.add(hemi, dir);
 
   const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-  // Clone the whole robot to isolate assets per snapshot
+  // Clone robot and repair materials so they react to light
   const robotClone = core.robot.clone(true);
+  robotClone.traverse(o => {
+    if (o.isMesh && o.geometry) {
+      // Double-sided to avoid dark faces and compute normals if missing/bad
+      if (Array.isArray(o.material)) o.material.forEach(m => { if (m) m.side = THREE.DoubleSide; });
+      else if (o.material) o.material.side = THREE.DoubleSide;
+      try { o.geometry.computeVertexNormals?.(); } catch(_) {}
+    }
+  });
   scene.add(robotClone);
 
-  // Map assetKey → meshes[] in the clone (using __assetKey tags copied by clone)
+  // Build map assetKey → meshes[] inside the CLONE (keys are copied via userData)
   const cloneAssetToMeshes = new Map();
   robotClone.traverse(o => {
     const k = o?.userData?.__assetKey;
     if (k && o.isMesh && o.geometry) {
-      const arr = cloneAssetToMeshes.get(k) || [];
-      arr.push(o); cloneAssetToMeshes.set(k, arr);
+      (cloneAssetToMeshes.get(k) || cloneAssetToMeshes.set(k, []).get(k)).push(o);
     }
   });
 
@@ -227,23 +255,16 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const meshes = cloneAssetToMeshes.get(assetKey) || [];
     if (!meshes.length) return null;
 
-    // Toggle visibility: only keep target asset
+    // Hide everything except this asset
     const vis = [];
-    robotClone.traverse(o => {
-      if (o.isMesh && o.geometry) vis.push([o, o.visible]);
-    });
+    robotClone.traverse(o => { if (o.isMesh && o.geometry) vis.push([o, o.visible]); });
     for (const [m] of vis) m.visible = false;
     for (const m of meshes) m.visible = true;
 
-    // Fit camera to these meshes
-    const box = new THREE.Box3();
-    const tmp = new THREE.Box3();
-    let has = false;
-    for (const m of meshes) {
-      tmp.setFromObject(m);
-      if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
-    }
-    if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
+    // Fit camera to meshes
+    const box = new THREE.Box3(), tmp = new THREE.Box3(); let has = false;
+    for (const m of meshes) { tmp.setFromObject(m); if (!has) { box.copy(tmp); has = true; } else box.union(tmp); }
+    if (!has) { for (const [o,v] of vis) o.visible = v; return null; }
 
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
@@ -251,16 +272,16 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const dist = maxDim * 2.0;
 
     camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far = Math.max(maxDim * 1000, 1000);
+    camera.far  = Math.max(maxDim * 1000, 1000);
     camera.updateProjectionMatrix();
 
     const az = Math.PI * 0.25, el = Math.PI * 0.18;
-    const dir = new THREE.Vector3(
+    const dirV = new THREE.Vector3(
       Math.cos(el) * Math.cos(az),
       Math.sin(el),
       Math.cos(el) * Math.sin(az)
     ).multiplyScalar(dist);
-    camera.position.copy(center.clone().add(dir));
+    camera.position.copy(center.clone().add(dirV));
     camera.lookAt(center);
 
     renderer.render(scene, camera);
@@ -268,18 +289,12 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
     // Restore visibility
     for (const [o, v] of vis) o.visible = v;
-
     return url;
   }
 
   return {
-    thumbnail: async (assetKey) => {
-      try { return snapshotAsset(assetKey); } catch (_) { return null; }
-    },
-    destroy: () => {
-      try { renderer.dispose(); } catch (_) {}
-      try { scene.clear(); } catch (_) {}
-    }
+    thumbnail: async (assetKey) => { try { return snapshotAsset(assetKey); } catch { return null; } },
+    destroy: () => { try { renderer.dispose(); } catch {} try { scene.clear(); } catch {} }
   };
 }
 
