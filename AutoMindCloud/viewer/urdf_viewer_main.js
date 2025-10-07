@@ -49,6 +49,8 @@ export function render(opts = {}) {
   // 3) Load URDF (this triggers tagging via `onMeshTag`)
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
+  await new Promise(r => setTimeout(r, 5000));
+  
   // 4) Build an offscreen renderer for thumbnails (after robot exists)
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
