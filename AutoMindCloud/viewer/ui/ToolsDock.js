@@ -362,22 +362,16 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
 
 
-
-
-
-
 function ensureSectionVisual() {
   if (secVisual) return secVisual;
   
   secVisual = new THREE.Mesh(
-    new THREE.PlaneGeometry(1, 1, 1, 1),
+    new THREE.PlaneGeometry(1, 1, 10, 10), // More segments for better wireframe
     new THREE.MeshBasicMaterial({
       color: theme.teal,
+      wireframe: true,
       transparent: true,
-      opacity: 0.6,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      wireframe: true // Makes it clearly visible
+      opacity: 0.8
     })
   );
   
@@ -385,7 +379,6 @@ function ensureSectionVisual() {
   app.scene.add(secVisual);
   return secVisual;
 }
-
 
 
 
