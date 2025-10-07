@@ -375,11 +375,11 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
         side: THREE.DoubleSide
       })
     );
-    secVisual.visible = false;
+    secVisual.visible = true;
     secVisual.renderOrder = 10000;
     app.scene.add(secVisual);
-    return s
-
+    return secVisual;
+  }
 
 
 
