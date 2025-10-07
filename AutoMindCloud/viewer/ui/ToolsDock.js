@@ -370,73 +370,37 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
   
 
-// Safe, self-attaching two-sided section plane (never returns null)
+// Minimal two-sided section plane (unlit, identical both faces)
 function ensureSectionVisual(app, theme) {
-  // Reuse if already created
-  if (window.secVisual && window.secVisual.isMesh) {
-    // If scene exists and not added yet, attach now
-    if (app?.scene && !window.secVisual.__attached) {
-      app.scene.add(window.secVisual);
-      window.secVisual.__attached = true;
-    }
-    return window.secVisual;
-  }
+  if (window.secVisual?.isMesh) return window.secVisual;
 
-  // --- create once ---
   const geom = new THREE.PlaneGeometry(1, 1);
-  const mat  = new THREE.ShaderMaterial({
+  const mat  = new THREE.MeshBasicMaterial({
+    color: (theme?.teal ?? 0x00b3b3),
     transparent: true,
+    opacity: 0.4,
+    side: THREE.DoubleSide,  // both faces
     depthWrite: false,
-    depthTest: false,         // overlay; set true if you want depth interaction
-    side: THREE.DoubleSide,   // identical look on both faces
-    toneMapped: false,
-    uniforms: {
-      uColor:   { value: new THREE.Color(theme?.teal ?? '#00b3b3') },
-      uOpacity: { value: 0.4 }
-    },
-    vertexShader: `
-      void main() {
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      uniform vec3  uColor;
-      uniform float uOpacity;
-      void main() {
-        gl_FragColor = vec4(uColor, uOpacity);
-      }
-    `
+    depthTest: false,        // overlay; set true if you want depth interaction
+    toneMapped: false
   });
 
   const mesh = new THREE.Mesh(geom, mat);
   mesh.visible = false;
-  mesh.frustumCulled = false;
   mesh.renderOrder = 10000;
+  mesh.frustumCulled = false;
 
-  // helpers
-  mesh.setSize = (w = 1, h = 1) => mesh.scale.set(w, h, 1);
-  mesh.setPose = (pos, normal) => {
-    const p = pos?.isVector3 ? pos : new THREE.Vector3().fromArray(pos || [0,0,0]);
-    const n = normal?.isVector3 ? normal : new THREE.Vector3().fromArray(normal || [0,0,1]);
+  // tiny helpers (optional)
+  mesh.setSize = (w=1, h=1) => mesh.scale.set(w, h, 1);
+  mesh.setPose = (pos=[0,0,0], normal=[0,0,1])=>{
+    const p = pos.isVector3 ? pos : new THREE.Vector3().fromArray(pos);
+    const n = normal.isVector3 ? normal : new THREE.Vector3().fromArray(normal);
     mesh.position.copy(p);
-    mesh.lookAt(p.clone().add(n.clone().normalize()));
+    mesh.lookAt(p.clone().add(n.normalize()));
   };
 
-  // Try attach now; if scene not ready, attach later automatically
-  if (app?.scene) {
-    app.scene.add(mesh);
-    mesh.__attached = true;
-  } else {
-    mesh.__attached = false;
-    (function waitAttach() {
-      if (app?.scene && !mesh.__attached) {
-        app.scene.add(mesh);
-        mesh.__attached = true;
-      } else {
-        requestAnimationFrame(waitAttach);
-      }
-    })();
-  }
+  // attach if scene exists (not required to set .visible)
+  if (app?.scene) app.scene.add(mesh);
 
   window.secVisual = mesh;
   return mesh;
