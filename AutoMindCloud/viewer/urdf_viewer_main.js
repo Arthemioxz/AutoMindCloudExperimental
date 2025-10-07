@@ -191,134 +191,86 @@ function frameMeshes(core, meshes) {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-/* -------------------- Offscreen thumbnails (camera kept unchanged) --------------------- */
-function buildOffscreenForThumbnails(core, assetToMeshes) {
+/* -------------------- Offscreen thumbnails (camera UNCHANGED) --------------------- */
+function buildOffscreenForThumbnails(core /*, assetToMeshes */) {
   if (!core || !core.robot) return null;
 
   const OFF_W = 640, OFF_H = 480;
 
+  // --- tiny matcap texture (neutral gray) for fallback ---
+  function makeMatcapTexture() {
+    const s = 128;
+    const cv = document.createElement('canvas');
+    cv.width = s; cv.height = s;
+    const ctx = cv.getContext('2d');
+
+    // radial “sphere” shading
+    const g = ctx.createRadialGradient(s*0.35, s*0.35, s*0.05, s*0.5, s*0.5, s*0.55);
+    g.addColorStop(0.0, '#ffffff');
+    g.addColorStop(0.35, '#d9dfe6');
+    g.addColorStop(0.7, '#aab4c0');
+    g.addColorStop(1.0, '#6d7784');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, s, s);
+
+    const tex = new THREE.CanvasTexture(cv);
+    if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+    else if ('sRGBEncoding' in THREE) tex.encoding = THREE.sRGBEncoding;
+    tex.needsUpdate = true;
+    return tex;
+  }
+  const _matcap = new THREE.MeshMatcapMaterial({ matcap: makeMatcapTexture(), color: 0xffffff });
+
+  // Offscreen renderer & scene
   const canvas = document.createElement('canvas');
   canvas.width = OFF_W; canvas.height = OFF_H;
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
   renderer.setSize(OFF_W, OFF_H, false);
-
-  // Color/tone (safe across three versions)
-  if ('outputColorSpace' in renderer) {
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-  } else if ('sRGBEncoding' in THREE) {
-    renderer.outputEncoding = THREE.sRGBEncoding;
-  }
+  if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+  else if ('sRGBEncoding' in THREE) renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
   renderer.physicallyCorrectLights = true;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xE9EEF3); // not pure white so light parts pop
+  scene.background = new THREE.Color(0xE9EEF3);
 
-  // Try to reuse viewer's env; if missing, add soft lights
-  if (core.scene && core.scene.environment) {
-    scene.environment = core.scene.environment;
-  } else {
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x8fa3b5, 0.9);
-    const key  = new THREE.DirectionalLight(0xffffff, 1.4); key.position.set(3, 4, 2);
-    const rim  = new THREE.DirectionalLight(0xffffff, 0.5); rim.position.set(-2, 3, -3);
-    scene.add(hemi, key, rim);
-  }
+  // reuse main env if available (nice with PBR); no problem if missing — matcap will handle it
+  if (core.scene?.environment) scene.environment = core.scene.environment;
+
+  // a little extra light if you DO have basic materials
+  const amb = new THREE.AmbientLight(0xffffff, 0.6);
+  const d = new THREE.DirectionalLight(0xffffff, 0.9); d.position.set(2.5, 2.5, 2.5);
+  scene.add(amb, d);
 
   const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-  // Clone the robot (so we can toggle & swap materials safely)
+  // Clone the whole robot to isolate assets per snapshot
   const robotClone = core.robot.clone(true);
   scene.add(robotClone);
 
-  // Build assetKey → meshes[] map in the clone
+  // Map assetKey → meshes[] in the clone (using __assetKey tags copied by clone)
   const cloneAssetToMeshes = new Map();
   robotClone.traverse(o => {
     const k = o?.userData?.__assetKey;
     if (k && o.isMesh && o.geometry) {
-      (cloneAssetToMeshes.get(k) || cloneAssetToMeshes.set(k, []).get(k)).push(o);
+      const arr = cloneAssetToMeshes.get(k) || [];
+      arr.push(o); cloneAssetToMeshes.set(k, arr);
     }
   });
-
-  // ---------- Material swap fallback ----------
-  // If no env-map, PBR metals go black. For the snapshot we can swap to MeshBasicMaterial,
-  // preserving color/texture so thumbnails are clearly visible.
-  function swapToBasic(meshes) {
-    if (scene.environment) return () => {}; // no need if env-map exists
-    const restores = [];
-    for (const m of meshes) {
-      if (!m || !m.material) continue;
-      const mats = Array.isArray(m.material) ? m.material : [m.material];
-      const newMats = [];
-      let changed = false;
-
-      for (let i = 0; i < mats.length; i++) {
-        const mat = mats[i];
-        if (!mat || !mat.isMaterial) { newMats.push(mat); continue; }
-
-        // Only swap common shaded mats
-        const pbr = mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial;
-        const phong = mat.isMeshPhongMaterial || mat.type === 'MeshPhongMaterial';
-        if (pbr || phong) {
-          const basic = new THREE.MeshBasicMaterial({
-            map: mat.map ?? null,
-            color: mat.color ? mat.color.clone() : new THREE.Color(0xffffff),
-            transparent: !!mat.transparent,
-            opacity: (typeof mat.opacity === 'number') ? mat.opacity : 1.0,
-            side: mat.side ?? THREE.FrontSide
-          });
-          newMats.push(basic);
-          restores.push({ mesh: m, index: i, original: mat });
-          changed = true;
-        } else {
-          newMats.push(mat);
-        }
-      }
-
-      if (changed) {
-        m.material = Array.isArray(m.material) ? newMats : newMats[0];
-      }
-    }
-
-    return () => {
-      // put originals back
-      for (const r of restores) {
-        if (!r.mesh) continue;
-        if (Array.isArray(r.mesh.material)) {
-          r.mesh.material[r.index] = r.original;
-        } else {
-          r.mesh.material = r.original;
-        }
-      }
-    };
-  }
 
   function snapshotAsset(assetKey) {
     const meshes = cloneAssetToMeshes.get(assetKey) || [];
     if (!meshes.length) return null;
 
-    // Hide everything then show only target asset
+    // Hide everything, show only target meshes
     const vis = [];
-    robotClone.traverse(o => {
-      if (o.isMesh && o.geometry) vis.push([o, o.visible]);
-    });
+    robotClone.traverse(o => { if (o.isMesh && o.geometry) vis.push([o, o.visible]); });
     for (const [m] of vis) m.visible = false;
     for (const m of meshes) m.visible = true;
 
-    // ---- Camera fit (UNCHANGED) ----
+    // ---------- Camera fit (UNCHANGED) ----------
     const box = new THREE.Box3();
     const tmp = new THREE.Box3();
     let has = false;
@@ -327,7 +279,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       tmp.setFromObject(m);
       if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
     }
-    if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
+    if (!has) { for (const [o,v] of vis) o.visible = v; return null; }
 
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
@@ -347,15 +299,18 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     camera.position.copy(center.clone().add(dir));
     camera.lookAt(center);
 
-    // Swap to Basic if needed (guaranteed visible)
-    const restoreBasic = swapToBasic(meshes);
+    // ---------- Fallback shading that ALWAYS works ----------
+    // If there is no environment (or you just want guaranteed visibility), use matcap.
+    // We temporarily set `scene.overrideMaterial`, render, then restore it.
+    const prevOverride = scene.overrideMaterial;
+    const usingFallback = !scene.environment;
+    if (usingFallback) scene.overrideMaterial = _matcap;
 
-    // Render and read URL
     renderer.render(scene, camera);
     const url = renderer.domElement.toDataURL('image/png');
 
-    // Restore materials & visibility
-    restoreBasic();
+    // restore
+    if (usingFallback) scene.overrideMaterial = prevOverride;
     for (const [o, v] of vis) o.visible = v;
 
     return url;
@@ -371,11 +326,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   };
 }
-
-
-
-
-
 
 
 
