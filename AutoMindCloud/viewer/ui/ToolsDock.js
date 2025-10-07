@@ -536,7 +536,7 @@ function initDefaultRadius(app) {
   if (kind === 'right') { az = 0; el = 0; }
 
   // ---- FIXED DISTANCE (e.g. 10 units) ----
-  const FIXED_RADIUS = 10;
+  const FIXED_RADIUS = 4;
   const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(FIXED_RADIUS));
   return pos;
 }
