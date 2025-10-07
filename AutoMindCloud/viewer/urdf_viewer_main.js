@@ -200,126 +200,101 @@ function frameMeshes(core, meshes) {
 
 
 
-function buildOffscreenForThumbnails(core) {
-  console.log('[thumbs] init');
-  if (!core?.robot || !core?.renderer) return null;
 
-  const OFF_W = 512, OFF_H = 384; // a bit smaller = faster, still crisp
-  const renderer = core.renderer;  // ← reuse main renderer & GL context
 
-  // Small render target for thumbnails
+
+
+
+
+// Render thumbnails using the main scene & renderer (no clone).
+function buildOffscreenForThumbnails(core, assetToMeshes) {
+  console.log('[thumbs] init(main-scene)');
+  if (!core?.robot || !core?.renderer || !core?.scene) return null;
+
+  const OFF_W = 512, OFF_H = 384;
+  const renderer = core.renderer;
+  const scene = core.scene;
+
+  // One RT reused for all thumbs
   const rt = new THREE.WebGLRenderTarget(OFF_W, OFF_H, { depthBuffer: true });
-  rt.texture.colorSpace = ('SRGBColorSpace' in THREE) ? THREE.SRGBColorSpace : undefined;
-
-  // Scene & camera dedicated to thumbnails
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xf7f9fb);
-  const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
-
-  // Reuse main environment if present; otherwise make a neutral one on THIS renderer
-  if (core.scene?.environment) {
-    scene.environment = core.scene.environment;
-  } else {
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    // RoomEnvironment is available in three/examples/jsm/environments/RoomEnvironment.js
-    // If you don't import it, comment next two lines and keep lights below.
-    try {
-      const envRT = pmrem.fromScene(new THREE.RoomEnvironment(renderer), 0.04);
-      scene.environment = envRT.texture;
-    } catch (_) { /* ignore if RoomEnvironment not available */ }
+  if ('colorSpace' in rt.texture && 'SRGBColorSpace' in THREE) {
+    rt.texture.colorSpace = THREE.SRGBColorSpace;
   }
 
-  // Soft lights (help even when env exists)
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x92a1b1, 0.7);
-  const key  = new THREE.DirectionalLight(0xffffff, 1.2); key.position.set(3, 4, 2);
-  const rim  = new THREE.DirectionalLight(0xffffff, 0.35); rim.position.set(-2, 3, -3);
-  scene.add(hemi, key, rim);
+  // Prepare a dedicated camera for thumbs
+  const cam = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 1e6);
 
-  // Clone robot into the thumb scene
-  const robotClone = core.robot.clone(true);
-  scene.add(robotClone);
-  robotClone.updateMatrixWorld(true);
-
-  // Map assetKey -> meshes inside clone
-  const cloneAssetToMeshes = new Map();
-  robotClone.traverse(o => {
-    const k = o?.userData?.__assetKey;
-    if (k && o.isMesh && o.geometry) {
-      const arr = cloneAssetToMeshes.get(k) || [];
-      arr.push(o); cloneAssetToMeshes.set(k, arr);
+  // Ensure we have a neutral env if the scene lacks one
+  if (!scene.environment) {
+    try {
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      const envRT = pmrem.fromScene(new THREE.RoomEnvironment(renderer), 0.04);
+      scene.environment = envRT.texture;
+    } catch (_) {
+      // fine: lighting from the main scene will still apply
     }
-  });
+  }
 
-  function softenPBRForNoEnv(meshes, willRestore) {
-    const hasEnv = !!scene.environment;
-    if (hasEnv) return;
+  // Utility: compute world AABB of a list of meshes
+  const _box = new THREE.Box3();
+  const _tmp = new THREE.Box3();
+  const _v3  = new THREE.Vector3();
+  function computeBounds(meshes) {
+    let has = false;
+    _box.makeEmpty();
+    for (const m of meshes) {
+      if (!m || !m.isObject3D) continue;
+      m.updateWorldMatrix(true, false);
+      _tmp.setFromObject(m);
+      if (_tmp.isEmpty()) continue;
+      if (!has) { _box.copy(_tmp); has = true; } else _box.union(_tmp);
+    }
+    return has ? _box.clone() : null;
+  }
+
+  // Utility: show only target meshes (keep ancestors visible), restore later
+  function showOnly(meshes) {
+    const vis = [];
+    core.robot.traverse(o => { if (o.isObject3D) vis.push([o, o.visible]); o.visible = false; });
+    // make target meshes and their parents visible
+    for (const m of meshes) {
+      let p = m;
+      while (p && p !== scene) { p.visible = true; p = p.parent; }
+    }
+    return () => { for (const [o, v] of vis) o.visible = v; };
+  }
+
+  // Optional: soften PBR a touch if there’s still no env
+  function softenPBR(meshes) {
+    if (scene.environment) return () => {};
+    const stash = [];
     for (const m of meshes) {
       const mats = Array.isArray(m.material) ? m.material : [m.material];
       for (const mat of mats) {
         if (!mat || !mat.isMaterial) continue;
-        const isStd  = mat.isMeshStandardMaterial || mat.type === 'MeshStandardMaterial';
-        const isPhys = mat.isMeshPhysicalMaterial || mat.type === 'MeshPhysicalMaterial';
-        const isPhong= mat.isMeshPhongMaterial    || mat.type === 'MeshPhongMaterial';
-        if (isStd || isPhys || isPhong) {
-          const backup = {
-            metalness: mat.metalness,
-            roughness: mat.roughness,
-            emissive: mat.emissive?.clone?.(),
-            emissiveIntensity: mat.emissiveIntensity,
-            envMap: mat.envMap
-          };
-          willRestore.push({ mat, backup });
-          if (isStd || isPhys) {
-            // Soften *any* metallic (not only >0.6) because some assets use 0.5
-            if (typeof mat.metalness === 'number') mat.metalness = 0.0;
-            if (typeof mat.roughness === 'number') mat.roughness = Math.max(0.6, mat.roughness ?? 0.6);
-          }
-          if (isPhong) {
-            // Give Phong a tiny emissive so it’s never pitch black
-            if (mat.emissive) mat.emissive.offsetHSL(0, 0, 0); // force clone alloc above
-            mat.emissiveIntensity = Math.max(0.15, mat.emissiveIntensity || 0);
-          }
+        const isStd = mat.isMeshStandardMaterial || mat.type === 'MeshStandardMaterial';
+        const isPhys= mat.isMeshPhysicalMaterial || mat.type === 'MeshPhysicalMaterial';
+        if (isStd || isPhys) {
+          stash.push([mat, mat.metalness, mat.roughness]);
+          if (typeof mat.metalness === 'number') mat.metalness = 0.0;
+          if (typeof mat.roughness === 'number') mat.roughness = Math.max(0.6, mat.roughness ?? 0.6);
           mat.needsUpdate = true;
         }
       }
     }
+    return () => { for (const [mat, met, rou] of stash) { mat.metalness = met; mat.roughness = rou; mat.needsUpdate = true; } };
   }
 
-  function restoreMaterials(list) {
-    for (const { mat, backup } of list) {
-      if (!mat) continue;
-      if ('metalness' in backup && typeof backup.metalness === 'number') mat.metalness = backup.metalness;
-      if ('roughness' in backup && typeof backup.roughness === 'number') mat.roughness = backup.roughness;
-      if (backup.emissive && mat.emissive) mat.emissive.copy(backup.emissive);
-      if ('emissiveIntensity' in backup) mat.emissiveIntensity = backup.emissiveIntensity;
-      mat.envMap = backup.envMap;
-      mat.needsUpdate = true;
-    }
-  }
-
-  function fitCameraTo(meshes) {
-    const box = new THREE.Box3();
-    const tmp = new THREE.Box3();
-    let has = false;
-
-    // ensure world matrices are current
-    for (const m of meshes) m.updateWorldMatrix(true, false);
-
-    for (const m of meshes) {
-      tmp.setFromObject(m);
-      if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
-    }
-    if (!has) return false;
-
-    const center = box.getCenter(new THREE.Vector3());
-    const size   = box.getSize(new THREE.Vector3());
+  function fitCameraTo(box) {
+    const center = box.getCenter(_v3.set(0,0,0).clone());
+    const size   = box.getSize(_v3.set(0,0,0));
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
     const dist   = maxDim * 2.0;
 
-    camera.aspect = OFF_W / OFF_H;
-    camera.near   = Math.max(maxDim / 1000, 0.001);
-    camera.far    = Math.max(maxDim * 1000, 1000);
-    camera.updateProjectionMatrix();
+    cam.aspect = OFF_W / OFF_H;
+    cam.near   = Math.max(maxDim / 1000, 0.001);
+    cam.far    = Math.max(maxDim * 1000, 1000);
+    cam.updateProjectionMatrix();
 
     const az = Math.PI * 0.25, el = Math.PI * 0.20;
     const dir = new THREE.Vector3(
@@ -328,44 +303,37 @@ function buildOffscreenForThumbnails(core) {
       Math.cos(el) * Math.sin(az)
     ).multiplyScalar(dist);
 
-    camera.position.copy(center).add(dir);
-    camera.lookAt(center);
-    camera.updateMatrixWorld(true);
-
-    return true;
+    cam.position.copy(center).add(dir);
+    cam.lookAt(center);
+    cam.updateMatrixWorld(true);
   }
 
   function snapshotAsset(assetKey) {
-    const meshes = cloneAssetToMeshes.get(assetKey) || [];
+    const meshes = assetToMeshes?.get(assetKey) || [];
     if (!meshes.length) return null;
 
-    // Show only the target meshes
-    const vis = [];
-    robotClone.traverse(o => { if (o.isMesh && o.geometry) vis.push([o, o.visible]); });
-    for (const [m] of vis) m.visible = false;
-    for (const m of meshes) m.visible = true;
+    // Isolate
+    const restoreVis = showOnly(meshes);
+    const restoreMats = softenPBR(meshes);
 
-    if (!fitCameraTo(meshes)) { for (const [o,v] of vis) o.visible = v; return null; }
+    // Bounds & camera
+    const box = computeBounds(meshes);
+    if (!box) { restoreMats(); restoreVis(); return null; }
+    fitCameraTo(box);
 
-    // Temporary PBR tweaks if no env
-    const restoreList = [];
-    softenPBRForNoEnv(meshes, restoreList);
-
-    // Save renderer state
+    // Save & set renderer state
     const prevTarget   = renderer.getRenderTarget();
-    const prevAutoCl   = renderer.autoClear;
-    const prevTone     = renderer.toneMapping;
-    const prevExposure = renderer.toneMappingExposure;
+    const prevAuto     = renderer.autoClear;
+    const prevClearCol = renderer.getClearColor(new THREE.Color());
+    const prevClearA   = renderer.getClearAlpha();
 
-    renderer.autoClear = true;
-    // (we keep toneMapping/exposure as-is to match main viewer)
-
-    // Render to our RT
     renderer.setRenderTarget(rt);
+    renderer.setClearColor(0xf7f9fb, 1); // light card bg
+    renderer.autoClear = true;
     renderer.clear();
-    renderer.render(scene, camera);
+    renderer.render(scene, cam);
 
-    // Readback pixels → 2D canvas → dataURL
+    // Read back → 2D canvas → data URL
     const pixels = new Uint8Array(OFF_W * OFF_H * 4);
     renderer.readRenderTargetPixels(rt, 0, 0, OFF_W, OFF_H, pixels);
 
@@ -373,10 +341,8 @@ function buildOffscreenForThumbnails(core) {
     can2d.width = OFF_W; can2d.height = OFF_H;
     const ctx = can2d.getContext('2d');
     const imgData = ctx.createImageData(OFF_W, OFF_H);
-
-    // Flip Y because WebGL origin is bottom-left
     for (let y = 0; y < OFF_H; y++) {
-      const srcY = OFF_H - 1 - y;
+      const srcY = OFF_H - 1 - y; // flip Y
       imgData.data.set(
         pixels.subarray(srcY * OFF_W * 4, (srcY + 1) * OFF_W * 4),
         y * OFF_W * 4
@@ -385,15 +351,12 @@ function buildOffscreenForThumbnails(core) {
     ctx.putImageData(imgData, 0, 0);
     const url = can2d.toDataURL('image/png');
 
-    // Restore materials & visibility
-    restoreMaterials(restoreList);
-    for (const [o, v] of vis) o.visible = v;
-
-    // Restore renderer state
+    // Restore
     renderer.setRenderTarget(prevTarget);
-    renderer.autoClear = prevAutoCl;
-    renderer.toneMapping = prevTone;
-    renderer.toneMappingExposure = prevExposure;
+    renderer.setClearColor(prevClearCol, prevClearA);
+    renderer.autoClear = prevAuto;
+    restoreMats();
+    restoreVis();
 
     return url;
   }
@@ -403,18 +366,9 @@ function buildOffscreenForThumbnails(core) {
       try { return snapshotAsset(assetKey); }
       catch (e) { console.warn('[thumbs] snapshot error', e); return null; }
     },
-    destroy: () => { try { rt.dispose(); } catch (_) {} try { scene.clear(); } catch (_) {} }
+    destroy: () => { try { rt.dispose(); } catch (_) {} }
   };
 }
-
-
-
-
-
-
-
-
-
 
 
 
