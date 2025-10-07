@@ -370,37 +370,25 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
   
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  // Creates (once) and returns the section plane mesh.
-// Usage: const plane = ensureSectionVisual(app, theme);
+// Safe, self-attaching two-sided section plane (never returns null)
 function ensureSectionVisual(app, theme) {
   // Reuse if already created
-  if (window.secVisual && window.secVisual.isMesh) return window.secVisual;
+  if (window.secVisual && window.secVisual.isMesh) {
+    // If scene exists and not added yet, attach now
+    if (app?.scene && !window.secVisual.__attached) {
+      app.scene.add(window.secVisual);
+      window.secVisual.__attached = true;
+    }
+    return window.secVisual;
+  }
 
-  // Scene not ready yet
-  if (!app || !app.scene) return null;
-
+  // --- create once ---
   const geom = new THREE.PlaneGeometry(1, 1);
-
-  // Flat color on both faces (no lighting), identical front/back
-  const mat = new THREE.ShaderMaterial({
+  const mat  = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
-    depthTest: false,          // overlay; set true if you want depth interaction
-    side: THREE.DoubleSide,    // render both faces
+    depthTest: false,         // overlay; set true if you want depth interaction
+    side: THREE.DoubleSide,   // identical look on both faces
     toneMapped: false,
     uniforms: {
       uColor:   { value: new THREE.Color(theme?.teal ?? '#00b3b3') },
@@ -425,7 +413,7 @@ function ensureSectionVisual(app, theme) {
   mesh.frustumCulled = false;
   mesh.renderOrder = 10000;
 
-  // Helpers (optional)
+  // helpers
   mesh.setSize = (w = 1, h = 1) => mesh.scale.set(w, h, 1);
   mesh.setPose = (pos, normal) => {
     const p = pos?.isVector3 ? pos : new THREE.Vector3().fromArray(pos || [0,0,0]);
@@ -434,10 +422,46 @@ function ensureSectionVisual(app, theme) {
     mesh.lookAt(p.clone().add(n.clone().normalize()));
   };
 
-  app.scene.add(mesh);
-  window.secVisual = mesh;   // memoize globally to avoid duplicate creations
+  // Try attach now; if scene not ready, attach later automatically
+  if (app?.scene) {
+    app.scene.add(mesh);
+    mesh.__attached = true;
+  } else {
+    mesh.__attached = false;
+    (function waitAttach() {
+      if (app?.scene && !mesh.__attached) {
+        app.scene.add(mesh);
+        mesh.__attached = true;
+      } else {
+        requestAnimationFrame(waitAttach);
+      }
+    })();
+  }
+
+  window.secVisual = mesh;
   return mesh;
 }
+
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
 
 
 
