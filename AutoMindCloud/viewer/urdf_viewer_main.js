@@ -187,108 +187,41 @@ function frameMeshes(core, meshes) {
 }
 
 /* --------------------- Offscreen thumbnails --------------------- */
+
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   if (!core.robot) return null;
 
-  // --- Offscreen canvas/renderer
+  // Offscreen renderer & scene
   const OFF_W = 640, OFF_H = 480;
+
   const canvas = document.createElement('canvas');
   canvas.width = OFF_W; canvas.height = OFF_H;
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
   renderer.setSize(OFF_W, OFF_H, false);
 
-  // IMPORTANT: copy output/tone/lighting behavior from the main renderer
-  try {
-    if ('outputEncoding' in core.renderer) {
-      renderer.outputEncoding = core.renderer.outputEncoding;     // three <= r152
-    } else if ('outputColorSpace' in renderer && 'outputColorSpace' in core.renderer) {
-      renderer.outputColorSpace = core.renderer.outputColorSpace; // three >= r153
-    }
-    renderer.toneMapping = core.renderer.toneMapping || THREE.NoToneMapping;
-    renderer.toneMappingExposure = core.renderer.toneMappingExposure ?? 1.0;
-    renderer.physicallyCorrectLights = core.renderer.physicallyCorrectLights ?? true;
-  } catch (_) {}
-
-  // --- Scene & camera (match your viewer background & lights)
   const scene = new THREE.Scene();
-  const bg = (core.scene?.background?.isColor ? core.scene.background.getHex() : 0xffffff);
-  scene.background = new THREE.Color(bg);
+  scene.background = new THREE.Color(0xffffff);
 
-  // Use hemi + dir like the main viewer
-  const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.8);
-  const dir  = new THREE.DirectionalLight(0xffffff, 1.1); dir.position.set(3, 4, 2);
-  scene.add(hemi, dir);
+  const amb = new THREE.AmbientLight(0xffffff, 0.95);
+  const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(2.5, 2.5, 2.5);
+  scene.add(amb); scene.add(d);
 
   const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-  // --- Clone the robot and ensure sane materials
+  // Clone the whole robot to isolate assets per snapshot
   const robotClone = core.robot.clone(true);
-  robotClone.traverse(o => {
-    if (o.isMesh && o.geometry) {
-      // make sure faces light correctly even when isolated
-      if (Array.isArray(o.material)) o.material.forEach(m => { if (m) m.side = THREE.DoubleSide; });
-      else if (o.material) o.material.side = THREE.DoubleSide;
-      try { o.geometry.computeVertexNormals?.(); } catch (_) {}
-    }
-  });
   scene.add(robotClone);
 
-  // Index meshes in the clone by assetKey
+  // Map assetKey → meshes[] in the clone (using __assetKey tags copied by clone)
   const cloneAssetToMeshes = new Map();
   robotClone.traverse(o => {
     const k = o?.userData?.__assetKey;
     if (k && o.isMesh && o.geometry) {
-      (cloneAssetToMeshes.get(k) || cloneAssetToMeshes.set(k, []).get(k)).push(o);
+      const arr = cloneAssetToMeshes.get(k) || [];
+      arr.push(o); cloneAssetToMeshes.set(k, arr);
     }
   });
-
-  function snapshotAsset(assetKey) {
-    const meshes = cloneAssetToMeshes.get(assetKey) || [];
-    if (!meshes.length) return null;
-
-    // Show only the target meshes
-    const vis = [];
-    robotClone.traverse(o => { if (o.isMesh && o.geometry) vis.push([o, o.visible]); });
-    for (const [m] of vis) m.visible = false;
-    for (const m of meshes) m.visible = true;
-
-    // Fit camera to the selected meshes
-    const box = new THREE.Box3(), tmp = new THREE.Box3(); let has = false;
-    for (const m of meshes) { tmp.setFromObject(m); if (!has) { box.copy(tmp); has = true; } else box.union(tmp); }
-    if (!has) { for (const [o, v] of vis) o.visible = v; return null; }
-
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = maxDim * 2.0;
-
-    camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far  = Math.max(maxDim * 1000, 1000);
-    camera.updateProjectionMatrix();
-
-    const az = Math.PI * 0.25, el = Math.PI * 0.18;
-    const dirV = new THREE.Vector3(
-      Math.cos(el) * Math.cos(az),
-      Math.sin(el),
-      Math.cos(el) * Math.sin(az)
-    ).multiplyScalar(dist);
-    camera.position.copy(center.clone().add(dirV));
-    camera.lookAt(center);
-
-    renderer.render(scene, camera);
-    const url = renderer.domElement.toDataURL('image/png');
-
-    // restore visibility
-    for (const [o, v] of vis) o.visible = v;
-    return url;
-  }
-
-  return {
-    thumbnail: async (assetKey) => { try { return snapshotAsset(assetKey); } catch { return null; } },
-    destroy: () => { try { renderer.dispose(); } catch {} try { scene.clear(); } catch {} }
-  };
-}
 
 /* ------------------------- Click Sound ------------------------- */
 
