@@ -356,48 +356,54 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
 
 
+// Minimal, single-mesh, true two-sided overlay plane
+let secPlane;
 function ensureSectionVisual() {
-  if (secVisual) return secVisual;
+  if (secPlane) return secPlane;
 
-  const EPS = 1e-4;                 // tiny local offset to separate faces
-  const geom = new THREE.PlaneGeometry(1, 1);
+  const geom = new THREE.PlaneGeometry(1, 1, 1, 1);
 
-  const baseMat = new THREE.MeshBasicMaterial({
-    color: theme.teal,
+  const mat = new THREE.ShaderMaterial({
     transparent: true,
-    opacity: 0.4,
-    depthWrite: false,              // don't dirty Z
-    depthTest: true,                // DO test Z to avoid speckle
-    toneMapped: false,
-    premultipliedAlpha: true,
-    polygonOffset: true,            // nudge above coplanar surfaces
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -2,
-    dithering: true
+    depthWrite: false,
+    depthTest: false,        // keep on top; set true if you want depth
+    side: THREE.DoubleSide,  // draw both faces in one draw
+    uniforms: {
+      uColor:   { value: new THREE.Color(theme.teal) },
+      uOpacity: { value: 0.4 }
+    },
+    vertexShader: `
+      void main() {
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3  uColor;
+      uniform float uOpacity;
+      void main() {
+        gl_FragColor = vec4(uColor, uOpacity);
+      }
+    `
   });
 
-  const frontMat = baseMat.clone(); frontMat.side = THREE.FrontSide;
-  const backMat  = baseMat.clone(); backMat.side  = THREE.BackSide;
+  secPlane = new THREE.Mesh(geom, mat);
+  secPlane.visible = false;
+  secPlane.frustumCulled = false;
+  secPlane.renderOrder = 10000;
+  app.scene.add(secPlane);
 
-  const front = new THREE.Mesh(geom.clone(), frontMat);
-  const back  = new THREE.Mesh(geom.clone(),  backMat);
+  // tiny helpers (optional)
+  secPlane.setSize = (w = 1, h = 1) => secPlane.scale.set(w, h, 1);
+  secPlane.setPose = (pos, normal) => {
+    const p = (pos.isVector3 ? pos : new THREE.Vector3().fromArray(pos));
+    const n = (normal.isVector3 ? normal : new THREE.Vector3().fromArray(normal)).normalize();
+    secPlane.position.copy(p);
+    secPlane.lookAt(p.clone().add(n)); // orient plane’s +Z to the normal
+  };
 
-  // keep the faces slightly apart along the plane's local normal
-  front.position.z =  +EPS;
-  back.position.z  =  -EPS;
-
-  // Group so you can move/rotate/scale a single object
-  secVisual = new THREE.Group();
-  secVisual.add(front, back);
-
-  // sensible defaults (your code can toggle visibility later)
-  secVisual.visible = false;
-  secVisual.renderOrder = 10000;
-  secVisual.frustumCulled = false;
-
-  app.scene.add(secVisual);
-  return secVisual;
+  return secPlane;
 }
+
 
 
 
