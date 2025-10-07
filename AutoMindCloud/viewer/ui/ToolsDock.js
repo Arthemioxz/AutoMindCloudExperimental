@@ -302,12 +302,80 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 // h
 
   // Snapshot (header only)
-  ui.fitBtn.addEventListener('click', () => {
-    try {
-      const url = app.renderer.domElement.toDataURL('image/png');
-      const a = document.createElement('a'); a.href = url; a.download = 'snapshot.png'; a.click();
-    } catch (_) {}
-  });
+  // Snapshot (header only) — offscreen render target fallback (no preserveDrawingBuffer needed)
+ui.fitBtn.addEventListener('click', () => {
+  const { renderer, scene, camera, composer } = app;
+
+  // helper: download a URL/blob
+  const downloadURL = (url, isObjURL = false) => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'snapshot.png';
+    document.body.appendChild(a);
+    a.click();
+    if (isObjURL) URL.revokeObjectURL(url);
+    a.remove();
+  };
+
+  // try fast path first (works if preserveDrawingBuffer=true and no CORS taint)
+  try {
+    renderer.setRenderTarget(null);
+    if (composer) composer.render(); else renderer.render(scene, camera);
+    const url = renderer.domElement.toDataURL('image/png');
+    // if we got here, it worked
+    downloadURL(url);
+    return;
+  } catch (e) {
+    // fall through to robust path
+    console.warn('[Snapshot] fast path failed, trying offscreen RT.', e);
+  }
+
+  // robust path: render to offscreen target and read pixels
+  try {
+    const size = renderer.getSize(new THREE.Vector2());
+    const dpr  = renderer.getPixelRatio();
+    const w = Math.max(1, Math.floor(size.x * dpr));
+    const h = Math.max(1, Math.floor(size.y * dpr));
+
+    const oldTarget = renderer.getRenderTarget();
+    const rt = new THREE.WebGLRenderTarget(w, h, { samples: 0 });
+    renderer.setRenderTarget(rt);
+    if (composer) composer.render(); else renderer.render(scene, camera);
+
+    const buffer = new Uint8Array(w * h * 4);
+    renderer.readRenderTargetPixels(rt, 0, 0, w, h, buffer);
+
+    // flip Y and pack into a canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    const imgData = ctx.createImageData(w, h);
+
+    // flip vertically: WebGL origin is bottom-left; 2D canvas is top-left
+    for (let y = 0; y < h; y++) {
+      const src = (h - 1 - y) * w * 4;
+      const dst = y * w * 4;
+      imgData.data.set(buffer.subarray(src, src + w * 4), dst);
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        alert('Snapshot failed. Check CORS headers on textures/assets.');
+        return;
+      }
+      downloadURL(URL.createObjectURL(blob), true);
+    }, 'image/png');
+
+    // restore + cleanup
+    renderer.setRenderTarget(oldTarget);
+    rt.dispose();
+  } catch (e) {
+    console.error('[Snapshot] offscreen capture failed:', e);
+    alert('Snapshot error. Likely CORS-blocked textures. Ensure servers send Access-Control-Allow-Origin and loaders use crossOrigin="anonymous".');
+  }
+});
+
 
   // Render mode
   renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
