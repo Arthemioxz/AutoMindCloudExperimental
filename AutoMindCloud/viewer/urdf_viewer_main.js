@@ -188,33 +188,68 @@ function frameMeshes(core, meshes) {
 
 /* --------------------- Offscreen thumbnails --------------------- */
 
-function buildOffscreenForThumbnails(core, assetToMeshes) {
-  console.log('foto');
-  if (!core.robot) return null;
 
-  // Offscreen renderer & scene
+
+
+
+
+
+
+
+
+function buildOffscreenForThumbnails(core, assetToMeshes) {
+  console.log('[thumbs] init offscreen');
+  if (!core?.robot) return null;
+
   const OFF_W = 640, OFF_H = 480;
 
+  // Offscreen canvas + renderer
   const canvas = document.createElement('canvas');
   canvas.width = OFF_W; canvas.height = OFF_H;
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    preserveDrawingBuffer: true
+  });
   renderer.setSize(OFF_W, OFF_H, false);
 
+  // Modern color management (r152+)
+  // Fallback for older three builds is: renderer.outputEncoding = THREE.sRGBEncoding
+  if ('outputColorSpace' in renderer) {
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+  } else {
+    renderer.outputEncoding = THREE.sRGBEncoding;
+  }
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  renderer.physicallyCorrectLights = true;
+
+  // Scene
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xffffff);
+  scene.background = new THREE.Color(0xf7f9fb);
 
-  const amb = new THREE.AmbientLight(0xffffff, 0.95);
-  const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(2.5, 2.5, 2.5);
-  scene.add(amb); scene.add(d);
+  // Try to reuse main scene environment if available (best for PBR)
+  // Otherwise lighting fallback will kick in
+  if (core?.scene?.environment) {
+    scene.environment = core.scene.environment;
+  }
 
+  // Soft three-point-ish lights (works even without env)
+  // Hemisphere gives nice fill for metals
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x8899aa, 0.75);
+  const key  = new THREE.DirectionalLight(0xffffff, 1.20); key.position.set(3, 4, 2);
+  const rim  = new THREE.DirectionalLight(0xffffff, 0.35); rim.position.set(-2, 3, -3);
+  scene.add(hemi, key, rim);
+
+  // Camera
   const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-  // Clone the whole robot to isolate assets per snapshot
+  // Clone robot so we can toggle visibility safely
   const robotClone = core.robot.clone(true);
   scene.add(robotClone);
 
-  // Map assetKey → meshes[] in the clone (using __assetKey tags copied by clone)
+  // Map assetKey -> clone meshes
   const cloneAssetToMeshes = new Map();
   robotClone.traverse(o => {
     const k = o?.userData?.__assetKey;
@@ -228,7 +263,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const meshes = cloneAssetToMeshes.get(assetKey) || [];
     if (!meshes.length) return null;
 
-    // Toggle visibility: only keep target asset
+    // Save & hide all; show only target meshes
     const vis = [];
     robotClone.traverse(o => {
       if (o.isMesh && o.geometry) vis.push([o, o.visible]);
@@ -236,7 +271,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     for (const [m] of vis) m.visible = false;
     for (const m of meshes) m.visible = true;
 
-    // Fit camera to these meshes
+    // Compute bounds of just these meshes
     const box = new THREE.Box3();
     const tmp = new THREE.Box3();
     let has = false;
@@ -249,23 +284,49 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = maxDim * 2.0;
 
+    // Camera fit (slightly farther to avoid clipping)
+    const dist = maxDim * 2.0;
     camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far = Math.max(maxDim * 1000, 1000);
+    camera.far  = Math.max(maxDim * 1000, 1000);
     camera.updateProjectionMatrix();
 
-    const az = Math.PI * 0.25, el = Math.PI * 0.18;
+    const az = Math.PI * 0.25, el = Math.PI * 0.2;
     const dir = new THREE.Vector3(
       Math.cos(el) * Math.cos(az),
       Math.sin(el),
       Math.cos(el) * Math.sin(az)
     ).multiplyScalar(dist);
-    camera.position.copy(center.clone().add(dir));
+
+    camera.position.copy(center).add(dir);
     camera.lookAt(center);
+
+    // ---------- PBR fallback tweak (ONLY if no env) ----------
+    // Metals with no environment look black. If scene.environment is missing,
+    // temporarily soften materials during render and then restore.
+    const restoreList = [];
+    const usingEnv = !!scene.environment;
+
+    if (!usingEnv) {
+      for (const m of meshes) {
+        const mat = m.material;
+        if (Array.isArray(mat)) {
+          for (const single of mat) maybeSoften(single, restoreList);
+        } else {
+          maybeSoften(mat, restoreList);
+        }
+      }
+    }
 
     renderer.render(scene, camera);
     const url = renderer.domElement.toDataURL('image/png');
+
+    // Restore materials if we tweaked them
+    for (const r of restoreList) {
+      const { mat, props } = r;
+      Object.assign(mat, props);
+      if ('needsUpdate' in mat) mat.needsUpdate = true;
+    }
 
     // Restore visibility
     for (const [o, v] of vis) o.visible = v;
@@ -273,9 +334,38 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     return url;
   }
 
+  function maybeSoften(mat, restoreList) {
+    if (!mat || !mat.isMaterial) return;
+
+    // Only touch PBR-ish materials that can go black without env
+    const isStd = mat.isMeshStandardMaterial || mat.type === 'MeshStandardMaterial';
+    const isPhys = mat.isMeshPhysicalMaterial || mat.type === 'MeshPhysicalMaterial';
+
+    if (isStd || isPhys) {
+      // Save original properties
+      const backup = {
+        metalness: mat.metalness,
+        roughness: mat.roughness,
+        envMap: mat.envMap,
+        color: mat.color?.clone?.()
+      };
+      restoreList.push({ mat, props: backup });
+
+      // If truly metallic and no env, push toward diffuse so it lights up
+      // Keep color as-is; just reduce metalness and increase roughness.
+      if (typeof mat.metalness === 'number' && mat.metalness > 0.6 && !mat.envMap) {
+        mat.metalness = 0.0;
+      }
+      if (typeof mat.roughness === 'number') {
+        mat.roughness = Math.max(mat.roughness, 0.6);
+      }
+      mat.needsUpdate = true;
+    }
+  }
+
   return {
     thumbnail: async (assetKey) => {
-      try { return snapshotAsset(assetKey); } catch (_) { return null; }
+      try { return snapshotAsset(assetKey); } catch (e) { console.warn('[thumbs] snapshot error', e); return null; }
     },
     destroy: () => {
       try { renderer.dispose(); } catch (_) {}
@@ -283,6 +373,30 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /* ------------------------- Click Sound ------------------------- */
 
