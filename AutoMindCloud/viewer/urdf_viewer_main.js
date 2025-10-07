@@ -200,24 +200,50 @@ function frameMeshes(core, meshes) {
 
 
 
+
+
+
+
+
+
+
+// --- Offscreen thumbnails with lighting-safe wait + renderer parity ---
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   if (!core.robot) return null;
 
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
   // Offscreen renderer & scene
   const OFF_W = 640, OFF_H = 480;
-
   const canvas = document.createElement('canvas');
   canvas.width = OFF_W; canvas.height = OFF_H;
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
   renderer.setSize(OFF_W, OFF_H, false);
 
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xffffff);
+  // Match main renderer for identical colors/textures
+  if (core?.renderer) {
+    renderer.physicallyCorrectLights = core.renderer.physicallyCorrectLights ?? true;
+    renderer.toneMapping = core.renderer.toneMapping;
+    renderer.toneMappingExposure = core.renderer.toneMappingExposure ?? 1.0;
+    if ('outputColorSpace' in renderer) {
+      renderer.outputColorSpace = core.renderer.outputColorSpace ?? THREE.SRGBColorSpace;
+    } else {
+      renderer.outputEncoding = core.renderer.outputEncoding ?? THREE.sRGBEncoding;
+    }
+    renderer.shadowMap.enabled = core.renderer.shadowMap?.enabled ?? false;
+    renderer.shadowMap.type = core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
+  }
 
+  const scene = new THREE.Scene();
+  // Use the same bg/env if available to preserve appearance
+  scene.background = core?.scene?.background ?? new THREE.Color(0xffffff);
+  scene.environment = core?.scene?.environment ?? null;
+
+  // Soft key + fill so assets aren’t flat even without env
   const amb = new THREE.AmbientLight(0xffffff, 0.95);
-  const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(2.5, 2.5, 2.5);
-  scene.add(amb); scene.add(d);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.1); dir.position.set(2.5, 2.5, 2.5);
+  scene.add(amb, dir);
 
   const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
@@ -225,7 +251,18 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   const robotClone = core.robot.clone(true);
   scene.add(robotClone);
 
-  // Map assetKey → meshes[] in the clone (using __assetKey tags copied by clone)
+  // Ensure materials recompile under offscreen renderer
+  robotClone.traverse(o => {
+    if (o.isMesh && o.material) {
+      if (Array.isArray(o.material)) o.material = o.material.map(m => m.clone());
+      else o.material = o.material.clone();
+      o.material.needsUpdate = true;
+      o.castShadow = renderer.shadowMap.enabled;
+      o.receiveShadow = renderer.shadowMap.enabled;
+    }
+  });
+
+  // Map assetKey → meshes[] in the clone (using __assetKey tags)
   const cloneAssetToMeshes = new Map();
   robotClone.traverse(o => {
     const k = o?.userData?.__assetKey;
@@ -235,15 +272,21 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   });
 
+  // Waiter: give lighting/materials time to settle (1s + 2 RAF frames)
+  const ready = (async () => {
+    await sleep(1000); // <-- main guard against “black” first frame
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    // prime one render so shaders/IBL compile before first snapshot
+    renderer.render(scene, camera);
+  })();
+
   function snapshotAsset(assetKey) {
     const meshes = cloneAssetToMeshes.get(assetKey) || [];
     if (!meshes.length) return null;
 
     // Toggle visibility: only keep target asset
     const vis = [];
-    robotClone.traverse(o => {
-      if (o.isMesh && o.geometry) vis.push([o, o.visible]);
-    });
+    robotClone.traverse(o => { if (o.isMesh && o.geometry) vis.push([o, o.visible]); });
     for (const [m] of vis) m.visible = false;
     for (const m of meshes) m.visible = true;
 
@@ -258,21 +301,21 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
 
     const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
+    const size   = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = maxDim * 2.0;
+    const dist   = maxDim * 2.0;
 
     camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far = Math.max(maxDim * 1000, 1000);
+    camera.far  = Math.max(maxDim * 1000, 1000);
     camera.updateProjectionMatrix();
 
     const az = Math.PI * 0.25, el = Math.PI * 0.18;
-    const dir = new THREE.Vector3(
+    const dirV = new THREE.Vector3(
       Math.cos(el) * Math.cos(az),
       Math.sin(el),
       Math.cos(el) * Math.sin(az)
     ).multiplyScalar(dist);
-    camera.position.copy(center.clone().add(dir));
+    camera.position.copy(center.clone().add(dirV));
     camera.lookAt(center);
 
     renderer.render(scene, camera);
@@ -286,7 +329,11 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
   return {
     thumbnail: async (assetKey) => {
-      try { return snapshotAsset(assetKey); } catch (_) { return null; }
+      try {
+        await ready;                // ensure lights/env/materials are ready
+        await sleep(150);           // tiny per-shot cushion (helps heavy textures)
+        return snapshotAsset(assetKey);
+      } catch (_) { return null; }
     },
     destroy: () => {
       try { renderer.dispose(); } catch (_) {}
@@ -294,17 +341,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   };
 }
-
-
-
-
-
-
-
-
-
-
-
 
 
 
