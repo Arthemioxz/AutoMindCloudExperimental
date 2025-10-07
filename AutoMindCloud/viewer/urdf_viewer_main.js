@@ -189,6 +189,7 @@ function frameMeshes(core, meshes) {
 /* --------------------- Offscreen thumbnails --------------------- */
 
 function buildOffscreenForThumbnails(core, assetToMeshes) {
+  console.log('foto');
   if (!core.robot) return null;
 
   // Offscreen renderer & scene
