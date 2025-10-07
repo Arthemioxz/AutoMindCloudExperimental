@@ -361,35 +361,24 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
 
 
-function ensureSectionVisual() {
-    // Return the existing visual if it already exists (good practice)
+  function ensureSectionVisual() {
     if (secVisual) return secVisual;
-
-    // Create the Plane Geometry (1x1 unit square)
-    const geometry = new THREE.PlaneGeometry(1, 1); 
-
-    // Create the Material for the Visual Cut
-    const material = new THREE.MeshBasicMaterial({
+    secVisual = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1, 1, 1),
+      new THREE.MeshBasicMaterial({
         color: theme.teal,
         transparent: true,
         opacity: 0.4,
-        // Common settings for overlays/gizmos:
-        depthWrite: false, // Don't write to the depth buffer
-        depthTest: false,  // Always render regardless of what's in front
-        toneMapped: false,
-        side: THREE.DoubleSide // Visible from both sides
-    });
-
-    secVisual = new THREE.Mesh(geometry, material);
-    
-    secVisual.visible = true;
-    secVisual.renderOrder = 10000; // Ensures it renders on top of everything
-    
+        depthWrite: true,
+        depthTest: true,
+        toneMapped: true,
+        side: THREE.DoubleSide
+      })
+    );
+    secVisual.visible = false;
+    secVisual.renderOrder = 10000;
     app.scene.add(secVisual);
-    
-    return secVisual;
-}
-
+    return s
 
 
 
