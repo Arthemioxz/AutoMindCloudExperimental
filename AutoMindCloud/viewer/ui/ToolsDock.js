@@ -335,28 +335,27 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
   // ---------- Section plane ----------
   let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
   let sectionPlane = null, secVisual = null;
-
 function ensureSectionVisual() {
   if (secVisual) return secVisual;
-
-  const mat = new THREE.MeshBasicMaterial({
-    color: theme.teal,
-    transparent: true,
-    opacity: 0.4,
-    side: THREE.FrontSide,
-    depthWrite: false,
-    depthTest: false,          // <- make it overlay for now so you SEE it
-    toneMapped: false,
-    premultipliedAlpha: true
-  });
-
-  secVisual = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
-  secVisual.renderOrder = 9999;
-  secVisual.frustumCulled = false;
-  secVisual.visible = true;    // <- turn it on
+  secVisual = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1, 1, 1),
+    new THREE.MeshBasicMaterial({
+      color: theme.teal,
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+      depthTest: false,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+      premultipliedAlpha: true   // <- add this
+    })
+  );
+  secVisual.visible = false;
+  secVisual.renderOrder = 10000;
   app.scene.add(secVisual);
   return secVisual;
 }
+
 
 
   function refreshSectionVisual(maxDim, center) {
