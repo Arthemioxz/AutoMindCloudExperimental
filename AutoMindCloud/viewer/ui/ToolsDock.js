@@ -360,26 +360,32 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
 
 
+function ensureSectionVisual() {
+  if (secVisual) return secVisual;
 
-  function ensureSectionVisual() {
-    if (secVisual) return secVisual;
-    secVisual = new THREE.Mesh(
-      new THREE.PlaneGeometry(1, 1, 1, 1),
-      new THREE.MeshBasicMaterial({
-        color: theme.teal,
-        transparent: true,
-        opacity: 0.4,
-        depthWrite: true,
-        depthTest: true,
-        toneMapped: true,
-        side: THREE.DoubleSide
-      })
-    );
-    secVisual.visible = true;
-    secVisual.renderOrder = 10000;
-    app.scene.add(secVisual);
-    return secVisual;
-  }
+  const THICK = 0.01; // requested thickness
+  const geom = new THREE.BoxGeometry(1, 1, THICK); // width, height, thickness
+
+  const mat = new THREE.MeshBasicMaterial({
+    color: theme.teal,
+    transparent: true,
+    opacity: 0.4,
+    depthWrite: false,     // don't dirty Z
+    depthTest: true,       // keep this true for stable visuals
+    toneMapped: false,
+    premultipliedAlpha: true
+    // no need for DoubleSide on a closed box
+  });
+
+  secVisual = new THREE.Mesh(geom, mat);
+  secVisual.visible = false;      // toggle elsewhere like before
+  secVisual.renderOrder = 10000;
+  secVisual.frustumCulled = false;
+
+  app.scene.add(secVisual);
+  return secVisual;
+}
+
 
 
 
