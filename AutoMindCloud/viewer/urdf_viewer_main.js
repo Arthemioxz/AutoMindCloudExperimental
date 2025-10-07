@@ -193,109 +193,58 @@ function frameMeshes(core, meshes) {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-// Render thumbnails using the main scene & renderer (no clone).
 function buildOffscreenForThumbnails(core, assetToMeshes) {
-  console.log('[thumbs] init(main-scene)');
   if (!core?.robot || !core?.renderer || !core?.scene) return null;
 
   const OFF_W = 512, OFF_H = 384;
   const renderer = core.renderer;
   const scene = core.scene;
 
-  // One RT reused for all thumbs
   const rt = new THREE.WebGLRenderTarget(OFF_W, OFF_H, { depthBuffer: true });
   if ('colorSpace' in rt.texture && 'SRGBColorSpace' in THREE) {
     rt.texture.colorSpace = THREE.SRGBColorSpace;
   }
 
-  // Prepare a dedicated camera for thumbs
-  const cam = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 1e6);
+  const cam = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 1e7);
 
-  // Ensure we have a neutral env if the scene lacks one
+  // Neutral env if you don’t already have one
   if (!scene.environment) {
     try {
       const pmrem = new THREE.PMREMGenerator(renderer);
       const envRT = pmrem.fromScene(new THREE.RoomEnvironment(renderer), 0.04);
       scene.environment = envRT.texture;
-    } catch (_) {
-      // fine: lighting from the main scene will still apply
-    }
+    } catch (_) {}
   }
 
-  // Utility: compute world AABB of a list of meshes
+  // ---- helpers ----
   const _box = new THREE.Box3();
-  const _tmp = new THREE.Box3();
-  const _v3  = new THREE.Vector3();
-  function computeBounds(meshes) {
-    let has = false;
+  const _sphere = new THREE.Sphere();
+  const _v = new THREE.Vector3();
+
+  function computeBoundingSphere(meshes) {
     _box.makeEmpty();
+    let any = false;
     for (const m of meshes) {
-      if (!m || !m.isObject3D) continue;
+      if (!m?.isObject3D) continue;
       m.updateWorldMatrix(true, false);
-      _tmp.setFromObject(m);
-      if (_tmp.isEmpty()) continue;
-      if (!has) { _box.copy(_tmp); has = true; } else _box.union(_tmp);
+      _box.expandByObject(m);
+      any = true;
     }
-    return has ? _box.clone() : null;
+    if (!any || _box.isEmpty()) return null;
+    _box.getBoundingSphere(_sphere);
+    return { center: _sphere.center.clone(), radius: Math.max(_sphere.radius, 1e-6) };
   }
 
-  // Utility: show only target meshes (keep ancestors visible), restore later
-  function showOnly(meshes) {
-    const vis = [];
-    core.robot.traverse(o => { if (o.isObject3D) vis.push([o, o.visible]); o.visible = false; });
-    // make target meshes and their parents visible
-    for (const m of meshes) {
-      let p = m;
-      while (p && p !== scene) { p.visible = true; p = p.parent; }
-    }
-    return () => { for (const [o, v] of vis) o.visible = v; };
-  }
+  function fitCameraToSphere(center, radius, padding = 1.35) {
+    // Choose the larger distance required by vertical and horizontal FOVs
+    const vFov = THREE.MathUtils.degToRad(cam.fov);
+    const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * cam.aspect);
 
-  // Optional: soften PBR a touch if there’s still no env
-  function softenPBR(meshes) {
-    if (scene.environment) return () => {};
-    const stash = [];
-    for (const m of meshes) {
-      const mats = Array.isArray(m.material) ? m.material : [m.material];
-      for (const mat of mats) {
-        if (!mat || !mat.isMaterial) continue;
-        const isStd = mat.isMeshStandardMaterial || mat.type === 'MeshStandardMaterial';
-        const isPhys= mat.isMeshPhysicalMaterial || mat.type === 'MeshPhysicalMaterial';
-        if (isStd || isPhys) {
-          stash.push([mat, mat.metalness, mat.roughness]);
-          if (typeof mat.metalness === 'number') mat.metalness = 0.0;
-          if (typeof mat.roughness === 'number') mat.roughness = Math.max(0.6, mat.roughness ?? 0.6);
-          mat.needsUpdate = true;
-        }
-      }
-    }
-    return () => { for (const [mat, met, rou] of stash) { mat.metalness = met; mat.roughness = rou; mat.needsUpdate = true; } };
-  }
+    const distV = radius / Math.tan(vFov * 0.5);
+    const distH = radius / Math.tan(hFov * 0.5);
+    const dist = Math.max(distV, distH) * padding;
 
-  function fitCameraTo(box) {
-    const center = box.getCenter(_v3.set(0,0,0).clone());
-    const size   = box.getSize(_v3.set(0,0,0));
-    const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist   = maxDim * 2.0;
-
-    cam.aspect = OFF_W / OFF_H;
-    cam.near   = Math.max(maxDim / 1000, 0.001);
-    cam.far    = Math.max(maxDim * 1000, 1000);
-    cam.updateProjectionMatrix();
-
+    // Keep your preferred azimuth/elevation
     const az = Math.PI * 0.25, el = Math.PI * 0.20;
     const dir = new THREE.Vector3(
       Math.cos(el) * Math.cos(az),
@@ -303,37 +252,49 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       Math.cos(el) * Math.sin(az)
     ).multiplyScalar(dist);
 
+    cam.aspect = OFF_W / OFF_H;
+    cam.near = Math.max(dist * 0.01, 0.001);
+    cam.far = dist * 50.0;
+    cam.updateProjectionMatrix();
+
     cam.position.copy(center).add(dir);
     cam.lookAt(center);
     cam.updateMatrixWorld(true);
+  }
+
+  function showOnly(meshes) {
+    const vis = [];
+    core.robot.traverse(o => { if (o.isObject3D) { vis.push([o, o.visible]); o.visible = false; } });
+    for (const m of meshes) {
+      let p = m;
+      while (p && p !== scene) { p.visible = true; p = p.parent; }
+    }
+    return () => { for (const [o, v] of vis) o.visible = v; };
   }
 
   function snapshotAsset(assetKey) {
     const meshes = assetToMeshes?.get(assetKey) || [];
     if (!meshes.length) return null;
 
-    // Isolate
     const restoreVis = showOnly(meshes);
-    const restoreMats = softenPBR(meshes);
 
-    // Bounds & camera
-    const box = computeBounds(meshes);
-    if (!box) { restoreMats(); restoreVis(); return null; }
-    fitCameraTo(box);
+    const bs = computeBoundingSphere(meshes);
+    if (!bs) { restoreVis(); return null; }
+    fitCameraToSphere(bs.center, bs.radius);
 
-    // Save & set renderer state
-    const prevTarget   = renderer.getRenderTarget();
-    const prevAuto     = renderer.autoClear;
-    const prevClearCol = renderer.getClearColor(new THREE.Color());
-    const prevClearA   = renderer.getClearAlpha();
+    // save state
+    const prevTarget = renderer.getRenderTarget();
+    const prevAuto = renderer.autoClear;
+    const prevClear = renderer.getClearColor(new THREE.Color());
+    const prevAlpha = renderer.getClearAlpha();
 
     renderer.setRenderTarget(rt);
-    renderer.setClearColor(0xf7f9fb, 1); // light card bg
+    renderer.setClearColor(0xdfe5ea, 1); // slightly darker than your card bg
     renderer.autoClear = true;
     renderer.clear();
     renderer.render(scene, cam);
 
-    // Read back → 2D canvas → data URL
+    // readback → 2D canvas (flip Y)
     const pixels = new Uint8Array(OFF_W * OFF_H * 4);
     renderer.readRenderTargetPixels(rt, 0, 0, OFF_W, OFF_H, pixels);
 
@@ -342,7 +303,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const ctx = can2d.getContext('2d');
     const imgData = ctx.createImageData(OFF_W, OFF_H);
     for (let y = 0; y < OFF_H; y++) {
-      const srcY = OFF_H - 1 - y; // flip Y
+      const srcY = OFF_H - 1 - y;
       imgData.data.set(
         pixels.subarray(srcY * OFF_W * 4, (srcY + 1) * OFF_W * 4),
         y * OFF_W * 4
@@ -351,11 +312,10 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     ctx.putImageData(imgData, 0, 0);
     const url = can2d.toDataURL('image/png');
 
-    // Restore
+    // restore
     renderer.setRenderTarget(prevTarget);
-    renderer.setClearColor(prevClearCol, prevClearA);
+    renderer.setClearColor(prevClear, prevAlpha);
     renderer.autoClear = prevAuto;
-    restoreMats();
     restoreVis();
 
     return url;
@@ -369,6 +329,9 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     destroy: () => { try { rt.dispose(); } catch (_) {} }
   };
 }
+
+
+
 
 
 
