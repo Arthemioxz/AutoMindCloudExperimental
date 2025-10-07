@@ -366,26 +366,22 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
 
 
-
-
 function ensureSectionVisual() {
   if (secVisual) return secVisual;
   
   secVisual = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1, 1, 1),
     new THREE.MeshBasicMaterial({
-      color: 0x008080, // Direct hex color for teal
+      color: theme.teal,
       transparent: true,
-      opacity: 0.15, // Lower opacity for better blending
+      opacity: 0.6,
       depthWrite: false,
-      depthTest: true, // Enable depth testing
       side: THREE.DoubleSide,
-      toneMapped: true // Enable tone mapping
+      wireframe: true // Makes it clearly visible
     })
   );
   
   secVisual.visible = false;
-  secVisual.renderOrder = 1; // Lower render order
   app.scene.add(secVisual);
   return secVisual;
 }
