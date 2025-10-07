@@ -342,27 +342,80 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
 
 
-  function ensureSectionVisual() {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function ensureSectionVisual() {
   if (secVisual) return secVisual;
-  secVisual = new THREE.Mesh(
-    new THREE.PlaneGeometry(1, 1),
-    new THREE.MeshBasicMaterial({
-      color: theme.teal,
-      transparent: true,
-      opacity: 0.4,
-      depthWrite: false,
-      depthTest: false,        // overlay, so no depth test
-      toneMapped: false,
-      side: THREE.DoubleSide,
-      premultipliedAlpha: true
-    })
-  );
+
+  const EPS = 1e-4;                 // tiny local offset to separate faces
+  const geom = new THREE.PlaneGeometry(1, 1);
+
+  const baseMat = new THREE.MeshBasicMaterial({
+    color: theme.teal,
+    transparent: true,
+    opacity: 0.4,
+    depthWrite: false,              // don't dirty Z
+    depthTest: true,                // DO test Z to avoid speckle
+    toneMapped: false,
+    premultipliedAlpha: true,
+    polygonOffset: true,            // nudge above coplanar surfaces
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+    dithering: true
+  });
+
+  const frontMat = baseMat.clone(); frontMat.side = THREE.FrontSide;
+  const backMat  = baseMat.clone(); backMat.side  = THREE.BackSide;
+
+  const front = new THREE.Mesh(geom.clone(), frontMat);
+  const back  = new THREE.Mesh(geom.clone(),  backMat);
+
+  // keep the faces slightly apart along the plane's local normal
+  front.position.z =  +EPS;
+  back.position.z  =  -EPS;
+
+  // Group so you can move/rotate/scale a single object
+  secVisual = new THREE.Group();
+  secVisual.add(front, back);
+
+  // sensible defaults (your code can toggle visibility later)
   secVisual.visible = false;
   secVisual.renderOrder = 10000;
-  app.scene.add(secVisual); // we’ll move it to overlay below
+  secVisual.frustumCulled = false;
+
+  app.scene.add(secVisual);
   return secVisual;
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
 
 
 
