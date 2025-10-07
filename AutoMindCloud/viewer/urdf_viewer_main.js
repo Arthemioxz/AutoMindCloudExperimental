@@ -190,360 +190,236 @@ function frameMeshes(core, meshes) {
 
 
 
+/* ===========================================================
+   ToolsDock.js  — classic script build (no ES modules)
+   Exposes: window.createToolsDock, window.buildOffscreenForThumbnails
+   Requires global THREE and your existing `core` (scene, renderer, robot)
+   =========================================================== */
+(function (global) {
+  'use strict';
 
+  // -------------------- Utilities --------------------
+  function normalizeTheme(theme) {
+    if (!theme) theme = {};
+    const t = theme;
+    if (t.colors) {
+      t.teal       ??= t.colors.teal;
+      t.tealSoft   ??= t.colors.tealSoft;
+      t.tealFaint  ??= t.colors.tealFaint;
+      t.bgPanel    ??= t.colors.panelBg;
+      t.bgCanvas   ??= t.colors.canvasBg;
+      t.stroke     ??= t.colors.stroke;
+      t.text       ??= t.colors.text;
+      t.textMuted  ??= t.colors.textMuted;
+    }
+    if (t.shadows) {
+      t.shadow ??= (t.shadows.lg || t.shadows.md || '0 6px 16px rgba(0,0,0,.12)');
+    }
+    // sensible defaults
+    t.teal       ??= '#10b7b1';
+    t.tealSoft   ??= '#74d9d6';
+    t.tealFaint  ??= '#e5fbfa';
+    t.bgPanel    ??= '#ffffff';
+    t.bgCanvas   ??= '#f3f7fb';
+    t.stroke     ??= '#d8e2ea';
+    t.text       ??= '#0b2537';
+    t.textMuted  ??= '#5b6c79';
+    t.shadow     ??= '0 6px 16px rgba(0,0,0,.12)';
+    return t;
+  }
 
+  // -------------------- Offscreen thumbnails ---------------------
+  // NOTE: camera math is kept EXACTLY as your version. Only lighting/env fixed.
+  function buildOffscreenForThumbnails(core/*, assetToMeshes (unused here, we clone) */) {
+    if (!core || !core.robot) return null;
 
+    const OFF_W = 640, OFF_H = 480;
 
+    const canvas = document.createElement('canvas');
+    canvas.width = OFF_W; canvas.height = OFF_H;
 
-# urdf_render_fixed.py — Full-screen, always-fit viewer (Colab/Jupyter/VSCode) + Top-left Download Button
-import base64, re, os, json, shutil, zipfile
-from IPython.display import HTML
-import gdown
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      preserveDrawingBuffer: true
+    });
+    renderer.setSize(OFF_W, OFF_H, false);
 
-def Download_URDF(Drive_Link, Output_Name="Model"):
-    root_dir = "/content"
-    file_id = Drive_Link.split('/d/')[1].split('/')[0]
-    url = f"https://drive.google.com/uc?id={file_id}"
-    zip_path = os.path.join(root_dir, Output_Name + ".zip")
-    tmp_extract = os.path.join(root_dir, f"__tmp_extract_{Output_Name}")
-    final_dir = os.path.join(root_dir, Output_Name)
+    // Modern color/tone settings (support old three too)
+    if ('outputColorSpace' in renderer) {
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+    } else {
+      renderer.outputEncoding = THREE.sRGBEncoding;
+    }
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.physicallyCorrectLights = true;
 
-    if os.path.exists(tmp_extract): shutil.rmtree(tmp_extract)
-    os.makedirs(tmp_extract, exist_ok=True)
-    if os.path.exists(final_dir): shutil.rmtree(final_dir)
+    const scene = new THREE.Scene();
+    // Slightly off-white so light parts aren’t lost
+    scene.background = new THREE.Color(0xEEF3F7);
 
-    gdown.download(url, zip_path, quiet=True)
-    with zipfile.ZipFile(zip_path, 'r') as zf:
-        zf.extractall(tmp_extract)
+    // Reuse main env if present; else neutral PMREM if available
+    if (core.scene && core.scene.environment) {
+      scene.environment = core.scene.environment;
+    } else {
+      try {
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        const envRT = pmrem.fromScene(new THREE.RoomEnvironment(renderer), 0.04);
+        scene.environment = envRT.texture;
+      } catch (_) { /* ok if not available */ }
+    }
 
-    def junk(n): return n.startswith('.') or n == '__MACOSX'
-    top = [n for n in os.listdir(tmp_extract) if not junk(n)]
-    if len(top) == 1 and os.path.isdir(os.path.join(tmp_extract, top[0])):
-        shutil.move(os.path.join(tmp_extract, top[0]), final_dir)
-    else:
-        os.makedirs(final_dir, exist_ok=True)
-        for n in top:
-            shutil.move(os.path.join(tmp_extract, n), os.path.join(final_dir, n))
-    shutil.rmtree(tmp_extract, ignore_errors=True)
-    return final_dir
+    // Soft light rig (helps even when env exists)
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x92a1b1, 0.75);
+    const key  = new THREE.DirectionalLight(0xffffff, 1.15); key.position.set(3, 4, 2);
+    const rim  = new THREE.DirectionalLight(0xffffff, 0.35); rim.position.set(-2, 3, -3);
+    scene.add(hemi, key, rim);
 
+    const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-def URDF_Render(folder_path="Model",
-                select_mode="link",
-                background=0xffffff,
-                # dynamic loader (repo/branch/file)
-                repo="Arthemioxz/AutoMindCloudExperimental",
-                branch="main",
-                compFile="AutoMindCloud/viewer/urdf_viewer_main.js"):
-    """Render a full-screen URDF viewer. Output cell auto-fits any device."""
+    // Clone robot so we can toggle visibility safely per asset
+    const robotClone = core.robot.clone(true);
+    scene.add(robotClone);
 
-    # ---- Find /urdf + /meshes and build mesh DB ----
-    def find_dirs(root):
-        u, m = os.path.join(root, "urdf"), os.path.join(root, "meshes")
-        if os.path.isdir(u) and os.path.isdir(m): return u, m
-        if os.path.isdir(root):
-            for name in os.listdir(root):
-                cand = os.path.join(root, name)
-                uu, mm = os.path.join(cand, "urdf"), os.path.join(cand, "meshes")
-                if os.path.isdir(uu) and os.path.isdir(mm): return uu, mm
-        return None, None
+    // Map assetKey → meshes[] (based on userData.__assetKey)
+    const cloneAssetToMeshes = new Map();
+    robotClone.traverse(o => {
+      const k = o && o.userData && o.userData.__assetKey;
+      if (k && o.isMesh && o.geometry) {
+        const arr = cloneAssetToMeshes.get(k) || [];
+        arr.push(o); cloneAssetToMeshes.set(k, arr);
+      }
+    });
 
-    urdf_dir, meshes_dir = find_dirs(folder_path)
-    if not urdf_dir or not meshes_dir:
-        return HTML(f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>")
+    function softenPBRIfNoEnv(meshes) {
+      if (scene.environment) return () => {};
+      const stash = [];
+      for (const m of meshes) {
+        const mats = Array.isArray(m.material) ? m.material : [m.material];
+        for (const mat of mats) {
+          if (!mat || !mat.isMaterial) continue;
+          const isStd  = mat.isMeshStandardMaterial || mat.type === 'MeshStandardMaterial';
+          const isPhys = mat.isMeshPhysicalMaterial || mat.type === 'MeshPhysicalMaterial';
+          if (isStd || isPhys) {
+            stash.push([mat, mat.metalness, mat.roughness]);
+            if (typeof mat.metalness === 'number') mat.metalness = 0.0;
+            if (typeof mat.roughness === 'number') mat.roughness = Math.max(0.6, mat.roughness ?? 0.6);
+            mat.needsUpdate = true;
+          }
+        }
+      }
+      return () => {
+        for (const [mat, met, rou] of stash) {
+          mat.metalness = met;
+          mat.roughness = rou;
+          mat.needsUpdate = true;
+        }
+      };
+    }
 
-    urdf_files = [os.path.join(urdf_dir, f) for f in os.listdir(urdf_dir) if f.lower().endswith(".urdf")]
-    urdf_files.sort(key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0, reverse=True)
+    function snapshotAsset(assetKey) {
+      const meshes = cloneAssetToMeshes.get(assetKey) || [];
+      if (!meshes.length) return null;
 
-    urdf_raw = ""
-    mesh_refs = []
-    for upath in urdf_files:
-        try:
-            with open(upath, "r", encoding="utf-8", errors="ignore") as f:
-                txt = f.read().lstrip('\ufeff')
-            refs = re.findall(r'filename="([^"]+\.(?:stl|dae))"', txt, re.I)
-            if refs:
-                urdf_raw = txt
-                mesh_refs = list(dict.fromkeys(refs))
-                break
-        except Exception:
-            pass
-    if not urdf_raw and urdf_files:
-        with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
-            urdf_raw = f.read().lstrip('\ufeff')
+      // Hide all, show only target meshes
+      const vis = [];
+      robotClone.traverse(o => {
+        if (o.isMesh && o.geometry) vis.push([o, o.visible]);
+      });
+      for (const [m] of vis) m.visible = false;
+      for (const m of meshes) m.visible = true;
 
-    disk_files = []
-    for root, _, files in os.walk(meshes_dir):
-        for name in files:
-            if name.lower().endswith((".stl", ".dae", ".png", ".jpg", ".jpeg")):
-                disk_files.append(os.path.join(root, name))
+      // ---- Camera fit (UNCHANGED) ----
+      const box = new THREE.Box3();
+      const tmp = new THREE.Box3();
+      let has = false;
+      for (const m of meshes) {
+        m.updateWorldMatrix(true, false); // ensure transforms
+        tmp.setFromObject(m);
+        if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
+      }
+      if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
 
-    meshes_root_abs = os.path.abspath(meshes_dir)
-    by_rel, by_base = {}, {}
-    for p in disk_files:
-        rel = os.path.relpath(os.path.abspath(p), meshes_root_abs).replace("\\", "/").lower()
-        by_rel[rel] = p
-        by_base[os.path.basename(p).lower()] = p
+      const center = box.getCenter(new THREE.Vector3());
+      const size   = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      const dist   = maxDim * 2.0;
 
-    _cache, mesh_db = {}, {}
-    def b64(path):
-        if path not in _cache:
-            with open(path, "rb") as f:
-                _cache[path] = base64.b64encode(f.read()).decode("ascii")
-        return _cache[path]
+      camera.near = Math.max(maxDim / 1000, 0.001);
+      camera.far  = Math.max(maxDim * 1000, 1000);
+      camera.updateProjectionMatrix();
 
-    def add_entry(key, path):
-        k = key.replace("\\", "/").lower().lstrip("./")
-        if k.startswith("package://"): k = k[len("package://"):]
-        if k not in mesh_db: mesh_db[k] = b64(path)
+      const az = Math.PI * 0.25, el = Math.PI * 0.18;
+      const dir = new THREE.Vector3(
+        Math.cos(el) * Math.cos(az),
+        Math.sin(el),
+        Math.cos(el) * Math.sin(az)
+      ).multiplyScalar(dist);
+      camera.position.copy(center.clone().add(dir));
+      camera.lookAt(center);
 
-    for ref in mesh_refs:
-        raw = ref.replace("\\", "/").lower().lstrip("./")
-        pkg = raw[10:] if raw.startswith("package://") else raw
-        bn = os.path.basename(raw).lower()
-        cand = by_rel.get(raw) or by_rel.get(pkg) or by_base.get(bn)
-        if cand:
-            add_entry(raw, cand); add_entry(pkg, cand); add_entry(bn, cand)
+      // PBR soften (only if no env)
+      const restoreMats = softenPBRIfNoEnv(meshes);
 
-    for p in disk_files:
-        bn = os.path.basename(p).lower()
-        if bn.endswith((".png", ".jpg", ".jpeg")) and bn not in mesh_db:
-            add_entry(bn, p)
+      // Render & grab data URL
+      renderer.render(scene, camera);
+      const url = renderer.domElement.toDataURL('image/png');
 
-    # ---- HTML payload ----
-    def esc(s: str) -> str:
-        return (s.replace('\\','\\\\')
-                .replace('`','\\`')
-                .replace('$','\\$')
-                .replace("</script>","<\\/script>"))
+      restoreMats();
 
-    urdf_js = esc(urdf_raw)            # escape once for backtick JS string
-    mesh_js = json.dumps(mesh_db)      # dict -> JS object
-    bg_js   = 'null' if (background is None) else str(int(background))
-    sel_js  = json.dumps(select_mode)
+      // Restore visibilities
+      for (const [o, v] of vis) o.visible = v;
 
-    html = f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>
-<title>URDF Viewer</title>
-<style>
-  /* Use dynamic viewport units with safe fallbacks */
-  :root {{
-    --vh: 1vh;
-  }}
-  html, body {{
-    margin:0; padding:0;
-    width:100%;
-    height:100dvh; /* modern browsers */
-    background:#{int(background):06x};
-    overflow:hidden;
-  }}
-  @supports not (height: 100dvh) {{
-    html, body {{ height: calc(var(--vh) * 100); }}
-  }}
+      return url;
+    }
 
-  /* Respect iOS safe areas */
-  body {{
-    padding-top: env(safe-area-inset-top);
-    padding-right: env(safe-area-inset-right);
-    padding-bottom: env(safe-area-inset-bottom);
-    padding-left: env(safe-area-inset-left);
-  }}
+    return {
+      thumbnail: async (assetKey) => {
+        try { return snapshotAsset(assetKey); } catch (e) { console.warn('[thumbs] snapshot error', e); return null; }
+      },
+      destroy: () => {
+        try { renderer.dispose(); } catch (_) {}
+        try { scene.clear(); } catch (_) {}
+      }
+    };
+  }
 
-  /* Full-bleed mount */
-  #app {{
-    position: fixed;
-    inset: 0;
-    width: 100vw;
-    height: 100dvh;
-    touch-action: none;
-  }}
-  @supports not (height: 100dvh) {{
-    #app {{ height: calc(var(--vh) * 100); }}
-  }}
+  // -------------------- Tools Dock (minimal shell) --------------------
+  // This keeps your app working without ES modules. Extend as needed.
+  function createToolsDock(app, theme) {
+    if (!app || !app.camera || !app.controls || !app.renderer) {
+      throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
+    }
+    const t = normalizeTheme(theme);
 
-  /* Badge (non-interactive) */
-  .badge{{ position:fixed; right:14px; bottom:12px; z-index:10; user-select:none; pointer-events:none; }}
-  .badge img{{ max-height:40px; display:block; }}
+    // Example: build a minimal floating container (kept tiny here)
+    const el = document.createElement('div');
+    el.style.cssText = [
+      'position:fixed','top:16px','left:16px','z-index:1000',
+      'background:'+t.bgPanel,'border:1px solid '+t.stroke,
+      'border-radius:12px','box-shadow:'+t.shadow,'padding:10px',
+      'font:14px/1.2 Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif',
+      'color:'+t.text
+    ].join(';');
+    el.innerHTML = `<strong style="color:${t.teal}">Tools</strong>`;
+    document.body.appendChild(el);
 
-  /* Download button (top-left) */
-  .dlbtn {{
-    position: fixed;
-    top: 12px;
-    left: 12px;
-    z-index: 12;
-    font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif;
-    font-size: 13px;
-    padding: 7px 10px;
-    border-radius: 10px;
-    border: 1px solid rgba(0,0,0,.12);
-    background: rgba(255,255,255,.92);
-    box-shadow: 0 2px 8px rgba(0,0,0,.10);
-    cursor: pointer;
-    user-select: none;
-  }}
-  .dlbtn:hover {{ filter: brightness(0.98); }}
-  .dlbtn:active {{ transform: translateY(1px); }}
-</style>
-</head>
-<body>
-<div id="app"></div>
+    // Return a small API so your other code can call it safely
+    return {
+      el,
+      open(){ el.style.display='block'; },
+      close(){ el.style.display='none'; },
+      set(v){ el.style.display = v ? 'block' : 'none'; },
+      destroy(){ el.remove(); }
+    };
+  }
 
-<div class="badge">
-  <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/refs/heads/main/AutoMindCloud/AutoMindCloud.png" alt="badge"/>
-</div>
+  // -------------------- Expose globals --------------------
+  global.buildOffscreenForThumbnails = buildOffscreenForThumbnails;
+  global.createToolsDock = createToolsDock;
 
-<!-- Download HTML button -->
-<button id="dlbtn" class="dlbtn">⬇ Descargar HTML</button>
-
-<!-- UMD deps -->
-<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
-
-<script type="module">
-  // ---- Viewport + cell autosize helpers (Colab/Jupyter/VSCode) ----
-  function applyVHVar(){{
-    const vh = (window.visualViewport?.height || window.innerHeight || 600) * 0.01;
-    document.documentElement.style.setProperty('--vh', `${{vh}}px`);
-  }}
-  applyVHVar();
-
-  function setColabFrameHeight(){{
-    const h = Math.ceil((window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 600));
-    try {{
-      // Only in Google Colab
-      if (window.google?.colab?.output?.setIframeHeight) {{
-        window.google.colab.output.setIframeHeight(h, true);
-      }}
-    }} catch (_e) {{}}
-  }}
-  // Keep output cell in sync with any size changes (rotate, keyboard up, split view)
-  const ro = new ResizeObserver(() => {{ applyVHVar(); setColabFrameHeight(); }});
-  ro.observe(document.body);
-  window.addEventListener('resize', () => {{ applyVHVar(); setColabFrameHeight(); }});
-  if (window.visualViewport) {{
-    window.visualViewport.addEventListener('resize', () => {{ applyVHVar(); setColabFrameHeight(); }});
-  }}
-  // Nudge once after paint to avoid off-by-1 truncation in some embeds
-  setTimeout(setColabFrameHeight, 50);
-
-  // ---- Latest commit loader (with branch fallback) ----
-  const repo = {json.dumps(repo)};
-  const branch = {json.dumps(branch)};
-  const compFile = {json.dumps(compFile)};
-
-  async function latest(){{
-    try {{
-      const api = 'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
-      const r = await fetch(api, {{ headers: {{ 'Accept':'application/vnd.github+json' }}, cache:'no-store' }});
-      if (!r.ok) throw 0;
-      const j = await r.json();
-      return (j.sha || '').slice(0, 7) || branch;
-    }} catch (_e) {{
-      return branch;
-    }}
-  }}
-
-  // Wait a tick so UMD globals are ready
-  await new Promise(r => setTimeout(r, 50));
-
-  const SELECT_MODE = {json.dumps(select_mode)};
-  const BACKGROUND  = {bg_js};
-
-  const opts = {{
-    container: document.getElementById('app'),
-    urdfContent: `{urdf_js}`,
-    meshDB: {mesh_js},
-    selectMode: SELECT_MODE,
-    background: BACKGROUND,
-    // Hints your renderer can use (optional):
-    pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
-    autoResize: true
-  }};
-
-  // ---- Download finalized HTML ----
-  const dlbtn = document.getElementById('dlbtn');
-  if (dlbtn) {{
-    dlbtn.addEventListener('click', () => {{
-      try {{
-        const html = '<!doctype html>\\n' + document.documentElement.outerHTML;
-        const blob = new Blob([html], {{ type: 'text/html' }});
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'urdf_viewer.html';
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => {{
-          URL.revokeObjectURL(url);
-          a.remove();
-        }}, 750);
-      }} catch (e) {{
-        console.error('Download failed:', e);
-        alert('No se pudo descargar el HTML: ' + e.message);
-      }}
-    }});
-  }}
-
-  // ---- Load your module and render ----
-  let mod = null;
-  try {{
-    const ver = await latest();
-    const base = 'https://cdn.jsdelivr.net/gh/' + repo + '@' + ver + '/';
-    mod = await import(base + compFile + '?v=' + Date.now());
-  }} catch (_e) {{
-    mod = await import('https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now());
-  }}
-
-  if (!mod || typeof mod.render !== 'function') {{
-    console.error('[URDF] No se pudo cargar el módulo de entrada o no expone render()');
-  }} else {{
-    const app = mod.render(opts);
-
-    // If your render() returns a {{ resize }} hook, wire it to viewport changes:
-    function onResize(){{
-      try {{
-        if (app && typeof app.resize === 'function') {{
-          const w = window.innerWidth || document.documentElement.clientWidth;
-          const h = window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight;
-          app.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
-        }}
-      }} catch (_e) {{}}
-    }}
-    window.addEventListener('resize', onResize);
-    if (window.visualViewport) window.visualViewport.addEventListener('resize', onResize);
-    setTimeout(onResize, 0);
-  }}
-</script>
-</body>
-</html>
-"""
-    return HTML(html)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+})(window);
 
 
 
