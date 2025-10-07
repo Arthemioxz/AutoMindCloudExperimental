@@ -45,7 +45,6 @@ export function render(opts = {}) {
     }
   });
   
-  await new Promise(r => setTimeout(r, 5000));
 
   // 3) Load URDF (this triggers tagging via `onMeshTag`)
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
