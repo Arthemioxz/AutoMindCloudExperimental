@@ -44,6 +44,8 @@ export function render(opts = {}) {
       assetToMeshes.set(assetKey, list);
     }
   });
+  
+  await new Promise(r => setTimeout(r, 5000));
 
   // 3) Load URDF (this triggers tagging via `onMeshTag`)
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
@@ -198,11 +200,9 @@ function frameMeshes(core, meshes) {
 
 
 
+
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   if (!core.robot) return null;
-
-  // Small helper for waiting
-  const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 
   // Offscreen renderer & scene
   const OFF_W = 640, OFF_H = 480;
@@ -286,14 +286,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   }
 
   return {
-    // Wait 2 seconds before capturing the thumbnail
     thumbnail: async (assetKey) => {
-      try {
-        await sleep(2000); // <<< 2-second waiter
-        return snapshotAsset(assetKey);
-      } catch (_) {
-        return null;
-      }
+      try { return snapshotAsset(assetKey); } catch (_) { return null; }
     },
     destroy: () => {
       try { renderer.dispose(); } catch (_) {}
@@ -301,10 +295,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   };
 }
-
-
-
-
 
 
 
