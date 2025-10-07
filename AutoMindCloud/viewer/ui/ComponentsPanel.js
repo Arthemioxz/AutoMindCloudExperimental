@@ -32,7 +32,7 @@
 
 
 export function createComponentsPanel(app, theme) {
-  await new Promise(r => setTimeout(r, 5000)); // wait 5 seconds
+  
 
   if (!app || !app.assets || !app.isolate || !app.showAll)
     throw new Error('[ComponentsPanel] Missing required app APIs');
