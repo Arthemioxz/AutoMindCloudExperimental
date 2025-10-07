@@ -717,7 +717,7 @@ function isolateCurrent() {
     // track last hover mesh for isolation
     // (reuse raycaster path – separate quick pass for cursor pos)
     try {
-      getPointerFromEvent(e);
+      //getPointerFromEvent(e);
       raycaster.setFromCamera(pointer, camera);
       const pickables = [];
       robotModel?.traverse(o => { if (o.isMesh && o.geometry && o.visible) pickables.push(o); });
