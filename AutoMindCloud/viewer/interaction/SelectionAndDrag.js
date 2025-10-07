@@ -760,7 +760,7 @@ function isolateCurrent() {
     }
   }
 
-  renderer.domElement.addEventListener('pointermove', onPointerMove, { passive: true });
+  //renderer.domElement.addEventListener('pointermove', onPointerMove, { passive: true });
   renderer.domElement.addEventListener('pointerdown', onPointerDown, { passive: false });
   renderer.domElement.addEventListener('pointerup', endJointDrag);
   renderer.domElement.addEventListener('pointerleave', endJointDrag);
@@ -785,7 +785,7 @@ function isolateCurrent() {
 
   function destroy() {
     try {
-      renderer.domElement.removeEventListener('pointermove', onPointerMove);
+      //renderer.domElement.removeEventListener('pointermove', onPointerMove);
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointerup', endJointDrag);
       renderer.domElement.removeEventListener('pointerleave', endJointDrag);
