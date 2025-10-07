@@ -335,26 +335,45 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
   // ---------- Section plane ----------
   let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
   let sectionPlane = null, secVisual = null;
-function ensureSectionVisual() {
+
+  function ensureSectionVisual() {
   if (secVisual) return secVisual;
-  secVisual = new THREE.Mesh(
-    new THREE.PlaneGeometry(1, 1, 1, 1),
-    new THREE.MeshBasicMaterial({
-      color: theme.teal,
-      transparent: true,
-      opacity: 0.4,
-      depthWrite: false,
-      depthTest: false,
-      toneMapped: false,
-      side: THREE.DoubleSide,
-      premultipliedAlpha: true   // <- add this
-    })
-  );
-  secVisual.visible = false;
-  secVisual.renderOrder = 10000;
+
+  const makeMat = (side) => new THREE.MeshBasicMaterial({
+    color: theme.teal,
+    transparent: true,
+    opacity: 0.4,
+    depthWrite: false,     // don't write Z
+    depthTest: true,       // DO test Z (prevents speckle)
+    toneMapped: false,
+    side,                  // one side at a time
+    premultipliedAlpha: true,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,  // nudge in front to avoid coplanar shimmer
+    polygonOffsetUnits: -2
+  });
+
+  const geom = new THREE.PlaneGeometry(1, 1, 1, 1);
+
+  const front = new THREE.Mesh(geom.clone(), makeMat(THREE.FrontSide));
+  const back  = new THREE.Mesh(geom.clone(), makeMat(THREE.BackSide));
+
+  // tiny ±normal push so both sides don't fight each other
+  const eps = 1e-4;
+  front.position.z +=  eps;
+  back.position.z  -=  eps;
+
+  secVisual = new THREE.Group();
+  secVisual.add(front, back);
+
+  secVisual.visible = false;        // your code toggles this elsewhere
+  secVisual.renderOrder = 10000;    // high, but sane
+  secVisual.frustumCulled = false;
+
   app.scene.add(secVisual);
   return secVisual;
 }
+
 
 
 
