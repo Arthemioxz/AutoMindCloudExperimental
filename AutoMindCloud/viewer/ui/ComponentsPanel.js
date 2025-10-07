@@ -190,6 +190,7 @@ function set(isOpen) {
 }
 
 
+
   
 
   function openPanel() { set(true); maybeBuild(); }
@@ -362,7 +363,13 @@ function onHotkeyC(e) {
 }
 
 
+// Button toggler
+ui.btn.addEventListener('click', () => set(!open));
 
+// Ensure initial hidden state is applied
+set(false);
+  
+maybeBuild();
 
 
 
@@ -441,14 +448,6 @@ function makeThumbFallback(label, theme) {
   return wrap;
 }
 
-
-// Button toggler
-ui.btn.addEventListener('click', () => set(!open));
-
-// Ensure initial hidden state is applied
-set(false);
-  
-maybeBuild();
 
 
 
