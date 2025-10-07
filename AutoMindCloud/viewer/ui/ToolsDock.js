@@ -368,42 +368,26 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
 
 
+function ensureSectionVisual() {
+  if (secVisual) return secVisual;
   
-
-// Minimal two-sided section plane (unlit, identical both faces)
-function ensureSectionVisual(app, theme) {
-  if (window.secVisual?.isMesh) return window.secVisual;
-
-  const geom = new THREE.PlaneGeometry(1, 1);
-  const mat  = new THREE.MeshBasicMaterial({
-    color: (theme?.teal ?? 0x00b3b3),
-    transparent: true,
-    opacity: 0.4,
-    side: THREE.DoubleSide,  // both faces
-    depthWrite: false,
-    depthTest: false,        // overlay; set true if you want depth interaction
-    toneMapped: false
-  });
-
-  const mesh = new THREE.Mesh(geom, mat);
-  mesh.visible = false;
-  mesh.renderOrder = 10000;
-  mesh.frustumCulled = false;
-
-  // tiny helpers (optional)
-  mesh.setSize = (w=1, h=1) => mesh.scale.set(w, h, 1);
-  mesh.setPose = (pos=[0,0,0], normal=[0,0,1])=>{
-    const p = pos.isVector3 ? pos : new THREE.Vector3().fromArray(pos);
-    const n = normal.isVector3 ? normal : new THREE.Vector3().fromArray(normal);
-    mesh.position.copy(p);
-    mesh.lookAt(p.clone().add(n.normalize()));
-  };
-
-  // attach if scene exists (not required to set .visible)
-  if (app?.scene) app.scene.add(mesh);
-
-  window.secVisual = mesh;
-  return mesh;
+  secVisual = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1, 1, 1),
+    new THREE.MeshBasicMaterial({
+      color: 0x008080, // Direct hex color for teal
+      transparent: true,
+      opacity: 0.15, // Lower opacity for better blending
+      depthWrite: false,
+      depthTest: true, // Enable depth testing
+      side: THREE.DoubleSide,
+      toneMapped: true // Enable tone mapping
+    })
+  );
+  
+  secVisual.visible = false;
+  secVisual.renderOrder = 1; // Lower render order
+  app.scene.add(secVisual);
+  return secVisual;
 }
 
 
