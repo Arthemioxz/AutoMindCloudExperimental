@@ -343,20 +343,17 @@ function ensureSectionVisual() {
     color: theme.teal,
     transparent: true,
     opacity: 0.4,
-    side: THREE.FrontSide,        // avoid backface alpha sorting
-    depthWrite: false,            // don't dirty the depth buffer
-    depthTest: true,              // still participate in depth to avoid overlays fighting
+    side: THREE.FrontSide,
+    depthWrite: false,
+    depthTest: false,          // <- make it overlay for now so you SEE it
     toneMapped: false,
-    polygonOffset: true,          // nudge in front to avoid coplanar shimmer
-    polygonOffsetFactor: -4,
-    polygonOffsetUnits: -4,
-    premultipliedAlpha: true      // reduces alpha fringes/flicker
+    premultipliedAlpha: true
   });
 
-  secVisual = new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 1, 1), mat);
-  secVisual.visible = false;
-  secVisual.renderOrder = 9999;   // high, but not absurd
-  secVisual.frustumCulled = false; // avoid pop on camera jitter
+  secVisual = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
+  secVisual.renderOrder = 9999;
+  secVisual.frustumCulled = false;
+  secVisual.visible = true;    // <- turn it on
   app.scene.add(secVisual);
   return secVisual;
 }
