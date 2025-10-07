@@ -342,46 +342,34 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
 
 
-
   function ensureSectionVisual() {
   if (secVisual) return secVisual;
-
-  const geom = new THREE.PlaneGeometry(1, 1);
-
-  // Front face (the one you already liked)
-  const matFront = new THREE.MeshBasicMaterial({
-    color: theme.teal,
-    transparent: true,
-    opacity: 0.4,
-    depthWrite: false,
-    depthTest: true,
-    toneMapped: false,
-    side: THREE.FrontSide,
-    premultipliedAlpha: true,
-    polygonOffset: true,
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -2
-  });
-
-  // Back face: same look, but BackSide
-  const matBack = matFront.clone();
-  matBack.side = THREE.BackSide;
-
-  // Keep existing handle as the FRONT mesh so your other code doesn’t break
-  secVisual = new THREE.Mesh(geom, matFront);
-
-  // Add a backface child, nudged slightly along the local -Z (opposite normal)
-  const back = new THREE.Mesh(geom.clone(), matBack);
-  back.position.z = -1e-4;   // tiny local offset prevents self-sorting flicker
-  secVisual.add(back);
-
-  secVisual.visible = false;          // your code toggles this elsewhere
+  secVisual = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      color: theme.teal,
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+      depthTest: false,        // overlay, so no depth test
+      toneMapped: false,
+      side: THREE.DoubleSide,
+      premultipliedAlpha: true
+    })
+  );
+  secVisual.visible = false;
   secVisual.renderOrder = 10000;
-  secVisual.frustumCulled = false;
-
-  app.scene.add(secVisual);
+  app.scene.add(secVisual); // we’ll move it to overlay below
   return secVisual;
 }
+
+
+
+
+
+
+
+  
 
 
 
