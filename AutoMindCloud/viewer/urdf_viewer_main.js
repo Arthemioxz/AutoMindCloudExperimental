@@ -192,8 +192,7 @@ function frameMeshes(core, meshes) {
 
 
 
-
-/* -------------------- Offscreen thumbnails (exact materials) --------------------- */
+/* -------------------- Offscreen thumbnails (exact viewer look) --------------------- */
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   if (!core?.robot || !core?.renderer || !core?.scene) return null;
 
@@ -205,12 +204,13 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   const rt = new THREE.WebGLRenderTarget(OFF_W, OFF_H, { depthBuffer: true });
   if ('colorSpace' in rt.texture && THREE.SRGBColorSpace) rt.texture.colorSpace = THREE.SRGBColorSpace;
 
-  // Dedicated camera for thumbnails (viewer stays untouched)
+  // Separate camera for thumbs (viewer camera left untouched)
   const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-  // Helper: capture world AABB for a set of meshes
+  // ---- helpers ----
   const _box = new THREE.Box3();
   const _tmp = new THREE.Box3();
+
   function computeBounds(meshes) {
     _box.makeEmpty();
     let any = false;
@@ -225,28 +225,54 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     return any ? _box.clone() : null;
   }
 
-  // Show only target meshes; DO NOT hide lights or helpers
-  function showOnlyMeshes(meshes) {
-    const vis = [];
-    core.robot.traverse(o => {
-      if (o.isMesh && o.geometry) { vis.push([o, o.visible]); o.visible = false; }
-    });
+  // Hide ONLY meshes that aren't in the target; never touch lights/cameras/helpers.
+  function isolateMeshes(meshes) {
+    const targetSet = new Set(meshes);
+    // collect ancestors to ensure chain visible
+    const ancestorSet = new Set();
     for (const m of meshes) {
-      // ensure target mesh and its parents are visible
-      let p = m;
-      while (p && p !== scene) { p.visible = true; p = p.parent; }
+      let p = m.parent;
+      while (p && p !== scene) { ancestorSet.add(p); p = p.parent; }
     }
-    return () => { for (const [o, v] of vis) o.visible = v; };
+
+    const changed = [];
+    core.robot.traverse(o => {
+      if (o.isMesh) {
+        const shouldShow = targetSet.has(o) || ancestorSet.has(o);
+        changed.push([o, o.visible]);
+        o.visible = shouldShow;
+      }
+    });
+
+    // If some lights are parented under robot, force them on.
+    core.robot.traverse(o => { if (o.isLight) o.visible = true; });
+
+    return () => { for (const [o, v] of changed) o.visible = v; };
+  }
+
+  // Optional: temporarily add neutral env if none (PBR metals need it)
+  function ensureEnvForRender() {
+    if (scene.environment) return () => {};
+    let pmrem = null, envRT = null;
+    try {
+      pmrem = new THREE.PMREMGenerator(renderer);
+      envRT = pmrem.fromScene(new THREE.RoomEnvironment(renderer), 0.04);
+      const prevEnv = scene.environment;
+      scene.environment = envRT.texture;
+      return () => { scene.environment = prevEnv; if (envRT) envRT.dispose(); if (pmrem) pmrem.dispose(); };
+    } catch {
+      return () => {};
+    }
   }
 
   function snapshotAsset(assetKey) {
     const meshes = assetToMeshes?.get(assetKey) || [];
     if (!meshes.length) return null;
 
-    // Isolate only meshes (lights stay on)
-    const restoreVis = showOnlyMeshes(meshes);
+    // Isolate only meshes (lights untouched)
+    const restoreVis = isolateMeshes(meshes);
 
-    // ---- Camera fit (UNCHANGED from your version) ----
+    // ---- Camera fit (UNCHANGED from your code) ----
     const box = computeBounds(meshes);
     if (!box) { restoreVis(); return null; }
 
@@ -276,7 +302,10 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const prevClearCol = renderer.getClearColor(new THREE.Color());
     const prevClearA   = renderer.getClearAlpha();
 
-    // Render with EXACT same materials/env/lights (we don’t touch scene/background)
+    // Temporary env if you don't have one
+    const restoreEnv = ensureEnvForRender();
+
+    // Render with EXACT same materials/env/lights/background
     renderer.setRenderTarget(rt);
     renderer.autoClear = true;
     renderer.clear();
@@ -300,10 +329,11 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     ctx.putImageData(imgData, 0, 0);
     const url = can.toDataURL('image/png');
 
-    // Restore
+    // Restore state
     renderer.setRenderTarget(prevTarget);
     renderer.setClearColor(prevClearCol, prevClearA);
     renderer.autoClear = prevAuto;
+    restoreEnv();
     restoreVis();
 
     return url;
@@ -311,12 +341,11 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
   return {
     thumbnail: async (assetKey) => {
-      try { return snapshotAsset(assetKey); } catch (e) { console.warn('[thumbs]', e); return null; }
+      try { return snapshotAsset(assetKey); } catch (e) { console.warn('[thumbs] snapshot error', e); return null; }
     },
-    destroy: () => { try { rt.dispose(); } catch(_){} }
+    destroy: () => { try { rt.dispose(); } catch (_) {} }
   };
 }
-
 
 
 
