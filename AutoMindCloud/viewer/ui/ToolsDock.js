@@ -359,32 +359,42 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
 
 
-
 function ensureSectionVisual() {
   if (secVisual) return secVisual;
 
-  const THICK = 0.01; // requested thickness
-  const geom = new THREE.BoxGeometry(1, 1, THICK); // width, height, thickness
+  const THICK = 0.01;                   // requested thickness
+  const geom  = new THREE.BoxGeometry(1, 1, THICK); // X=width, Y=height, Z=thickness
 
-  const mat = new THREE.MeshBasicMaterial({
+  const makeMat = (side) => new THREE.MeshBasicMaterial({
     color: theme.teal,
     transparent: true,
     opacity: 0.4,
-    depthWrite: false,     // don't dirty Z
-    depthTest: true,       // keep this true for stable visuals
+    depthWrite: false,                  // don't dirty Z
+    depthTest: true,                    // stable against scene
     toneMapped: false,
-    premultipliedAlpha: true
-    // no need for DoubleSide on a closed box
+    premultipliedAlpha: true,
+    side
   });
 
-  secVisual = new THREE.Mesh(geom, mat);
-  secVisual.visible = false;      // toggle elsewhere like before
-  secVisual.renderOrder = 10000;
+  const back  = new THREE.Mesh(geom.clone(),  makeMat(THREE.BackSide));
+  const front = new THREE.Mesh(geom.clone(),  makeMat(THREE.FrontSide));
+
+  // draw order: back first, then front (prevents the far face from vanishing)
+  back.renderOrder  = 9999;
+  front.renderOrder = 10000;
+
+  // group handle (move/rotate/scale this one like your old mesh)
+  secVisual = new THREE.Group();
+  secVisual.add(back, front);
+
+  secVisual.visible = false;            // your code toggles this elsewhere
+  secVisual.renderOrder = 10000;        // keep high so it draws late
   secVisual.frustumCulled = false;
 
   app.scene.add(secVisual);
   return secVisual;
 }
+
 
 
 
