@@ -362,7 +362,7 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 function ensureSectionVisual() {
   if (secVisual) return secVisual;
 
-  const THICK = 0.01;                   // requested thickness
+  const THICK = 0.001;                   // requested thickness
   const geom  = new THREE.BoxGeometry(1, 1, THICK); // X=width, Y=height, Z=thickness
 
   const makeMat = (side) => new THREE.MeshBasicMaterial({
