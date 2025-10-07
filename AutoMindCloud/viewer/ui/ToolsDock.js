@@ -223,7 +223,7 @@ export function createToolsDock(app, theme) {
 
   // Section
   const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
-  const secDist = mkSlider(-1, 1, 0.01, 0);
+  const secDist = mkSlider(-1, 1, 0.001, 0);
   const secEnable = mkToggle('Enable section');
   const secShowPlane = mkToggle('Show slice plane');
 
@@ -336,25 +336,31 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
   let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
   let sectionPlane = null, secVisual = null;
 
-  function ensureSectionVisual() {
-    if (secVisual) return secVisual;
-    secVisual = new THREE.Mesh(
-      new THREE.PlaneGeometry(1, 1, 1, 1),
-      new THREE.MeshBasicMaterial({
-        color: theme.teal,
-        transparent: true,
-        opacity: 0.4,
-        depthWrite: false,
-        depthTest: false,
-        toneMapped: false,
-        side: THREE.DoubleSide
-      })
-    );
-    secVisual.visible = false;
-    secVisual.renderOrder = 10000;
-    app.scene.add(secVisual);
-    return secVisual;
-  }
+function ensureSectionVisual() {
+  if (secVisual) return secVisual;
+
+  const mat = new THREE.MeshBasicMaterial({
+    color: theme.teal,
+    transparent: true,
+    opacity: 0.4,
+    side: THREE.FrontSide,        // avoid backface alpha sorting
+    depthWrite: false,            // don't dirty the depth buffer
+    depthTest: true,              // still participate in depth to avoid overlays fighting
+    toneMapped: false,
+    polygonOffset: true,          // nudge in front to avoid coplanar shimmer
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
+    premultipliedAlpha: true      // reduces alpha fringes/flicker
+  });
+
+  secVisual = new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 1, 1), mat);
+  secVisual.visible = false;
+  secVisual.renderOrder = 9999;   // high, but not absurd
+  secVisual.frustumCulled = false; // avoid pop on camera jitter
+  app.scene.add(secVisual);
+  return secVisual;
+}
+
 
   function refreshSectionVisual(maxDim, center) {
     if (!secVisual) return;
