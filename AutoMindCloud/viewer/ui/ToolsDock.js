@@ -336,43 +336,53 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
   let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
   let sectionPlane = null, secVisual = null;
 
+
+
+
+
+
+
+
   function ensureSectionVisual() {
   if (secVisual) return secVisual;
 
-  const makeMat = (side) => new THREE.MeshBasicMaterial({
+  const geom = new THREE.PlaneGeometry(1, 1);
+
+  // Front face (the one you already liked)
+  const matFront = new THREE.MeshBasicMaterial({
     color: theme.teal,
     transparent: true,
     opacity: 0.4,
-    depthWrite: false,     // don't write Z
-    depthTest: true,       // DO test Z (prevents speckle)
+    depthWrite: false,
+    depthTest: true,
     toneMapped: false,
-    side,                  // one side at a time
+    side: THREE.FrontSide,
     premultipliedAlpha: true,
     polygonOffset: true,
-    polygonOffsetFactor: -2,  // nudge in front to avoid coplanar shimmer
+    polygonOffsetFactor: -2,
     polygonOffsetUnits: -2
   });
 
-  const geom = new THREE.PlaneGeometry(1, 1, 1, 1);
+  // Back face: same look, but BackSide
+  const matBack = matFront.clone();
+  matBack.side = THREE.BackSide;
 
-  const front = new THREE.Mesh(geom.clone(), makeMat(THREE.FrontSide));
-  const back  = new THREE.Mesh(geom.clone(), makeMat(THREE.BackSide));
+  // Keep existing handle as the FRONT mesh so your other code doesn’t break
+  secVisual = new THREE.Mesh(geom, matFront);
 
-  // tiny ±normal push so both sides don't fight each other
-  const eps = 1e-4;
-  front.position.z +=  eps;
-  back.position.z  -=  eps;
+  // Add a backface child, nudged slightly along the local -Z (opposite normal)
+  const back = new THREE.Mesh(geom.clone(), matBack);
+  back.position.z = -1e-4;   // tiny local offset prevents self-sorting flicker
+  secVisual.add(back);
 
-  secVisual = new THREE.Group();
-  secVisual.add(front, back);
-
-  secVisual.visible = false;        // your code toggles this elsewhere
-  secVisual.renderOrder = 10000;    // high, but sane
+  secVisual.visible = false;          // your code toggles this elsewhere
+  secVisual.renderOrder = 10000;
   secVisual.frustumCulled = false;
 
   app.scene.add(secVisual);
   return secVisual;
 }
+
 
 
 
