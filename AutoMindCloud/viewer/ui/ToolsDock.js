@@ -356,34 +356,26 @@ ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
 
 
-// Minimal, single-mesh, true two-sided overlay plane
-let secPlane;
-function ensureSectionVisual() {
+// ---- Section plane singleton ----
+let secPlane = null;
+
+function ensureSectionVisual(app, theme) {
   if (secPlane) return secPlane;
+  if (!app || !app.scene) return null; // scene not ready yet
 
-  const geom = new THREE.PlaneGeometry(1, 1, 1, 1);
-
+  const geom = new THREE.PlaneGeometry(1, 1);
   const mat = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
-    depthTest: false,        // keep on top; set true if you want depth
-    side: THREE.DoubleSide,  // draw both faces in one draw
+    depthTest: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
     uniforms: {
       uColor:   { value: new THREE.Color(theme.teal) },
       uOpacity: { value: 0.4 }
     },
-    vertexShader: `
-      void main() {
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      uniform vec3  uColor;
-      uniform float uOpacity;
-      void main() {
-        gl_FragColor = vec4(uColor, uOpacity);
-      }
-    `
+    vertexShader: `void main(){gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);} `,
+    fragmentShader:`uniform vec3 uColor;uniform float uOpacity;void main(){gl_FragColor=vec4(uColor,uOpacity);} `
   });
 
   secPlane = new THREE.Mesh(geom, mat);
@@ -392,17 +384,55 @@ function ensureSectionVisual() {
   secPlane.renderOrder = 10000;
   app.scene.add(secPlane);
 
-  // tiny helpers (optional)
-  secPlane.setSize = (w = 1, h = 1) => secPlane.scale.set(w, h, 1);
-  secPlane.setPose = (pos, normal) => {
-    const p = (pos.isVector3 ? pos : new THREE.Vector3().fromArray(pos));
-    const n = (normal.isVector3 ? normal : new THREE.Vector3().fromArray(normal)).normalize();
+  // helpers
+  secPlane.setSize = (w=1,h=1)=>secPlane.scale.set(w,h,1);
+  secPlane.setPose = (pos, normal)=>{
+    const p = pos.isVector3 ? pos : new THREE.Vector3().fromArray(pos);
+    const n = normal.isVector3 ? normal : new THREE.Vector3().fromArray(normal);
     secPlane.position.copy(p);
-    secPlane.lookAt(p.clone().add(n)); // orient plane’s +Z to the normal
+    secPlane.lookAt(p.clone().add(n.normalize()));
   };
 
   return secPlane;
 }
+
+// ---- Safe updater (always lazy-inits) ----
+export function updateSectionPlane(app, theme, opts={}) {
+  // If scene not ready yet, retry on next frame instead of throwing
+  const plane = ensureSectionVisual(app, theme);
+  if (!plane) {
+    requestAnimationFrame(()=>updateSectionPlane(app, theme, opts));
+    return;
+  }
+
+  const {
+    visible,
+    width,
+    height,
+    position = new THREE.Vector3(),
+    normal   = new THREE.Vector3(0,0,1),
+    color    = theme?.teal,
+    opacity  = 0.4
+  } = opts;
+
+  if (typeof visible === 'boolean') plane.visible = visible;
+  if (width || height) plane.setSize(width||1, height||1);
+  if (position || normal) plane.setPose(position, normal);
+  if (color)   plane.material.uniforms.uColor.value.set(color);
+  if (opacity !== undefined) plane.material.uniforms.uOpacity.value = opacity;
+}
+
+// ---- Example wiring to a checkbox ----
+// HTML: <input id="section-toggle" type="checkbox">
+const $toggle = document.getElementById('section-toggle');
+$toggle?.addEventListener('change', (e)=>{
+  updateSectionPlane(app, theme, { visible: e.target.checked });
+});
+
+// Optional: ensure first init once viewer is ready
+// call this after your viewer emits "ready"
+updateSectionPlane(app, theme, { visible:false }); 
+
 
 
 
