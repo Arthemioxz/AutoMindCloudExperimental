@@ -184,6 +184,47 @@ def URDF_Render(folder_path="Model",
 <body>
   <div id="app" tabindex="0"></div>
 
+
+  <!-- Add this right after <div id="app"...> in the HTML your Python builds -->
+<button id="dl-html"
+  style="position:fixed;left:14px;top:14px;z-index:10001;
+         padding:8px 12px;border-radius:12px;border:1px solid #d7e7e7;
+         background:#fff;font-weight:700;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,0.12)">
+  ⬇ Download HTML
+</button>
+
+<script>
+  (function () {
+    const btn = document.getElementById('dl-html');
+    if (!btn) return;
+    btn.addEventListener('mouseenter', () => {
+      btn.style.transform = 'translateY(-1px) scale(1.02)';
+      btn.style.background = 'rgba(20,184,185,0.12)'; // tealFaint
+      btn.style.borderColor = '#14b8b9';
+    });
+    btn.addEventListener('mouseleave', () => {
+      btn.style.transform = 'none';
+      btn.style.background = '#fff';
+      btn.style.borderColor = '#d7e7e7';
+    });
+    btn.addEventListener('click', () => {
+      // 1) Freeze current HTML
+      const html = '<!doctype html>\n' + document.documentElement.outerHTML;
+
+      // 2) Blob → download
+      const blob = new Blob([html], { type: 'text/html' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url;
+      a.download = 'urdf_viewer_with_tools.html';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 250);
+    });
+  })();
+</script>
+
+
   <script>
   (async function(){{
     const repo={json.dumps(repo)}, branch={json.dumps(branch)}, compFile={json.dumps(compFile)};
