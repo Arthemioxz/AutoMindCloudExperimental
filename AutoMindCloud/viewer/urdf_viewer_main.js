@@ -187,17 +187,10 @@ function frameMeshes(core, meshes) {
 }
 
 /* --------------------- Offscreen thumbnails --------------------- */
-
-// --------------------- Offscreen thumbnails (fixed) ---------------------
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   if (!core.robot) return null;
 
-  // Try to read theme/bg from main scene color (falls back to white)
-  const bgColor =
-    (core.scene && core.scene.background && core.scene.background.isColor && core.scene.background.getHex()) ||
-    0xffffff;
-
-  // Offscreen canvas + renderer
+  // --- Offscreen canvas/renderer
   const OFF_W = 640, OFF_H = 480;
   const canvas = document.createElement('canvas');
   canvas.width = OFF_W; canvas.height = OFF_H;
@@ -205,44 +198,43 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
   renderer.setSize(OFF_W, OFF_H, false);
 
-  // IMPORTANT: copy output settings from main renderer so thumbnails match the viewer
+  // IMPORTANT: copy output/tone/lighting behavior from the main renderer
   try {
-    // Three r132–r15x compatibility
     if ('outputEncoding' in core.renderer) {
-      renderer.outputEncoding = core.renderer.outputEncoding;     // e.g. THREE.sRGBEncoding
-    } else if ('outputColorSpace' in renderer) {
-      renderer.outputColorSpace = core.renderer.outputColorSpace; // e.g. 'srgb'
+      renderer.outputEncoding = core.renderer.outputEncoding;     // three <= r152
+    } else if ('outputColorSpace' in renderer && 'outputColorSpace' in core.renderer) {
+      renderer.outputColorSpace = core.renderer.outputColorSpace; // three >= r153
     }
     renderer.toneMapping = core.renderer.toneMapping || THREE.NoToneMapping;
     renderer.toneMappingExposure = core.renderer.toneMappingExposure ?? 1.0;
     renderer.physicallyCorrectLights = core.renderer.physicallyCorrectLights ?? true;
-    renderer.shadowMap.enabled = false; // keep it fast/clean for thumbs
   } catch (_) {}
 
-  // Scene + camera
+  // --- Scene & camera (match your viewer background & lights)
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(bgColor);
+  const bg = (core.scene?.background?.isColor ? core.scene.background.getHex() : 0xffffff);
+  scene.background = new THREE.Color(bg);
 
-  // Lighting that resembles your main viewer (hemi + directional)
+  // Use hemi + dir like the main viewer
   const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.8);
   const dir  = new THREE.DirectionalLight(0xffffff, 1.1); dir.position.set(3, 4, 2);
   scene.add(hemi, dir);
 
   const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-  // Clone robot and repair materials so they react to light
+  // --- Clone the robot and ensure sane materials
   const robotClone = core.robot.clone(true);
   robotClone.traverse(o => {
     if (o.isMesh && o.geometry) {
-      // Double-sided to avoid dark faces and compute normals if missing/bad
+      // make sure faces light correctly even when isolated
       if (Array.isArray(o.material)) o.material.forEach(m => { if (m) m.side = THREE.DoubleSide; });
       else if (o.material) o.material.side = THREE.DoubleSide;
-      try { o.geometry.computeVertexNormals?.(); } catch(_) {}
+      try { o.geometry.computeVertexNormals?.(); } catch (_) {}
     }
   });
   scene.add(robotClone);
 
-  // Build map assetKey → meshes[] inside the CLONE (keys are copied via userData)
+  // Index meshes in the clone by assetKey
   const cloneAssetToMeshes = new Map();
   robotClone.traverse(o => {
     const k = o?.userData?.__assetKey;
@@ -255,16 +247,16 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const meshes = cloneAssetToMeshes.get(assetKey) || [];
     if (!meshes.length) return null;
 
-    // Hide everything except this asset
+    // Show only the target meshes
     const vis = [];
     robotClone.traverse(o => { if (o.isMesh && o.geometry) vis.push([o, o.visible]); });
     for (const [m] of vis) m.visible = false;
     for (const m of meshes) m.visible = true;
 
-    // Fit camera to meshes
+    // Fit camera to the selected meshes
     const box = new THREE.Box3(), tmp = new THREE.Box3(); let has = false;
     for (const m of meshes) { tmp.setFromObject(m); if (!has) { box.copy(tmp); has = true; } else box.union(tmp); }
-    if (!has) { for (const [o,v] of vis) o.visible = v; return null; }
+    if (!has) { for (const [o, v] of vis) o.visible = v; return null; }
 
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
@@ -287,7 +279,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     renderer.render(scene, camera);
     const url = renderer.domElement.toDataURL('image/png');
 
-    // Restore visibility
+    // restore visibility
     for (const [o, v] of vis) o.visible = v;
     return url;
   }
