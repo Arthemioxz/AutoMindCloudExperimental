@@ -191,103 +191,73 @@ function frameMeshes(core, meshes) {
 
 
 
-/* -------------------- Offscreen thumbnails (camera UNCHANGED) --------------------- */
-function buildOffscreenForThumbnails(core /*, assetToMeshes */) {
-  if (!core || !core.robot) return null;
+
+
+/* -------------------- Offscreen thumbnails (exact materials) --------------------- */
+function buildOffscreenForThumbnails(core, assetToMeshes) {
+  if (!core?.robot || !core?.renderer || !core?.scene) return null;
 
   const OFF_W = 640, OFF_H = 480;
+  const renderer = core.renderer;
+  const scene    = core.scene;
 
-  // --- tiny matcap texture (neutral gray) for fallback ---
-  function makeMatcapTexture() {
-    const s = 128;
-    const cv = document.createElement('canvas');
-    cv.width = s; cv.height = s;
-    const ctx = cv.getContext('2d');
+  // Reusable RT
+  const rt = new THREE.WebGLRenderTarget(OFF_W, OFF_H, { depthBuffer: true });
+  if ('colorSpace' in rt.texture && THREE.SRGBColorSpace) rt.texture.colorSpace = THREE.SRGBColorSpace;
 
-    // radial “sphere” shading
-    const g = ctx.createRadialGradient(s*0.35, s*0.35, s*0.05, s*0.5, s*0.5, s*0.55);
-    g.addColorStop(0.0, '#ffffff');
-    g.addColorStop(0.35, '#d9dfe6');
-    g.addColorStop(0.7, '#aab4c0');
-    g.addColorStop(1.0, '#6d7784');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, s, s);
-
-    const tex = new THREE.CanvasTexture(cv);
-    if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
-    else if ('sRGBEncoding' in THREE) tex.encoding = THREE.sRGBEncoding;
-    tex.needsUpdate = true;
-    return tex;
-  }
-  const _matcap = new THREE.MeshMatcapMaterial({ matcap: makeMatcapTexture(), color: 0xffffff });
-
-  // Offscreen renderer & scene
-  const canvas = document.createElement('canvas');
-  canvas.width = OFF_W; canvas.height = OFF_H;
-
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(OFF_W, OFF_H, false);
-  if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
-  else if ('sRGBEncoding' in THREE) renderer.outputEncoding = THREE.sRGBEncoding;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
-  renderer.physicallyCorrectLights = true;
-
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xE9EEF3);
-
-  // reuse main env if available (nice with PBR); no problem if missing — matcap will handle it
-  if (core.scene?.environment) scene.environment = core.scene.environment;
-
-  // a little extra light if you DO have basic materials
-  const amb = new THREE.AmbientLight(0xffffff, 0.6);
-  const d = new THREE.DirectionalLight(0xffffff, 0.9); d.position.set(2.5, 2.5, 2.5);
-  scene.add(amb, d);
-
+  // Dedicated camera for thumbnails (viewer stays untouched)
   const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-  // Clone the whole robot to isolate assets per snapshot
-  const robotClone = core.robot.clone(true);
-  scene.add(robotClone);
-
-  // Map assetKey → meshes[] in the clone (using __assetKey tags copied by clone)
-  const cloneAssetToMeshes = new Map();
-  robotClone.traverse(o => {
-    const k = o?.userData?.__assetKey;
-    if (k && o.isMesh && o.geometry) {
-      const arr = cloneAssetToMeshes.get(k) || [];
-      arr.push(o); cloneAssetToMeshes.set(k, arr);
+  // Helper: capture world AABB for a set of meshes
+  const _box = new THREE.Box3();
+  const _tmp = new THREE.Box3();
+  function computeBounds(meshes) {
+    _box.makeEmpty();
+    let any = false;
+    for (const m of meshes) {
+      if (!m?.isObject3D) continue;
+      m.updateWorldMatrix(true, false);
+      _tmp.setFromObject(m);
+      if (_tmp.isEmpty()) continue;
+      _box.union(_tmp);
+      any = true;
     }
-  });
+    return any ? _box.clone() : null;
+  }
+
+  // Show only target meshes; DO NOT hide lights or helpers
+  function showOnlyMeshes(meshes) {
+    const vis = [];
+    core.robot.traverse(o => {
+      if (o.isMesh && o.geometry) { vis.push([o, o.visible]); o.visible = false; }
+    });
+    for (const m of meshes) {
+      // ensure target mesh and its parents are visible
+      let p = m;
+      while (p && p !== scene) { p.visible = true; p = p.parent; }
+    }
+    return () => { for (const [o, v] of vis) o.visible = v; };
+  }
 
   function snapshotAsset(assetKey) {
-    const meshes = cloneAssetToMeshes.get(assetKey) || [];
+    const meshes = assetToMeshes?.get(assetKey) || [];
     if (!meshes.length) return null;
 
-    // Hide everything, show only target meshes
-    const vis = [];
-    robotClone.traverse(o => { if (o.isMesh && o.geometry) vis.push([o, o.visible]); });
-    for (const [m] of vis) m.visible = false;
-    for (const m of meshes) m.visible = true;
+    // Isolate only meshes (lights stay on)
+    const restoreVis = showOnlyMeshes(meshes);
 
-    // ---------- Camera fit (UNCHANGED) ----------
-    const box = new THREE.Box3();
-    const tmp = new THREE.Box3();
-    let has = false;
-    for (const m of meshes) {
-      m.updateWorldMatrix(true, false);
-      tmp.setFromObject(m);
-      if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
-    }
-    if (!has) { for (const [o,v] of vis) o.visible = v; return null; }
+    // ---- Camera fit (UNCHANGED from your version) ----
+    const box = computeBounds(meshes);
+    if (!box) { restoreVis(); return null; }
 
     const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
+    const size   = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = maxDim * 2.0;
+    const dist   = maxDim * 2.0;
 
-    camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far = Math.max(maxDim * 1000, 1000);
+    camera.aspect = OFF_W / OFF_H;
+    camera.near   = Math.max(maxDim / 1000, 0.001);
+    camera.far    = Math.max(maxDim * 1000, 1000);
     camera.updateProjectionMatrix();
 
     const az = Math.PI * 0.25, el = Math.PI * 0.18;
@@ -298,34 +268,61 @@ function buildOffscreenForThumbnails(core /*, assetToMeshes */) {
     ).multiplyScalar(dist);
     camera.position.copy(center.clone().add(dir));
     camera.lookAt(center);
+    camera.updateMatrixWorld(true);
 
-    // ---------- Fallback shading that ALWAYS works ----------
-    // If there is no environment (or you just want guaranteed visibility), use matcap.
-    // We temporarily set `scene.overrideMaterial`, render, then restore it.
-    const prevOverride = scene.overrideMaterial;
-    const usingFallback = !scene.environment;
-    if (usingFallback) scene.overrideMaterial = _matcap;
+    // Save renderer state
+    const prevTarget   = renderer.getRenderTarget();
+    const prevAuto     = renderer.autoClear;
+    const prevClearCol = renderer.getClearColor(new THREE.Color());
+    const prevClearA   = renderer.getClearAlpha();
 
+    // Render with EXACT same materials/env/lights (we don’t touch scene/background)
+    renderer.setRenderTarget(rt);
+    renderer.autoClear = true;
+    renderer.clear();
     renderer.render(scene, camera);
-    const url = renderer.domElement.toDataURL('image/png');
 
-    // restore
-    if (usingFallback) scene.overrideMaterial = prevOverride;
-    for (const [o, v] of vis) o.visible = v;
+    // Readback → dataURL (flip Y)
+    const pixels = new Uint8Array(OFF_W * OFF_H * 4);
+    renderer.readRenderTargetPixels(rt, 0, 0, OFF_W, OFF_H, pixels);
+
+    const can = document.createElement('canvas');
+    can.width = OFF_W; can.height = OFF_H;
+    const ctx = can.getContext('2d');
+    const imgData = ctx.createImageData(OFF_W, OFF_H);
+    for (let y = 0; y < OFF_H; y++) {
+      const srcY = OFF_H - 1 - y;
+      imgData.data.set(
+        pixels.subarray(srcY * OFF_W * 4, (srcY + 1) * OFF_W * 4),
+        y * OFF_W * 4
+      );
+    }
+    ctx.putImageData(imgData, 0, 0);
+    const url = can.toDataURL('image/png');
+
+    // Restore
+    renderer.setRenderTarget(prevTarget);
+    renderer.setClearColor(prevClearCol, prevClearA);
+    renderer.autoClear = prevAuto;
+    restoreVis();
 
     return url;
   }
 
   return {
     thumbnail: async (assetKey) => {
-      try { return snapshotAsset(assetKey); } catch (e) { console.warn('[thumbs] snapshot error', e); return null; }
+      try { return snapshotAsset(assetKey); } catch (e) { console.warn('[thumbs]', e); return null; }
     },
-    destroy: () => {
-      try { renderer.dispose(); } catch (_) {}
-      try { scene.clear(); } catch (_) {}
-    }
+    destroy: () => { try { rt.dispose(); } catch(_){} }
   };
 }
+
+
+
+
+
+
+
 
 
 
