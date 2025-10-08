@@ -652,7 +652,7 @@ function viewEndPosition(kind) {
     // make the OrbitControls target the center if you want stricter framing:
     // ctrl.target.copy(s.center);
 
-    const d = distanceToFitSphere(cam, s.radius, 1.25); // 1.25 = padding factor
+    const d = distanceToFitSphere(cam, s.radius, 2.2); // 1.25 = padding factor
     fitR = THREE.MathUtils.clamp(d, AUTO_RADIUS_MIN, AUTO_RADIUS_MAX);
 
     // If you prefer a mild size bias (so 1 cm robots aren’t *too* close),
