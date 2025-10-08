@@ -630,7 +630,9 @@ const AUTO_RADIUS_MIN = 0.35;   // set to 1.0 if you want a 1-unit floor
 const AUTO_RADIUS_MAX = 1e4;    // raise/lower if needed
 
 // -------------------------------
-// Replace your viewEndPosition with this:function viewEndPose(kind) {
+// Replace your viewEndPosition with this:
+
+function viewEndPose(kind) {
   const cam = app.camera, ctrl = app.controls;
   const s = getRobotFitSphere(app);
   const target = s ? s.center.clone() : ctrl.target.clone(); // <- move target to robot center
