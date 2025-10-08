@@ -653,7 +653,7 @@ function viewEndPose(kind) {
   // pick a distance that fits (persp) or a sensible offset (ortho)
   let fitR = 4;
   if (s) {
-    fitR = distanceToFitSphere(cam, s.radius, 1.25); // you already have distanceToFitSphere()
+    fitR = distanceToFitSphere(cam, s.radius, 3); // you already have distanceToFitSphere()
   }
 
   const dir = new THREE.Vector3(
