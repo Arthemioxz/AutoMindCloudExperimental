@@ -667,7 +667,7 @@ const AUTO_RADIUS_MAX = 1e4;    // raise/lower if needed
 
 
   const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
-  bRightEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
+
   const to = (kind) => viewEndPose(kind);
 
  bIsoEl.addEventListener('click',   () => { const v = to('iso');   tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
