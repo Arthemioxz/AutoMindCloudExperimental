@@ -592,20 +592,77 @@ function initDefaultRadius(app) {
 }
 
 // -------------------------------
-  function viewEndPosition(kind) {
+  // Put these helpers near your other view utils (above viewEndPosition)
+
+// Compute world-space bounds and a nice “fit” sphere
+function getRobotFitSphere(app) {
+  const root = app.robot || app.scene;
+  if (!root) return null;
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) return null;
+  const center = box.getCenter(new THREE.Vector3());
+  const size   = box.getSize(new THREE.Vector3());
+  const radius = size.length() * 0.5 * (1 / Math.sqrt(3)); 
+  // ^ ~radius of the minimal sphere that contains the AABB’s inscribed cube.
+  // Works well and avoids extreme overestimation.
+
+  return { center, size, radius };
+}
+
+// Distance needed to fit the sphere in the view for a given camera & aspect
+function distanceToFitSphere(cam, radius, pad = 1.2) {
+  const r = Math.max(1e-6, radius) * pad;
+
+  if (cam.isOrthographicCamera) {
+    // In ortho, distance doesn’t change framing; return something sensible
+    // so near/far and fog behave. Tweak MIN/MAX below if you want.
+    return THREE.MathUtils.clamp(r * 2.0, 0.25, 1e6);
+  }
+
+  // Perspective: fit by vertical & horizontal FOV, take the stricter one
+  const vFov = THREE.MathUtils.degToRad(cam.fov);
+  const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * (cam.aspect || 1));
+  const dV = r / Math.tan(vFov * 0.5);
+  const dH = r / Math.tan(hFov * 0.5);
+  return Math.max(dV, dH);
+}
+
+// Optional clamp so tiny robots aren’t viewed from absurdly close,
+// and huge robots don’t push the camera miles away.
+const AUTO_RADIUS_MIN = 0.35;   // set to 1.0 if you want a 1-unit floor
+const AUTO_RADIUS_MAX = 1e4;    // raise/lower if needed
+
+// -------------------------------
+// Replace your viewEndPosition with this:
+function viewEndPosition(kind) {
   const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
   const cur = currentAzEl(cam, t);
   let az = cur.az, el = cur.el;
 
   const topEps = 1e-3;
-  if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.2; }
+  if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.20; }
   if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
   if (kind === 'front') { az = Math.PI / 2; el = 0; }
   if (kind === 'right') { az = 0; el = 0; }
 
-  // ---- FIXED DISTANCE (e.g. 10 units) ----
-  const FIXED_RADIUS = 4;
-  const pos = t.clone().add(dirFromAzEl(az, el).multiplyScalar(FIXED_RADIUS));
+  // --- compute a radius that “fits” the robot ---
+  let fitR = 4; // fallback
+  const s = getRobotFitSphere(app);
+  if (s) {
+    // make the OrbitControls target the center if you want stricter framing:
+    // ctrl.target.copy(s.center);
+
+    const d = distanceToFitSphere(cam, s.radius, 1.25); // 1.25 = padding factor
+    fitR = THREE.MathUtils.clamp(d, AUTO_RADIUS_MIN, AUTO_RADIUS_MAX);
+
+    // If you prefer a mild size bias (so 1 cm robots aren’t *too* close),
+    // mix a little constant in:
+    // const blend = 0.15; fitR = (1 - blend) * fitR + blend * 1.0; // 1.0 is a gentle baseline
+  }
+
+  const pos = ctrl.target.clone().add(
+    dirFromAzEl(az, el).multiplyScalar(fitR)
+  );
   return pos;
 }
 
