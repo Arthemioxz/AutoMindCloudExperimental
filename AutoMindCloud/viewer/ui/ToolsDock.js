@@ -594,7 +594,7 @@ function initDefaultRadius(app) {
 // -------------------------------
   // Put these helpers near your other view utils (above viewEndPosition)
 
-// Compute world-space bounds and a nice “fit” sphere
+// Compute world-space bounds and a nice “fit” sphere (you already have this)
 function getRobotFitSphere(app) {
   const root = app.robot || app.scene;
   if (!root) return null;
@@ -602,10 +602,7 @@ function getRobotFitSphere(app) {
   if (box.isEmpty()) return null;
   const center = box.getCenter(new THREE.Vector3());
   const size   = box.getSize(new THREE.Vector3());
-  const radius = size.length() * 0.5 * (1 / Math.sqrt(3)); 
-  // ^ ~radius of the minimal sphere that contains the AABB’s inscribed cube.
-  // Works well and avoids extreme overestimation.
-
+  const radius = size.length() * 0.5 * (1 / Math.sqrt(3));
   return { center, size, radius };
 }
 
@@ -633,46 +630,50 @@ const AUTO_RADIUS_MIN = 0.35;   // set to 1.0 if you want a 1-unit floor
 const AUTO_RADIUS_MAX = 1e4;    // raise/lower if needed
 
 // -------------------------------
-// Replace your viewEndPosition with this:
-function viewEndPosition(kind) {
-  const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
-  const cur = currentAzEl(cam, t);
-  let az = cur.az, el = cur.el;
+// Replace your viewEndPosition with this:function viewEndPose(kind) {
+  const cam = app.camera, ctrl = app.controls;
+  const s = getRobotFitSphere(app);
+  const target = s ? s.center.clone() : ctrl.target.clone(); // <- move target to robot center
 
+  // derive current az/el relative to new target (so the tween is smooth)
+  const curVec = cam.position.clone().sub(target);
+  const len = Math.max(1e-9, curVec.length());
+  const cur = { el: Math.asin(curVec.y / len), az: Math.atan2(curVec.z, curVec.x) };
+
+  // pick destination az/el
+  let az = cur.az, el = cur.el;
   const topEps = 1e-3;
   if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.20; }
-  if (kind === 'top')   { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
+  if (kind === 'top')   { az = Math.round(cur.az / (Math.PI/2)) * (Math.PI/2); el = Math.PI/2 - topEps; }
   if (kind === 'front') { az = Math.PI / 2; el = 0; }
   if (kind === 'right') { az = 0; el = 0; }
 
-  // --- compute a radius that “fits” the robot ---
-  let fitR = 4; // fallback
-  const s = getRobotFitSphere(app);
+  // pick a distance that fits (persp) or a sensible offset (ortho)
+  let fitR = 4;
   if (s) {
-    // make the OrbitControls target the center if you want stricter framing:
-    // ctrl.target.copy(s.center);
-
-    const d = distanceToFitSphere(cam, s.radius, 3); // 1.25 = padding factor
-    fitR = THREE.MathUtils.clamp(d, AUTO_RADIUS_MIN, AUTO_RADIUS_MAX);
-
-    // If you prefer a mild size bias (so 1 cm robots aren’t *too* close),
-    // mix a little constant in:
-    // const blend = 0.15; fitR = (1 - blend) * fitR + blend * 1.0; // 1.0 is a gentle baseline
+    fitR = distanceToFitSphere(cam, s.radius, 1.25); // you already have distanceToFitSphere()
   }
 
-  const pos = ctrl.target.clone().add(
-    dirFromAzEl(az, el).multiplyScalar(fitR)
-  );
-  return pos;
+  const dir = new THREE.Vector3(
+    Math.cos(el) * Math.cos(az),
+    Math.sin(el),
+    Math.cos(el) * Math.sin(az)
+  ).normalize();
+
+  const pos = target.clone().add(dir.multiplyScalar(fitR));
+  return { pos, target };
 }
 
 
 
   const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
-  bIsoEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('iso'), null, 750); });
-  bTopEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('top'), null, 750); });
-  bFrontEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('front'), null, 750); });
   bRightEl.addEventListener('click', () => { tweenOrbits(app.camera, app.controls, viewEndPosition('right'), null, 750); });
+  const to = (kind) => viewEndPose(kind);
+
+ bIsoEl.addEventListener('click',   () => { const v = to('iso');   tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+ bTopEl.addEventListener('click',   () => { const v = to('top');   tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+ bFrontEl.addEventListener('click', () => { const v = to('front'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+ bRightEl.addEventListener('click', () => { const v = to('right'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
 
   // ---------- Projection ----------
   projSel.addEventListener('change', () => {
