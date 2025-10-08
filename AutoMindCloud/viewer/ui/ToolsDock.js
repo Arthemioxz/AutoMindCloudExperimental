@@ -607,7 +607,7 @@ function getRobotFitSphere(app) {
 }
 
 // Distance needed to fit the sphere in the view for a given camera & aspect
-function distanceToFitSphere(cam, radius, pad = 1.2) {
+function distanceToFitSphere(cam, radius, pad = 3) {
   const r = Math.max(1e-6, radius) * pad;
 
   if (cam.isOrthographicCamera) {
