@@ -924,9 +924,9 @@ function onHotkeyH(e) {
   const tag = (e.target && e.target.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
 
-  if (e.key === 'h' || e.key === 'H' || e.code === 'KeyH') {
+  if (e.key === 't' || e.key === 'T' || e.code === 'KeyT') {
     e.preventDefault();
-    try { console.log('pressed h'); } catch {}
+    try { console.log('pressed t'); } catch {}
 
     // Call the tween function (pass your own elements/params)
     set(!isOpen);
