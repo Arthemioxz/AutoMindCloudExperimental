@@ -30,7 +30,8 @@ Nuclear Physics: https://colab.research.google.com/drive/16XNpgvXsNqvK9qBESKXUa4
 
 **IA Calculus Summary**
 
-<img width="690" height="437" alt="image" src="https://github.com/user-attachments/assets/f3f3c42c-cff9-4760-b545-5b7d4b64bf2f" />
+<img width="1118" height="476" alt="image" src="https://github.com/user-attachments/assets/e73298a1-658a-4e00-a626-944475e56821" />
+
 
 **Step Render on Colab**
 
