@@ -277,4 +277,7 @@ def URDF_Render(folder_path="Model",
     if (window.visualViewport) window.visualViewport.addEventListener('resize', onResize);
     setTimeout(onResize, 0);
   }}
+  
+log.console(app.result);
+
 </script>
