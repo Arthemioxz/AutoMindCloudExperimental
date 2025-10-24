@@ -19,11 +19,8 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
  * @param {string|null} [opts.clickAudioDataURL] — optional UI SFX (not required)
  */
 
-export let result = 1+1;
-
-export let Base64Images = [];          // create empty list
-
-//console.log(result)
+export let result = 1 + 1;
+export let Base64Images = [];          // exported store for {assetKey, base64} entries
 
 export function render(opts = {}) {
   const {
@@ -100,24 +97,37 @@ export function render(opts = {}) {
     openTools(open = true) { tools.set(!!open); }
   };
 
-  // ==== Added: bulk thumbnail export (clean base64 strings) ====
+  // ==== bulk thumbnail export → Base64 + store in Base64Images ====
   /**
    * Collects a thumbnail for every asset (component) and returns:
    *   [{ assetKey: string, base64: string }, ...]
-   * base64: raw PNG (no 'data:image/png;base64,' prefix)
+   * where base64 is raw PNG data (no 'data:image/png;base64,' prefix).
+   * Also updates the exported `Base64Images` and `window.Base64Images`.
    */
   app.collectAllThumbnails = async () => {
     const items = app.assets.list(); // [{assetKey, base, ext, count}, ...]
     const results = [];
     for (const it of items) {
       try {
-        const url = await app.assets.thumbnail(it.assetKey); // data:image/png;base64,...
+        const url = await app.assets.thumbnail(it.assetKey); // "data:image/png;base64,..."
         if (!url || typeof url !== 'string') continue;
         const base64 = url.split(',')[1] || '';
         if (base64) results.push({ assetKey: it.assetKey, base64 });
-      } catch (_) { /* keep going */ }
+      } catch (_) { /* continue even if one fails */ }
     }
+
+    // Persist into the exported array and window for debugging/interop
+    Base64Images.length = 0;
+    Base64Images.push(...results);
+    if (typeof window !== 'undefined') window.Base64Images = results;
+
     return results;
+  };
+
+  // Optional helper: only the raw Base64 strings
+  app.collectBase64Images = async () => {
+    const pairs = await app.collectAllThumbnails();
+    return pairs.map(p => p.base64);
   };
 
   // 7) UI modules
@@ -357,8 +367,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     renderer.render(scene, camera);
     const url = renderer.domElement.toDataURL('image/png');
 
-    Base64Images.push(url.split(',')[1])
-    
     // Restore visibility
     for (const [o, v] of vis) o.visible = v;
 
