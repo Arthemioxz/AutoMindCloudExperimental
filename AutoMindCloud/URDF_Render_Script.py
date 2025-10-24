@@ -278,4 +278,6 @@ def URDF_Render(folder_path="Model",
     setTimeout(onResize, 0);
   }}
 
+log.console(app.result);
+
 </script>
