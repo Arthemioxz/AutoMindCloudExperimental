@@ -1,7 +1,7 @@
 // /viewer/urdf_viewer_main.js
 // Entrypoint that composes ViewerCore + AssetDB + Selection & Drag + UI (Tools & Components)
 
-import { THEME } from './Theme.js'; 
+import { THEME } from './Theme.js';
 import { createViewer } from './core/ViewerCore.js';
 import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
 import { attachInteraction } from './interaction/SelectionAndDrag.js';
@@ -42,9 +42,16 @@ export function render(opts = {}) {
         if (o && o.isMesh && o.geometry) list.push(o);
       });
       assetToMeshes.set(assetKey, list);
+      // also tag meshes in userData so the offscreen clone can recover mapping
+      obj.traverse((o) => {
+        if (o && o.isMesh) {
+          o.userData = o.userData || {};
+          o.userData.__assetKey = assetKey;
+        }
+      });
     }
   });
-  
+
   // 3) Load URDF (this triggers tagging via `onMeshTag`)
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
@@ -86,30 +93,25 @@ export function render(opts = {}) {
     openTools(open = true) { tools.set(!!open); }
   };
 
-  // =========================
-  // ADDED: bulk thumbnail export (clean base64 without data: prefix)
-  // =========================
+  // ==== Added: bulk thumbnail export (clean base64 strings) ====
   /**
    * Collects a thumbnail for every asset (component) and returns:
    *   [{ assetKey: string, base64: string }, ...]
-   * where base64 is the raw PNG Base64, without 'data:image/png;base64,'.
+   * base64: raw PNG (no 'data:image/png;base64,' prefix)
    */
   app.collectAllThumbnails = async () => {
-    const items = app.assets.list(); // [{ assetKey, base, ext, count }, ...]
+    const items = app.assets.list(); // [{assetKey, base, ext, count}, ...]
     const results = [];
     for (const it of items) {
       try {
-        const url = await app.assets.thumbnail(it.assetKey); // data:image/png;base64,....
+        const url = await app.assets.thumbnail(it.assetKey); // data:image/png;base64,...
         if (!url || typeof url !== 'string') continue;
         const base64 = url.split(',')[1] || '';
         if (base64) results.push({ assetKey: it.assetKey, base64 });
-      } catch (_) {
-        // ignore failures for individual assets to keep the rest flowing
-      }
+      } catch (_) { /* keep going */ }
     }
     return results;
   };
-  // =========================
 
   // 7) UI modules
   const tools = createToolsDock(app, THEME);
@@ -120,9 +122,26 @@ export function render(opts = {}) {
     try { installClickSound(clickAudioDataURL); } catch (_) {}
   }
 
-  // Stash the latest app instance for external callers (e.g., Colab JS cell)
-  if (typeof window !== 'undefined' && window.URDFViewer) {
+  // Expose latest app for external callers (Colab, etc.)
+  if (typeof window !== 'undefined') {
+    window.URDFViewer = window.URDFViewer || {};
     try { window.URDFViewer.__app = app; } catch (_) {}
+  }
+
+  // ==== Added: a safe exporter function that POSTS to parent (Colab listener) ====
+  // Call: window.sendShotsToColab()
+  if (typeof window !== 'undefined') {
+    window.sendShotsToColab = async function sendShotsToColab() {
+      try {
+        if (!app || !app.collectAllThumbnails) return;
+        const shots = await app.collectAllThumbnails();
+        // post to parent; Colab JS listener will forward to Python
+        window.parent?.postMessage?.({ type: 'URDF_SHOTS', shots }, '*');
+        return { ok: true, count: shots.length };
+      } catch (e) {
+        return { ok: false, error: String(e && e.message || e) };
+      }
+    };
   }
 
   // Public destroy
@@ -218,7 +237,7 @@ function frameMeshes(core, meshes) {
 
 /* --------------------- Offscreen thumbnails --------------------- */
 
-// --- Offscreen thumbnails with lighting-safe wait + renderer parity ---
+// Offscreen thumbnails with lighting-safe wait + renderer parity
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   if (!core.robot) return null;
 
@@ -285,9 +304,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
   // Waiter: give lighting/materials time to settle (1s + 2 RAF frames)
   const ready = (async () => {
-    await sleep(1000); // <-- main guard against “black” first frame
+    await sleep(1000); // guard against “black” first frame
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-    // prime one render so shaders/IBL compile before first snapshot
     renderer.render(scene, camera);
   })();
 
@@ -382,8 +400,11 @@ function installClickSound(dataURL) {
 /* --------------------- Global UMD-style hook -------------------- */
 
 if (typeof window !== 'undefined') {
+  // Keep a plain render as well as a convenience wrapper that captures __app
   window.URDFViewer = window.URDFViewer || {};
-  // Expose the render function and keep a slot for the latest app
+  // raw render if someone needs it
+  window.URDFViewer.renderRaw = render;
+  // convenience: updates __app automatically
   window.URDFViewer.render = (opts) => {
     const app = render(opts);
     try { window.URDFViewer.__app = app; } catch (_) {}
