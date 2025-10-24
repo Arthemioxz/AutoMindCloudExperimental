@@ -1,7 +1,7 @@
 // /viewer/urdf_viewer_main.js
 // Entrypoint that composes ViewerCore + AssetDB + Selection & Drag + UI (Tools & Components)
 
-import { THEME } from './Theme.js';
+import { THEME } from './Theme.js'; 
 import { createViewer } from './core/ViewerCore.js';
 import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
 import { attachInteraction } from './interaction/SelectionAndDrag.js';
