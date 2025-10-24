@@ -322,10 +322,15 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     camera.lookAt(center);
 
     renderer.render(scene, camera);
-    const url = renderer.domElement.toDataURL('image/png');
 
+    
+    const url = renderer.domElement.toDataURL('image/png');
     const base64 = url.split(',')[1] || '';
-    Base64Images.push(base64);
+    if (base64) {
+      Base64Images.push(base64);
+      if (typeof window !== 'undefined') window.Base64Images = Base64Images;
+    }
+
 
 
     // Restore visibility
