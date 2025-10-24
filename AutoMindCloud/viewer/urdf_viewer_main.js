@@ -379,8 +379,3 @@ function installClickSound(dataURL) {
   window.__urdf_click__ = play;
 }
 
-/* --------------------- Global UMD-style hook -------------------- */
-
-if (typeof window !== 'undefined') {
-  window.URDFViewer = { render };
-}
