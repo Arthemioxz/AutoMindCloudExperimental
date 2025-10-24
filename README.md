@@ -10,7 +10,7 @@ Example on Colab: https://colab.research.google.com/drive/1cwDrG9dbK1MfyaiI2gRaX
 
 **Examples**
 
-**Classic Physics and Financial Accounting**
+**Classic Physics**
 
 Heat Transfer by Conduction: https://colab.research.google.com/drive/1BukgVekSpaFWaPCdTEhVIUdaAJPGtnz1
 
