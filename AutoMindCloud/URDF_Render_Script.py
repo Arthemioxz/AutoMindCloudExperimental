@@ -277,12 +277,4 @@ def URDF_Render(folder_path="Model",
     if (window.visualViewport) window.visualViewport.addEventListener('resize', onResize);
     setTimeout(onResize, 0);
   }}
-
-import { result } from './viewer/urdf_viewer_main.js';
-console.log(result); // 4
-
 </script>
-</body>
-</html>
-"""
-    return HTML(html)
