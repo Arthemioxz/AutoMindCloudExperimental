@@ -1,7 +1,8 @@
 // /viewer/urdf_viewer_main.js
 // Entrypoint that composes ViewerCore + AssetDB + Selection & Drag + UI (Tools & Components)
 
-import { THEME } from './Theme.js'; 
+import * as THREE from 'three';               // <-- keep if your build is ESM-based; otherwise remove if THREE is global
+import { THEME } from './Theme.js';
 import { createViewer } from './core/ViewerCore.js';
 import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
 import { attachInteraction } from './interaction/SelectionAndDrag.js';
@@ -34,23 +35,28 @@ export function render(opts = {}) {
   // 2) Asset DB + loadMeshCb with onMeshTag hook to index meshes by assetKey
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map(); // assetKey -> Mesh[]
+
+  // IMPORTANT: ensure every produced mesh stores the assetKey in userData so cloning can recover the mapping
   const loadMeshCb = createLoadMeshCb(assetDB, {
     onMeshTag(obj, assetKey) {
-      // Collect every mesh produced under this assetKey
       const list = assetToMeshes.get(assetKey) || [];
       obj.traverse((o) => {
-        if (o && o.isMesh && o.geometry) list.push(o);
+        if (o && o.isMesh && o.geometry) {
+          // tag for later offscreen grouping
+          o.userData = o.userData || {};
+          o.userData.__assetKey = assetKey;
+          list.push(o);
+        }
       });
       assetToMeshes.set(assetKey, list);
     }
   });
-  
 
   // 3) Load URDF (this triggers tagging via `onMeshTag`)
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
   // 4) Build an offscreen renderer for thumbnails (after robot exists)
-  const off = buildOffscreenForThumbnails(core, assetToMeshes);
+  const off = buildOffscreenForThumbnails(core);
 
   // 5) Interaction (hover, select, drag joints, key 'i')
   const inter = attachInteraction({
@@ -84,7 +90,45 @@ export function render(opts = {}) {
     showAll: () => showAll(core),
 
     // Optional: open tools externally
-    openTools(open = true) { tools.set(!!open); }
+    openTools(open = true) { tools.set(!!open); },
+
+    // --------- Colab bridge helpers ---------
+    /**
+     * Export thumbnails for every component asset as base64 (no data URL prefix).
+     * Good for google.colab.output.eval_js → Python.
+     * @param {number} [exposure=1.0] optional multiplier applied via renderer.toneMappingExposure clone
+     * @returns {Promise<string[]>} base64 PNGs (no prefix)
+     */
+    async exportAllComponentThumbnailsBase64(exposure = 1.0) {
+      const items = listAssets(assetToMeshes);
+      const results = [];
+      for (const it of items) {
+        const url = await off.thumbnail(it.assetKey, exposure);
+        if (!url) { results.push(null); continue; }
+        results.push(dataURLToBase64(url));
+      }
+      return results;
+    },
+
+    /**
+     * Same as above, but keeps names, useful for mapping.
+     * @param {number} [exposure=1.0]
+     * @returns {Promise<Array<{assetKey:string, base:string, ext:string, b64:string|null}>>}
+     */
+    async exportNamedComponentThumbnailsBase64(exposure = 1.0) {
+      const items = listAssets(assetToMeshes);
+      const out = [];
+      for (const it of items) {
+        const url = await off.thumbnail(it.assetKey, exposure);
+        out.push({
+          assetKey: it.assetKey,
+          base: it.base,
+          ext: it.ext,
+          b64: url ? dataURLToBase64(url) : null
+        });
+      }
+      return out;
+    }
   };
 
   // 7) UI modules
@@ -94,6 +138,11 @@ export function render(opts = {}) {
   // Optional click SFX for UI (kept minimal; UI modules do not depend on it)
   if (clickAudioDataURL) {
     try { installClickSound(clickAudioDataURL); } catch (_) {}
+  }
+
+  // Expose a global for Colab eval_js to call without touching cross-origin frames
+  if (typeof window !== 'undefined') {
+    window.URDFViewerApp = app; // <--- call methods from eval_js safely
   }
 
   // Public destroy
@@ -109,6 +158,11 @@ export function render(opts = {}) {
 }
 
 /* ---------------------------- Helpers ---------------------------- */
+
+function dataURLToBase64(dataURL) {
+  const i = dataURL.indexOf(',');
+  return i >= 0 ? dataURL.slice(i + 1) : '';
+}
 
 function listAssets(assetToMeshes) {
   // Returns: [{ assetKey, base, ext, count }]
@@ -189,26 +243,8 @@ function frameMeshes(core, meshes) {
 
 /* --------------------- Offscreen thumbnails --------------------- */
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // --- Offscreen thumbnails with lighting-safe wait + renderer parity ---
-function buildOffscreenForThumbnails(core, assetToMeshes) {
+function buildOffscreenForThumbnails(core) {
   if (!core.robot) return null;
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -262,7 +298,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   });
 
-  // Map assetKey → meshes[] in the clone (using __assetKey tags)
+  // Map assetKey → meshes[] in the clone (using __assetKey tags propagated via clone(true))
   const cloneAssetToMeshes = new Map();
   robotClone.traverse(o => {
     const k = o?.userData?.__assetKey;
@@ -274,7 +310,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
   // Waiter: give lighting/materials time to settle (1s + 2 RAF frames)
   const ready = (async () => {
-    await sleep(1000); // <-- main guard against “black” first frame
+    await sleep(1000); // main guard against “black” first frame
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     // prime one render so shaders/IBL compile before first snapshot
     renderer.render(scene, camera);
@@ -328,11 +364,20 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   }
 
   return {
-    thumbnail: async (assetKey) => {
+    /**
+     * Get PNG dataURL for an assetKey; exposure param allows subtle brightening/darkening.
+     * (We apply exposure via renderer clone’s toneMappingExposure just-in-time.)
+     */
+    thumbnail: async (assetKey, exposure = 1.0) => {
       try {
         await ready;                // ensure lights/env/materials are ready
-        await sleep(150);           // tiny per-shot cushion (helps heavy textures)
-        return snapshotAsset(assetKey);
+        const prev = renderer.toneMappingExposure;
+        renderer.toneMappingExposure = (typeof exposure === 'number' && isFinite(exposure)) ? exposure : prev;
+        // small per-shot cushion (helps heavy textures)
+        await new Promise(r => requestAnimationFrame(r));
+        const url = snapshotAsset(assetKey);
+        renderer.toneMappingExposure = prev;
+        return url;
       } catch (_) { return null; }
     },
     destroy: () => {
@@ -341,17 +386,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   };
 }
-
-
-
-
-
-
-
-
-
-
-
 
 /* ------------------------- Click Sound ------------------------- */
 
