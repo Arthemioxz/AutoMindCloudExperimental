@@ -39,4 +39,5 @@ Nuclear Physics: https://colab.research.google.com/drive/16XNpgvXsNqvK9qBESKXUa4
 
 **URDF Render on Colab**
 
-<img width="1301" height="431" alt="image" src="https://github.com/user-attachments/assets/303e6eb1-d722-43c8-a146-0b5986a453c2" />
+<img width="1322" height="513" alt="image" src="https://github.com/user-attachments/assets/084064fd-2075-40e0-b137-33646eb1f347" />
+
