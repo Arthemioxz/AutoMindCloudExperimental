@@ -357,7 +357,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     renderer.render(scene, camera);
     const url = renderer.domElement.toDataURL('image/png');
 
-    Base64Images.push(url.split(',')[1];)
+    Base64Images.push(url.split(',')[1])
     
     // Restore visibility
     for (const [o, v] of vis) o.visible = v;
