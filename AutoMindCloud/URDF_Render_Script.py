@@ -1,7 +1,6 @@
 # urdf_render_fixed.py — Full-screen, always-fit viewer (Colab/Jupyter/VSCode)
 import base64, re, os, json, shutil, zipfile
-from IPython.display import HTML
-import gdown
+from IPython.display import HTML, display
 
 def Download_URDF(Drive_Link, Output_Name="Model"):
     root_dir = "/content"
@@ -15,6 +14,7 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
     os.makedirs(tmp_extract, exist_ok=True)
     if os.path.exists(final_dir): shutil.rmtree(final_dir)
 
+    import gdown
     gdown.download(url, zip_path, quiet=True)
     with zipfile.ZipFile(zip_path, 'r') as zf:
         zf.extractall(tmp_extract)
@@ -38,7 +38,11 @@ def URDF_Render(folder_path="Model",
                 repo="Arthemioxz/AutoMindCloudExperimental",
                 branch="main",
                 compFile="AutoMindCloud/viewer/urdf_viewer_main.js"):
-    """Render a full-screen URDF viewer. Output cell auto-fits any device."""
+    """
+    Renders the URDF viewer and RETURNS a Python list of base64 images (PNG) collected from JS.
+    - In Colab: returns list[str] with base64 images.
+    - In non-Colab: returns [] but still renders the viewer.
+    """
 
     # ---- Find /urdf + /meshes and build mesh DB ----
     def find_dirs(root):
@@ -53,7 +57,8 @@ def URDF_Render(folder_path="Model",
 
     urdf_dir, meshes_dir = find_dirs(folder_path)
     if not urdf_dir or not meshes_dir:
-        return HTML(f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>")
+        display(HTML(f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>"))
+        return []
 
     urdf_files = [os.path.join(urdf_dir, f) for f in os.listdir(urdf_dir) if f.lower().endswith(".urdf")]
     urdf_files.sort(key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0, reverse=True)
@@ -118,7 +123,8 @@ def URDF_Render(folder_path="Model",
         return (s.replace('\\','\\\\')
                 .replace('`','\\`')
                 .replace('$','\\$')
-                .replace("</script>","<\\/script>"))
+                .replace("</script>","<\\/script>")
+                .replace("\u2028","\\u2028").replace("\u2029","\\u2029"))
 
     urdf_js = esc(urdf_raw)            # escape once for backtick JS string
     mesh_js = json.dumps(mesh_db)      # dict -> JS object
@@ -133,54 +139,29 @@ def URDF_Render(folder_path="Model",
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>
 <title>URDF Viewer</title>
 <style>
-  /* Use dynamic viewport units with safe fallbacks */
-  :root {{
-    --vh: 1vh;
-  }}
+  :root {{ --vh: 1vh; }}
   html, body {{
-    margin:0; padding:0;
-    width:100%;
-    height:100dvh; /* modern browsers */
-    background:#{int(background):06x};
-    overflow:hidden;
+    margin:0; padding:0; width:100%; height:100dvh; background:#{int(background):06x}; overflow:hidden;
   }}
-  @supports not (height: 100dvh) {{
-    html, body {{ height: calc(var(--vh) * 100); }}
-  }}
-
-  /* Respect iOS safe areas */
+  @supports not (height: 100dvh) {{ html, body {{ height: calc(var(--vh) * 100); }} }}
   body {{
     padding-top: env(safe-area-inset-top);
     padding-right: env(safe-area-inset-right);
     padding-bottom: env(safe-area-inset-bottom);
     padding-left: env(safe-area-inset-left);
   }}
-
-  /* Full-bleed mount */
-  #app {{
-    position: fixed;
-    inset: 0;
-    width: 100vw;
-    height: 100dvh;
-    touch-action: none;
-  }}
-  @supports not (height: 100dvh) {{
-    #app {{ height: calc(var(--vh) * 100); }}
-  }}
-
-  /* Badge (non-interactive) */
+  #app {{ position: fixed; inset: 0; width:100vw; height:100dvh; touch-action: none; }}
+  @supports not (height: 100dvh) {{ #app {{ height: calc(var(--vh) * 100); }} }}
   .badge{{ position:fixed; right:14px; bottom:12px; z-index:10; user-select:none; pointer-events:none; }}
   .badge img{{ max-height:40px; display:block; }}
 </style>
 </head>
 <body>
 <div id="app"></div>
-
 <div class="badge">
   <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/refs/heads/main/AutoMindCloud/AutoMindCloud.png" alt="badge"/>
 </div>
 
-<!-- UMD deps -->
 <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
@@ -188,33 +169,29 @@ def URDF_Render(folder_path="Model",
 <script defer src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
 
 <script type="module">
-  // ---- Viewport + cell autosize helpers (Colab/Jupyter/VSCode) ----
+  // --- viewport helpers ---
   function applyVHVar(){{
     const vh = (window.visualViewport?.height || window.innerHeight || 600) * 0.01;
     document.documentElement.style.setProperty('--vh', `${{vh}}px`);
   }}
-  applyVHVar();
-
   function setColabFrameHeight(){{
     const h = Math.ceil((window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 600));
     try {{
-      // Only in Google Colab
       if (window.google?.colab?.output?.setIframeHeight) {{
         window.google.colab.output.setIframeHeight(h, true);
       }}
     }} catch (_e) {{}}
   }}
-  // Keep output cell in sync with any size changes (rotate, keyboard up, split view)
+  applyVHVar(); setColabFrameHeight();
   const ro = new ResizeObserver(() => {{ applyVHVar(); setColabFrameHeight(); }});
   ro.observe(document.body);
   window.addEventListener('resize', () => {{ applyVHVar(); setColabFrameHeight(); }});
   if (window.visualViewport) {{
     window.visualViewport.addEventListener('resize', () => {{ applyVHVar(); setColabFrameHeight(); }});
   }}
-  // Nudge once after paint to avoid off-by-1 truncation in some embeds
   setTimeout(setColabFrameHeight, 50);
 
-  // ---- Latest commit loader (with branch fallback) ----
+  // --- latest commit loader ---
   const repo = {json.dumps(repo)};
   const branch = {json.dumps(branch)};
   const compFile = {json.dumps(compFile)};
@@ -231,8 +208,7 @@ def URDF_Render(folder_path="Model",
     }}
   }}
 
-  // Wait a tick so UMD globals are ready
-  await new Promise(r => setTimeout(r, 50));
+  await new Promise(r => setTimeout(r, 50)); // let UMD globals settle
 
   const SELECT_MODE = {sel_js};
   const BACKGROUND  = {bg_js};
@@ -243,12 +219,10 @@ def URDF_Render(folder_path="Model",
     meshDB: {mesh_js},
     selectMode: SELECT_MODE,
     background: BACKGROUND,
-    // Hints your renderer can use (optional):
     pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
     autoResize: true
   }};
 
-  // Import entry module from latest short SHA (fallback to branch)
   let mod = null;
   try {{
     const ver = await latest();
@@ -258,12 +232,17 @@ def URDF_Render(folder_path="Model",
     mod = await import('https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now());
   }}
 
+  // Expose for eval_js calls
+  window.__last_mod = mod;
+
   if (!mod || typeof mod.render !== 'function') {{
-    console.error('[URDF] No se pudo cargar el módulo de entrada o no expone render()');
+    console.error('[URDF] Module missing render()');
+    window.__urdf_ready__ = false;
   }} else {{
     const app = mod.render(opts);
+    window.URDFViewer = window.URDFViewer || {{}};
+    window.URDFViewer.__app = app;
 
-    // If your render() returns a {{ resize }} hook, wire it to viewport changes:
     function onResize(){{
       try {{
         if (app && typeof app.resize === 'function') {{
@@ -276,9 +255,78 @@ def URDF_Render(folder_path="Model",
     window.addEventListener('resize', onResize);
     if (window.visualViewport) window.visualViewport.addEventListener('resize', onResize);
     setTimeout(onResize, 0);
+
+    // signal ready
+    window.__urdf_ready__ = true;
   }}
 </script>
 </body>
 </html>
 """
-    return HTML(html)
+    # Display the viewer now
+    display(HTML(html))
+
+    # Try to collect Base64Images back into Python (Colab only)
+    images = []
+    try:
+        from google.colab import output  # type: ignore
+
+        js = r"""
+        (async () => {
+          // Wait for the module/app to be ready
+          const waitReady = async (timeoutMs = 10000) => {
+            const t0 = performance.now();
+            while (!window.__urdf_ready__) {
+              await new Promise(r => setTimeout(r, 50));
+              if (performance.now() - t0 > timeoutMs) throw new Error("timeout waiting for __urdf_ready__");
+            }
+          };
+
+          try {
+            await waitReady();
+            const app = window.URDFViewer?.__app;
+            const mod = window.__last_mod || null;
+
+            if (!app || typeof app.collectAllThumbnails !== 'function') {
+              return JSON.stringify({ ok:false, error: "app or collectAllThumbnails() missing" });
+            }
+
+            // run collection (fills global Base64Images in the module/helper)
+            try { await app.collectAllThumbnails(); } catch (e) {}
+
+            // Prefer the window mirror first, then the module export
+            let arr = [];
+            try {
+              if (Array.isArray(window.Base64Images)) {
+                arr = window.Base64Images.slice();
+              } else if (mod && Array.isArray(mod.Base64Images)) {
+                arr = mod.Base64Images.slice();
+              }
+            } catch (e) {}
+
+            // If they are objects, map to the base64 field
+            if (arr.length && typeof arr[0] === 'object' && arr[0] !== null) {
+              arr = arr.map(x => x?.base64 ?? x);
+            }
+
+            // Ensure strings only
+            arr = arr.filter(x => typeof x === 'string');
+
+            return JSON.stringify({ ok:true, images: arr });
+          } catch (err) {
+            return JSON.stringify({ ok:false, error: String(err && err.message || err) });
+          }
+        })()
+        """
+        res = output.eval_js(js)
+        data = json.loads(res) if isinstance(res, str) else {"ok": False, "error": "no response"}
+        if data.get("ok") and isinstance(data.get("images"), list):
+            images = data["images"]
+        else:
+            # still return an empty list if something went wrong
+            images = []
+    except Exception:
+        # Not in Colab (or eval_js not available)
+        images = []
+
+    return images
