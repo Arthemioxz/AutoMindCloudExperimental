@@ -8,6 +8,8 @@ import { attachInteraction } from './interaction/SelectionAndDrag.js';
 import { createToolsDock } from './ui/ToolsDock.js';
 import { createComponentsPanel } from './ui/ComponentsPanel.js';
 
+export let Base64Images = []; // will hold raw base64 strings (PNG)
+
 /**
  * Public entry: render the URDF viewer.
  * @param {Object} opts
@@ -36,21 +38,28 @@ export function render(opts = {}) {
   const assetToMeshes = new Map(); // assetKey -> Mesh[]
   const loadMeshCb = createLoadMeshCb(assetDB, {
     onMeshTag(obj, assetKey) {
-      // Collect every mesh produced under this assetKey
+      // Collect every mesh produced under this assetKey (for live viewer)
       const list = assetToMeshes.get(assetKey) || [];
       obj.traverse((o) => {
         if (o && o.isMesh && o.geometry) list.push(o);
       });
       assetToMeshes.set(assetKey, list);
+
+      // IMPORTANT: tag meshes so the offscreen clone can rebuild mapping later
+      obj.traverse((o) => {
+        if (o && o.isMesh) {
+          o.userData = o.userData || {};
+          o.userData.__assetKey = assetKey;
+        }
+      });
     }
   });
-  
 
   // 3) Load URDF (this triggers tagging via `onMeshTag`)
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // 4) Build an offscreen renderer for thumbnails (after robot exists)
-  const off = buildOffscreenForThumbnails(core, assetToMeshes);
+  // 4) Build an offscreen renderer that clones per snapshot (handles late assets)
+  const off = buildOffscreenForThumbnails(core);
 
   // 5) Interaction (hover, select, drag joints, key 'i')
   const inter = attachInteraction({
@@ -87,6 +96,22 @@ export function render(opts = {}) {
     openTools(open = true) { tools.set(!!open); }
   };
 
+  // Bulk: clear & fill Base64Images with every component thumbnail (raw base64)
+  app.collectAllThumbnails = async () => {
+    const items = app.assets.list(); // [{assetKey, base, ext, count}, ...]
+    Base64Images.length = 0;         // reset
+    for (const it of items) {
+      try {
+        const url = await app.assets.thumbnail(it.assetKey); // data:image/png;base64,...
+        if (!url || typeof url !== 'string') continue;
+        const base64 = url.split(',')[1] || '';
+        if (base64) Base64Images.push(base64);
+      } catch (_) { /* keep going even if one fails */ }
+    }
+    if (typeof window !== 'undefined') window.Base64Images = Base64Images;
+    return Base64Images;
+  };
+
   // 7) UI modules
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
@@ -94,6 +119,12 @@ export function render(opts = {}) {
   // Optional click SFX for UI (kept minimal; UI modules do not depend on it)
   if (clickAudioDataURL) {
     try { installClickSound(clickAudioDataURL); } catch (_) {}
+  }
+
+  // Expose latest app for external callers (Colab, etc.)
+  if (typeof window !== 'undefined') {
+    window.URDFViewer = window.URDFViewer || {};
+    try { window.URDFViewer.__app = app; } catch (_) {}
   }
 
   // Public destroy
@@ -188,32 +219,16 @@ function frameMeshes(core, meshes) {
 }
 
 /* --------------------- Offscreen thumbnails --------------------- */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// --- Offscreen thumbnails with lighting-safe wait + renderer parity ---
-function buildOffscreenForThumbnails(core, assetToMeshes) {
+/**
+ * Offscreen helper that clones the CURRENT robot for every snapshot.
+ * This ensures meshes that finished loading later are included.
+ */
+function buildOffscreenForThumbnails(core) {
   if (!core.robot) return null;
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-  // Offscreen renderer & scene
+  // Offscreen renderer & shared camera
   const OFF_W = 640, OFF_H = 480;
   const canvas = document.createElement('canvas');
   canvas.width = OFF_W; canvas.height = OFF_H;
@@ -235,52 +250,58 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     renderer.shadowMap.type = core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
   }
 
-  const scene = new THREE.Scene();
-  // Use the same bg/env if available to preserve appearance
-  scene.background = core?.scene?.background ?? new THREE.Color(0xffffff);
-  scene.environment = core?.scene?.environment ?? null;
+  const baseScene = new THREE.Scene();
+  baseScene.background = core?.scene?.background ?? new THREE.Color(0xffffff);
+  baseScene.environment = core?.scene?.environment ?? null;
 
-  // Soft key + fill so assets aren’t flat even without env
+  // Soft key + fill
   const amb = new THREE.AmbientLight(0xffffff, 0.95);
   const dir = new THREE.DirectionalLight(0xffffff, 1.1); dir.position.set(2.5, 2.5, 2.5);
-  scene.add(amb, dir);
+  baseScene.add(amb, dir);
 
   const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-  // Clone the whole robot to isolate assets per snapshot
-  const robotClone = core.robot.clone(true);
-  scene.add(robotClone);
-
-  // Ensure materials recompile under offscreen renderer
-  robotClone.traverse(o => {
-    if (o.isMesh && o.material) {
-      if (Array.isArray(o.material)) o.material = o.material.map(m => m.clone());
-      else o.material = o.material.clone();
-      o.material.needsUpdate = true;
-      o.castShadow = renderer.shadowMap.enabled;
-      o.receiveShadow = renderer.shadowMap.enabled;
-    }
-  });
-
-  // Map assetKey → meshes[] in the clone (using __assetKey tags)
-  const cloneAssetToMeshes = new Map();
-  robotClone.traverse(o => {
-    const k = o?.userData?.__assetKey;
-    if (k && o.isMesh && o.geometry) {
-      const arr = cloneAssetToMeshes.get(k) || [];
-      arr.push(o); cloneAssetToMeshes.set(k, arr);
-    }
-  });
-
-  // Waiter: give lighting/materials time to settle (1s + 2 RAF frames)
+  // Prime once (compile shaders)
   const ready = (async () => {
-    await sleep(1000); // <-- main guard against “black” first frame
+    await sleep(800);
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-    // prime one render so shaders/IBL compile before first snapshot
-    renderer.render(scene, camera);
+    renderer.render(baseScene, camera);
   })();
 
+  function buildCloneAndMap() {
+    const scene = baseScene.clone();
+    scene.background = baseScene.background;
+    scene.environment = baseScene.environment;
+
+    const robotClone = core.robot.clone(true);
+    scene.add(robotClone);
+
+    // Ensure materials recompile under this renderer
+    robotClone.traverse(o => {
+      if (o.isMesh && o.material) {
+        if (Array.isArray(o.material)) o.material = o.material.map(m => m.clone());
+        else o.material = o.material.clone();
+        o.material.needsUpdate = true;
+        o.castShadow = renderer.shadowMap.enabled;
+        o.receiveShadow = renderer.shadowMap.enabled;
+      }
+    });
+
+    // Rebuild assetKey → meshes mapping from userData tags
+    const cloneAssetToMeshes = new Map();
+    robotClone.traverse(o => {
+      const k = o?.userData?.__assetKey;
+      if (k && o.isMesh && o.geometry) {
+        const arr = cloneAssetToMeshes.get(k) || [];
+        arr.push(o); cloneAssetToMeshes.set(k, arr);
+      }
+    });
+
+    return { scene, robotClone, cloneAssetToMeshes };
+  }
+
   function snapshotAsset(assetKey) {
+    const { scene, robotClone, cloneAssetToMeshes } = buildCloneAndMap();
     const meshes = cloneAssetToMeshes.get(assetKey) || [];
     if (!meshes.length) return null;
 
@@ -298,7 +319,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       tmp.setFromObject(m);
       if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
     }
-    if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
+    if (!has) return null;
 
     const center = box.getCenter(new THREE.Vector3());
     const size   = box.getSize(new THREE.Vector3());
@@ -319,9 +340,16 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     camera.lookAt(center);
 
     renderer.render(scene, camera);
-    const url = renderer.domElement.toDataURL('image/png');
 
-    // Restore visibility
+    // Extract base64 and store globally
+    const url = renderer.domElement.toDataURL('image/png');
+    const base64 = url.split(',')[1] || '';
+    if (base64) {
+      Base64Images.push(base64);
+      if (typeof window !== 'undefined') window.Base64Images = Base64Images;
+    }
+
+    // Restore visibility (not strictly needed on a throwaway clone, but harmless)
     for (const [o, v] of vis) o.visible = v;
 
     return url;
@@ -330,28 +358,17 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   return {
     thumbnail: async (assetKey) => {
       try {
-        await ready;                // ensure lights/env/materials are ready
-        await sleep(150);           // tiny per-shot cushion (helps heavy textures)
+        await ready;                                 // renderer primed
+        await new Promise(r => requestAnimationFrame(r)); // small cushion
         return snapshotAsset(assetKey);
       } catch (_) { return null; }
     },
     destroy: () => {
       try { renderer.dispose(); } catch (_) {}
-      try { scene.clear(); } catch (_) {}
+      try { baseScene.clear(); } catch (_) {}
     }
   };
 }
-
-
-
-
-
-
-
-
-
-
-
 
 /* ------------------------- Click Sound ------------------------- */
 
@@ -382,5 +399,13 @@ function installClickSound(dataURL) {
 /* --------------------- Global UMD-style hook -------------------- */
 
 if (typeof window !== 'undefined') {
-  window.URDFViewer = { render };
+  window.URDFViewer = window.URDFViewer || {};
+  // raw render if someone needs it
+  window.URDFViewer.renderRaw = render;
+  // convenience: updates __app automatically
+  window.URDFViewer.render = (opts) => {
+    const app = render(opts);
+    try { window.URDFViewer.__app = app; } catch (_) {}
+    return app;
+  };
 }
