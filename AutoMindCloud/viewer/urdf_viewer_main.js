@@ -21,6 +21,8 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
 
 export let result = 2 + 2;
 
+console.log("TEST");
+
 export function render(opts = {}) {
   const {
     container,
