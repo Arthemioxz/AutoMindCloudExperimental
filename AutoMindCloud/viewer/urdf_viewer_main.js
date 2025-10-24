@@ -19,8 +19,7 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
  * @param {string|null} [opts.clickAudioDataURL] — optional UI SFX (not required)
  */
 
-export let result = 1 + 1;
-export let Base64Images = [];          // exported store for {assetKey, base64} entries
+export let Base64Images = [];
 
 export function render(opts = {}) {
   const {
@@ -46,15 +45,9 @@ export function render(opts = {}) {
         if (o && o.isMesh && o.geometry) list.push(o);
       });
       assetToMeshes.set(assetKey, list);
-      // also tag meshes in userData so the offscreen clone can recover mapping
-      obj.traverse((o) => {
-        if (o && o.isMesh) {
-          o.userData = o.userData || {};
-          o.userData.__assetKey = assetKey;
-        }
-      });
     }
   });
+  
 
   // 3) Load URDF (this triggers tagging via `onMeshTag`)
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
@@ -97,39 +90,6 @@ export function render(opts = {}) {
     openTools(open = true) { tools.set(!!open); }
   };
 
-  // ==== bulk thumbnail export → Base64 + store in Base64Images ====
-  /**
-   * Collects a thumbnail for every asset (component) and returns:
-   *   [{ assetKey: string, base64: string }, ...]
-   * where base64 is raw PNG data (no 'data:image/png;base64,' prefix).
-   * Also updates the exported `Base64Images` and `window.Base64Images`.
-   */
-  app.collectAllThumbnails = async () => {
-    const items = app.assets.list(); // [{assetKey, base, ext, count}, ...]
-    const results = [];
-    for (const it of items) {
-      try {
-        const url = await app.assets.thumbnail(it.assetKey); // "data:image/png;base64,..."
-        if (!url || typeof url !== 'string') continue;
-        const base64 = url.split(',')[1] || '';
-        if (base64) results.push({ assetKey: it.assetKey, base64 });
-      } catch (_) { /* continue even if one fails */ }
-    }
-
-    // Persist into the exported array and window for debugging/interop
-    Base64Images.length = 0;
-    Base64Images.push(...results);
-    if (typeof window !== 'undefined') window.Base64Images = results;
-
-    return results;
-  };
-
-  // Optional helper: only the raw Base64 strings
-  app.collectBase64Images = async () => {
-    const pairs = await app.collectAllThumbnails();
-    return pairs.map(p => p.base64);
-  };
-
   // 7) UI modules
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
@@ -137,28 +97,6 @@ export function render(opts = {}) {
   // Optional click SFX for UI (kept minimal; UI modules do not depend on it)
   if (clickAudioDataURL) {
     try { installClickSound(clickAudioDataURL); } catch (_) {}
-  }
-
-  // Expose latest app for external callers (Colab, etc.)
-  if (typeof window !== 'undefined') {
-    window.URDFViewer = window.URDFViewer || {};
-    try { window.URDFViewer.__app = app; } catch (_) {}
-  }
-
-  // ==== Added: a safe exporter function that POSTS to parent (Colab listener) ====
-  // Call: window.sendShotsToColab()
-  if (typeof window !== 'undefined') {
-    window.sendShotsToColab = async function sendShotsToColab() {
-      try {
-        if (!app || !app.collectAllThumbnails) return;
-        const shots = await app.collectAllThumbnails();
-        // post to parent; Colab JS listener will forward to Python
-        window.parent?.postMessage?.({ type: 'URDF_SHOTS', shots }, '*');
-        return { ok: true, count: shots.length };
-      } catch (e) {
-        return { ok: false, error: String(e && e.message || e) };
-      }
-    };
   }
 
   // Public destroy
@@ -254,7 +192,25 @@ function frameMeshes(core, meshes) {
 
 /* --------------------- Offscreen thumbnails --------------------- */
 
-// Offscreen thumbnails with lighting-safe wait + renderer parity
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// --- Offscreen thumbnails with lighting-safe wait + renderer parity ---
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   if (!core.robot) return null;
 
@@ -321,8 +277,9 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
   // Waiter: give lighting/materials time to settle (1s + 2 RAF frames)
   const ready = (async () => {
-    await sleep(1000); // guard against “black” first frame
+    await sleep(1000); // <-- main guard against “black” first frame
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    // prime one render so shaders/IBL compile before first snapshot
     renderer.render(scene, camera);
   })();
 
@@ -367,7 +324,10 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     renderer.render(scene, camera);
     const url = renderer.domElement.toDataURL('image/png');
 
+    Base64Images.push(base64 = url.split(',')[1] || ''))
+
     // Restore visibility
+    
     for (const [o, v] of vis) o.visible = v;
 
     return url;
@@ -377,7 +337,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     thumbnail: async (assetKey) => {
       try {
         await ready;                // ensure lights/env/materials are ready
-        await new Promise(r => requestAnimationFrame(r)); // small cushion
+        await sleep(150);           // tiny per-shot cushion (helps heavy textures)
         return snapshotAsset(assetKey);
       } catch (_) { return null; }
     },
@@ -387,6 +347,17 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   };
 }
+
+
+
+
+
+
+
+
+
+
+
 
 /* ------------------------- Click Sound ------------------------- */
 
@@ -417,14 +388,5 @@ function installClickSound(dataURL) {
 /* --------------------- Global UMD-style hook -------------------- */
 
 if (typeof window !== 'undefined') {
-  // Keep a plain render as well as a convenience wrapper that captures __app
-  window.URDFViewer = window.URDFViewer || {};
-  // raw render if someone needs it
-  window.URDFViewer.renderRaw = render;
-  // convenience: updates __app automatically
-  window.URDFViewer.render = (opts) => {
-    const app = render(opts);
-    try { window.URDFViewer.__app = app; } catch (_) {}
-    return app;
-  };
+  window.URDFViewer = { render };
 }
