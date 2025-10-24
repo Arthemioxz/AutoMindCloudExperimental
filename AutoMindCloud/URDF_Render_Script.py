@@ -35,7 +35,7 @@ def URDF_Render(folder_path="Model",
                 select_mode="link",
                 background=0xffffff,
                 # dynamic loader (repo/branch/file)
-                repo="Arthemioxz/AutoMindCloudExperimental",
+                repo="ArtemioA/AutoMindCloudExperimental",
                 branch="main",
                 compFile="AutoMindCloud/viewer/urdf_viewer_main.js"):
     """Render a full-screen URDF viewer. Output cell auto-fits any device."""
