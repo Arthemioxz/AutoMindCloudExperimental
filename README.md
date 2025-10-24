@@ -29,9 +29,9 @@ Electromagnetism:
 
 <img width="592" height="348" alt="image" src="https://github.com/user-attachments/assets/38ef2bf8-f549-484f-b7af-f692f245cde8" />
 
-Financial Accounting: https://colab.research.google.com/drive/1o4EPhvSMvY98NPEDpoawn97fGyW6YrvK
+Nuclear Physics: https://colab.research.google.com/drive/16XNpgvXsNqvK9qBESKXUa4QjcQBbJl2W?usp=sharing
 
-<img width="789" height="329" alt="image" src="https://github.com/user-attachments/assets/40b5ccec-29ec-4dea-a114-adc05fe85f5d" />
+<img width="612" height="298" alt="image" src="https://github.com/user-attachments/assets/4bdf57fc-28c7-4c0a-9fd3-ee7faba0e961" />
 
 **IA Calculus Summary**
 
