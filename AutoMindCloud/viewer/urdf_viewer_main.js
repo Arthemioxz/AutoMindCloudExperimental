@@ -45,7 +45,6 @@ export function render(opts = {}) {
     }
   });
   
-
   // 3) Load URDF (this triggers tagging via `onMeshTag`)
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
@@ -87,6 +86,31 @@ export function render(opts = {}) {
     openTools(open = true) { tools.set(!!open); }
   };
 
+  // =========================
+  // ADDED: bulk thumbnail export (clean base64 without data: prefix)
+  // =========================
+  /**
+   * Collects a thumbnail for every asset (component) and returns:
+   *   [{ assetKey: string, base64: string }, ...]
+   * where base64 is the raw PNG Base64, without 'data:image/png;base64,'.
+   */
+  app.collectAllThumbnails = async () => {
+    const items = app.assets.list(); // [{ assetKey, base, ext, count }, ...]
+    const results = [];
+    for (const it of items) {
+      try {
+        const url = await app.assets.thumbnail(it.assetKey); // data:image/png;base64,....
+        if (!url || typeof url !== 'string') continue;
+        const base64 = url.split(',')[1] || '';
+        if (base64) results.push({ assetKey: it.assetKey, base64 });
+      } catch (_) {
+        // ignore failures for individual assets to keep the rest flowing
+      }
+    }
+    return results;
+  };
+  // =========================
+
   // 7) UI modules
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
@@ -94,6 +118,11 @@ export function render(opts = {}) {
   // Optional click SFX for UI (kept minimal; UI modules do not depend on it)
   if (clickAudioDataURL) {
     try { installClickSound(clickAudioDataURL); } catch (_) {}
+  }
+
+  // Stash the latest app instance for external callers (e.g., Colab JS cell)
+  if (typeof window !== 'undefined' && window.URDFViewer) {
+    try { window.URDFViewer.__app = app; } catch (_) {}
   }
 
   // Public destroy
@@ -188,24 +217,6 @@ function frameMeshes(core, meshes) {
 }
 
 /* --------------------- Offscreen thumbnails --------------------- */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // --- Offscreen thumbnails with lighting-safe wait + renderer parity ---
 function buildOffscreenForThumbnails(core, assetToMeshes) {
@@ -331,7 +342,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     thumbnail: async (assetKey) => {
       try {
         await ready;                // ensure lights/env/materials are ready
-        await sleep(150);           // tiny per-shot cushion (helps heavy textures)
+        await new Promise(r => requestAnimationFrame(r)); // small cushion
         return snapshotAsset(assetKey);
       } catch (_) { return null; }
     },
@@ -341,17 +352,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   };
 }
-
-
-
-
-
-
-
-
-
-
-
 
 /* ------------------------- Click Sound ------------------------- */
 
@@ -382,5 +382,11 @@ function installClickSound(dataURL) {
 /* --------------------- Global UMD-style hook -------------------- */
 
 if (typeof window !== 'undefined') {
-  window.URDFViewer = { render };
+  window.URDFViewer = window.URDFViewer || {};
+  // Expose the render function and keep a slot for the latest app
+  window.URDFViewer.render = (opts) => {
+    const app = render(opts);
+    try { window.URDFViewer.__app = app; } catch (_) {}
+    return app;
+  };
 }
