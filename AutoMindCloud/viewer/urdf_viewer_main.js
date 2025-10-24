@@ -19,7 +19,7 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
  * @param {string|null} [opts.clickAudioDataURL] — optional UI SFX (not required)
  */
 
-let result = 2 + 2;
+export let result = 2 + 2;
 
 export function render(opts = {}) {
   const {
