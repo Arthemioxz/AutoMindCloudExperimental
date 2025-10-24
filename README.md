@@ -2,11 +2,11 @@
 
 Example of the Library Colab (Request Reading Permissions to Artemio Araya Day): https://colab.research.google.com/drive/1cwDrG9dbK1MfyaiI2gRaXxdlKRAjw_Wp?usp=sharing
 
-- Digitalization & Automation
-- URDF Render on Colab
+- Calculus Digitalization & Automation (Automatic Evaluatio complement to Sympy)
+- Calculus Summary with IA
+- Whiteboard on Colab
 - Step Render on Colab
 - Orthogonal Render on Colab
-- Automatic Evaluation Sympy
 
 **Examples**
 
