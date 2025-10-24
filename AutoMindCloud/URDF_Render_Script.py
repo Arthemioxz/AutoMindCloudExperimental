@@ -278,7 +278,7 @@ def URDF_Render(folder_path="Model",
     setTimeout(onResize, 0);
   }}
 
-import { result } from './viewer/urdf_viewer_main.js';
+import { result } from 'viewer/urdf_viewer_main.js';
 console.log(result); // 4
 
 </script>
