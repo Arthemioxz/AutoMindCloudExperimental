@@ -21,6 +21,8 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
 
 export let result = 1+1;
 
+export let Base64Images = [];          // create empty list
+
 //console.log(result)
 
 export function render(opts = {}) {
@@ -355,6 +357,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     renderer.render(scene, camera);
     const url = renderer.domElement.toDataURL('image/png');
 
+    Base64Images.push(url.split(',')[1];)
+    
     // Restore visibility
     for (const [o, v] of vis) o.visible = v;
 
