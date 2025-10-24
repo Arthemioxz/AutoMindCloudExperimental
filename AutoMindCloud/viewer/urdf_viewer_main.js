@@ -18,6 +18,11 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
  * @param {number|null} [opts.background=THEME.bgCanvas]
  * @param {string|null} [opts.clickAudioDataURL] — optional UI SFX (not required)
  */
+
+export result = 1+1;
+
+console.log("result")
+
 export function render(opts = {}) {
   const {
     container,
