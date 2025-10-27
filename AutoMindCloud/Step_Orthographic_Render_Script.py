@@ -258,7 +258,7 @@ def _make_client_side_html(svgs, audio_dataurl=None, logo_url=None, logo_max_h=4
 def Step_Orthographic_Render(
     sketch_name_or_path,
     audio_filename="click_sound.mp3",
-    logo_url="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png",  # AutoMind badge (default)
+    logo_url="https://raw.githubusercontent.com/ArtemioA/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud.png",  # AutoMind badge (default)
     logo_max_height=40,
 ):
     """
