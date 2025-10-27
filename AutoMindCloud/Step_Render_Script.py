@@ -116,7 +116,7 @@ def Step_Render(Step_Name, target_size=2.0, click_sound_path="/content/click_sou
 </head>
 <body>
   <div id="app"></div>
-  <div class="badge"><img src="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png" alt="badge"></div>
+  <div class="badge"><img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud.png" alt="badge"></div>
 
   <!-- Keep the iframe as tall as the viewport so we truly use max visible area -->
   <script>
