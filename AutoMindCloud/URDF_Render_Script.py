@@ -1,4 +1,4 @@
- urdf_render_fixed.py — Full-screen, always-fit viewer (Colab/Jupyter/VSCode)
+# urdf_render_fixed.py — Full-screen, always-fit viewer (Colab/Jupyter/VSCode)
 import base64, re, os, json, shutil, zipfile
 from IPython.display import HTML
 import gdown
