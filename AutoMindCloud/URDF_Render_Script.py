@@ -177,8 +177,9 @@ def URDF_Render(folder_path="Model",
 <div id="app"></div>
 
 <div class="badge">
-  <img src="https://raw.githubusercontent.com/ArtemioA/AutoMindCloudExperimental/refs/heads/main/AutoMindCloud/AutoMindCloud.png" alt="badge"/>
+  <img src="https://raw.githubusercontent.com/ArtemioA/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud.png" alt="badge"/>
 </div>
+
 
 <!-- UMD deps -->
 <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
