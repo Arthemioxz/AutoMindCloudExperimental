@@ -6,8 +6,9 @@ Example of the Library Colab (Request Reading Permissions to Artemio Araya Day):
 - Calculus Summary with IA
 - Whiteboard on Colab
 - Step Render on Colab
-- Orthogonal Render on Colab
-
+- Orthogonal Render of Step on Colab
+- URDF Render on Colab
+  
 **Examples**
 
 **Classic Physics**
