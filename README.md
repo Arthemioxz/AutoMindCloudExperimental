@@ -6,15 +6,16 @@
 
 <br><br>
 
+
 Example of the Library Colab (Request Reading Permissions to Artemio Araya Day): https://colab.research.google.com/drive/1cwDrG9dbK1MfyaiI2gRaXxdlKRAjw_Wp?usp=sharing
 
-- Calculus Digitalization & Automation (Automatic Evaluation complement to Sympy)
+- Calculus Digitalization & Automation (Automatic Evaluatio complement to Sympy)
 - Calculus Summary with IA
 - Whiteboard on Colab
 - Step Render on Colab
-- Orthogonal Render of Step on Colab
+- Orthogonal Render on Colab
 - URDF Render on Colab
-  
+
 **Examples**
 
 **Classic Physics**
@@ -23,17 +24,25 @@ Heat Transfer by Conduction: https://colab.research.google.com/drive/1BukgVekSpa
 
 <img width="578" height="477" alt="image" src="https://github.com/user-attachments/assets/7d28cb70-0c31-48b4-ac1e-2e651963c006" />
 
+<br><br>
+
 Heat Transfer by Convection: https://colab.research.google.com/drive/1g95LonNxeMBTITWCpZgncDFi58bPi0lk?usp=sharing
 
 <img width="875" height="496" alt="image" src="https://github.com/user-attachments/assets/f9eba9e3-83c2-43a1-a401-02bb4bac8778" />
+
+<br><br>
 
 Electromagnetism: https://colab.research.google.com/drive/1hJzAv6H5JG4P9kzMewav-Ne3ZhjSPm31
 
 <img width="592" height="348" alt="image" src="https://github.com/user-attachments/assets/38ef2bf8-f549-484f-b7af-f692f245cde8" />
 
+<br><br>
+
 Nuclear Physics: https://colab.research.google.com/drive/16XNpgvXsNqvK9qBESKXUa4QjcQBbJl2W?usp=sharing
 
 <img width="593" height="279" alt="image" src="https://github.com/user-attachments/assets/41a46153-a2c8-4096-a6cf-b79309473594" />
+
+<br><br>
 
 **White Board** (Thanks to my sister Mercedes Araya Day for the drawing)
 
@@ -50,5 +59,4 @@ Nuclear Physics: https://colab.research.google.com/drive/16XNpgvXsNqvK9qBESKXUa4
 
 **URDF Render on Colab**
 
-<img width="1322" height="513" alt="image" src="https://github.com/user-attachments/assets/084064fd-2075-40e0-b137-33646eb1f347" />
-
+<img width="1322" height="513" alt="image" src="https://github.com/user-attachments/assets/c88f28eb-ab80-42a0-965c-a77981ce9b4e" />
