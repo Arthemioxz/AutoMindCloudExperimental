@@ -9,7 +9,7 @@
 
 Example of the Library Colab (Request Reading Permissions to Artemio Araya Day): https://colab.research.google.com/drive/1cwDrG9dbK1MfyaiI2gRaXxdlKRAjw_Wp?usp=sharing
 
-- Calculus Digitalization & Automation (Automatic Evaluatio complement to Sympy)
+- Calculus Digitalization & Automation (Automatic Evaluation complement to Sympy)
 - Calculus Summary with IA
 - Whiteboard on Colab
 - Step Render on Colab
