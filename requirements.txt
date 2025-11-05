@@ -3,3 +3,9 @@ gdown
 cascadio
 trimesh
 cadquery
+
+requests
+base64
+mimetypes
+pathlib
+
