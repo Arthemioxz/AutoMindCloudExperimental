@@ -399,7 +399,7 @@ def CalculusSummary(numero, font_type="Latin Modern Roman"):
     raw_text = _dechat(raw_text)
     summary, steps = _split_summary_and_steps(raw_text)
     display(HTML(_render_html(summary, steps, font_type)))
-
+ 
 
 
 
