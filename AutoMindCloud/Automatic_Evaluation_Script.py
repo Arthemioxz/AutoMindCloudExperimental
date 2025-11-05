@@ -373,7 +373,7 @@ def CalculusSummary(numero, font_type="Latin Modern Roman"):
     )
 
     if numero == 1:
-        detalle = " Resumen general, formal y preciso sin entrar al detalle técnico fino."
+        detalle = " Resumen general, formal y preciso sin usar ecuaciones."
     elif numero == 2:
         detalle = " Resumen muy preciso con detalles relevantes (mínimo 15 pasos)."
     elif numero == 3:
