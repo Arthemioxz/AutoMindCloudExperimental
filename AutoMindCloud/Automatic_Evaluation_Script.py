@@ -374,11 +374,11 @@ def CalculusSummary(numero, font_type="Latin Modern Roman"):
     )
 
     if numero == 1:
-        detalle = " Resumen general SIN usar ninguna ecuacion (maximo 7 pasos)."
+        detalle = " Resumen general con palabras SIN usar ninguna ecuacion o simbolo matemático (7 enumeraciones)."
     elif numero == 2:
-        detalle = " Resumen muy preciso con detalles relevantes (mínimo 15 pasos)."
+        detalle = " Resumen muy preciso con detalles relevantes (10 enumeraciones)."
     elif numero == 3:
-        detalle = " Resumen extremadamente preciso (mínimo 30 pasos, usa notación LaTeX cuando corresponda)."
+        detalle = " Resumen extremadamente preciso (18 enumeraciones, usa notación LaTeX cuando corresponda)."
     else:
         detalle = ""
 
