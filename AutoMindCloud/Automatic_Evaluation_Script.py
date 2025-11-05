@@ -239,7 +239,6 @@ from IPython.display import display, Markdown
 
 
 
- 
 
 
 
@@ -248,7 +247,12 @@ from IPython.display import display, Markdown
 
 
 
-# -------- TEXTO --------
+
+
+
+
+
+
 import requests, base64, mimetypes, re, html, urllib.parse
 from pathlib import Path
 from IPython.display import display, HTML
@@ -264,30 +268,23 @@ def polli_text(prompt: str) -> str:
 
 
 # =====================================
-# 🔹 Función de renderizado con MathJax
+# 🔹 Funciones auxiliares
 # =====================================
 _num_pat = re.compile(r'^\s*(\d+)[\.\)]\s+(.*)')
 
 def _escape_keep_math(s: str) -> str:
-    parts = re.split(r'(\$\$.*?\$\$|\$.*?\$|\\\(.*?\\\))', s, flags=re.S)
+    """Escapa HTML pero deja intactas expresiones dentro de $...$, \( ... \), o \[ ... \]."""
+    parts = re.split(r'(\$\$.*?\$\$|\$.*?\$|\\\[.*?\\\]|\\\(.*?\\\))', s, flags=re.S)
     out = []
     for p in parts:
-        if p.startswith('$') or p.startswith('\\('):
+        if p.startswith('$') or p.startswith('\\(') or p.startswith('\\['):
             out.append(p)
         else:
             out.append(html.escape(p))
     return ''.join(out)
 
-def auto_wrap_latex(text: str) -> str:
-    chunks = re.split(r'(\$\$.*?\$\$|\$.*?\$|\\\(.*?\\\))', text, flags=re.S)
-    latex_cmd = re.compile(r'\\[a-zA-Z]+(?:\s*\{.*?\})*')
-    def wrap(seg: str) -> str:
-        def repl(m): return r'\(' + m.group(0) + r'\)'
-        return latex_cmd.sub(repl, seg)
-    return ''.join(part if (part.startswith('$') or part.startswith('\\(')) else wrap(part)
-                   for part in chunks)
-
 def _split_summary_and_steps(text: str):
+    """Divide el texto generado en resumen y pasos numerados."""
     lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
     summary_lines, steps, current = [], [], None
     for line in lines:
@@ -307,8 +304,9 @@ def _split_summary_and_steps(text: str):
         steps.append(current.strip())
     return ' '.join(summary_lines).strip(), steps
 
+
 # =====================================
-# 🔹 Render con fuentes y colores
+# 🔹 Render con fuentes y MathJax
 # =====================================
 def _render_html(summary: str, steps: list, font_type: str):
     css = f"""
@@ -332,7 +330,10 @@ def _render_html(summary: str, steps: list, font_type: str):
 
 <script>
   window.MathJax = {{
-    tex: {{inlineMath: [['$', '$'], ['\\\\(', '\\\\)']], displayMath: [['$$','$$']] }},
+    tex: {{
+      inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+      displayMath: [['$$','$$'], ['\\\\[','\\\\]']]
+    }},
     options: {{ skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }}
   }};
 </script>
@@ -351,6 +352,7 @@ def _render_html(summary: str, steps: list, font_type: str):
 """
     return css + body
 
+
 # =====================================
 # 🔹 Función principal: CalculusSummary
 # =====================================
@@ -363,7 +365,11 @@ def CalculusSummary(numero, font_type="Latin Modern Roman"):
         "Empieza directamente con el contenido. "
         "Estructura la salida en dos partes: "
         "(1) un párrafo de resumen; "
-        "(2) luego una enumeración con pasos numerados 1., 2., 3., etc."
+        "(2) luego una enumeración con pasos numerados 1., 2., 3., etc. "
+        "IMPORTANTE: Toda notación matemática DEBE ir delimitada correctamente: "
+        "usa \\( ... \\) para fórmulas en línea y \\[ ... \\] para ecuaciones en bloque. "
+        "Nunca escribas comandos LaTeX fuera de esos delimitadores. "
+        "Asegura que \\left y \\right siempre aparezcan en parejas completas."
     )
 
     if numero == 1:
@@ -388,10 +394,24 @@ def CalculusSummary(numero, font_type="Latin Modern Roman"):
             s = re.sub(pat, "", s, flags=re.IGNORECASE | re.MULTILINE)
         return s.strip()
 
+    # ✅ Corregido: ya no envolvemos LaTeX automáticamente
     raw_text = _dechat(raw_text)
-    raw_text = auto_wrap_latex(raw_text)
     summary, steps = _split_summary_and_steps(raw_text)
     display(HTML(_render_html(summary, steps, font_type)))
+
+
+
+
+
+
+
+ 
+
+
+
+
+
+
 
 
 
