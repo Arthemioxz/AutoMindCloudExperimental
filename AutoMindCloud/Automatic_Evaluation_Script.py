@@ -257,14 +257,11 @@ from IPython.display import display, HTML
 # 🔹 POLLI_TEXT: función local (no llama tu API)
 # =====================================
 def polli_text(prompt: str) -> str:
-    # En tu caso, puedes dejarlo vacío si no quieres llamar nada
-    # o conectar esto a tu modelo local / API si lo deseas.
-    # Ejemplo de uso directo de tu API Cloud Run:
-  
     API_URL = "https://gpt-proxy-github-619255898589.us-central1.run.app/infer"
-    r = requests.post(API_URL, json={"text": prompt})
+    r = requests.post(API_URL, json={"text": prompt}, timeout=60)
     r.raise_for_status()
-    return r.text
+    return r.json()   # ← OJO: no r.text
+
 
 # =====================================
 # 🔹 Función de renderizado con MathJax
