@@ -361,19 +361,20 @@ def CalculusSummary(numero, font_type="Latin Modern Roman"):
     global documento
 
     base = (
-        "Escribe en español, tono académico e impersonal (tercera persona). "
+        "Escribe en español, tono académico, formal e impersonal (tercera persona). "
         "Empieza directamente con el contenido. "
         "Estructura la salida en dos partes: "
         "(1) un párrafo de resumen; "
         "(2) luego una enumeración con pasos numerados 1., 2., 3., etc. "
         "IMPORTANTE: Toda notación matemática DEBE ir delimitada correctamente: "
         "usa \\( ... \\) para fórmulas en línea y \\[ ... \\] para ecuaciones en bloque. "
+        "no uses **"
         "Nunca escribas comandos LaTeX fuera de esos delimitadores. "
         "Asegura que \\left y \\right siempre aparezcan en parejas completas."
     )
 
     if numero == 1:
-        detalle = " Resumen general, formal y preciso sin usar ecuaciones."
+        detalle = " Resumen general SIN usar ninguna ecuacion (maximo 7 pasos)."
     elif numero == 2:
         detalle = " Resumen muy preciso con detalles relevantes (mínimo 15 pasos)."
     elif numero == 3:
