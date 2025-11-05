@@ -234,45 +234,44 @@ def DocumentoStr():
 import re
 from IPython.display import display, Markdown
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # -------- TEXTO --------
-import requests, urllib.parse
-
-def polli_text(prompt: str) -> str:
-    url = "https://text.pollinations.ai/" + urllib.parse.quote(prompt, safe="")
-    r = requests.get(url, timeout=60)
-    r.raise_for_status()
-    return r.text  # respuesta en texto plano
-
-def show_latex_paragraph(s: str):
-    # 1) Quitar bloques ```latex ... ```
-    s = re.sub(r"```(?:latex)?|```", "", s, flags=re.IGNORECASE).strip()
-    # 2) Si todo viene envuelto en \text{ ... }, desenvolver
-    if s.startswith(r"\text{") and s.endswith("}"):
-        s = s[6:-1]
-    # 3) Convertir saltos LaTeX "\\" a saltos de línea Markdown
-    s = s.replace(r"\\ ", "  \n").replace(r"\\", "  \n")
-    # 4) Mostrar como párrafo Markdown (MathJax renderiza \( ... \), \[ ... \], $$ ... $$)
-    return IPython.display.Markdown(s)
-
-#def CalculusSummary(numero):
-#  global documento
-#
-#  if numero == 1:
-    
-#    IPython.display.display(show_latex_paragraph(polli_text("(RECUERDA usar $$ para renderizar el latex en markdown si es que vas a usar) Primero haz un resumen general formalmente de lo que crees que hacen los calculos sin entrar al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración explicando paso por paso de forma general sin entrar al detalle (y pon un espacio entre cada enumeración): "+ documento)))
-#  elif numero ==2:
-#    IPython.display.display(show_latex_paragraph(polli_text("(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración más precisa explicando paso por paso (y pon un espacio entre cada enumeración): "+ documento)))
-#  elif numero ==3:
-#    IPython.display.display(show_latex_paragraph(polli_text("(RECUERDA usar $$ para renderizar el latex en markdown) Primero haz un resumen formalmente muy preciso de lo que crees que hacen los calculos entrando al detalle, no digas palabras como probablemente, di que son las funciones concretamente. Después haz una enumeración extremadamente precisa explicando paso por paso (y pon un espacio entre cada enumeración). (v): "+ documento)))
-
-import re, html
+import requests, base64, mimetypes, re, html, urllib.parse
+from pathlib import Path
 from IPython.display import display, HTML
 
-# ---------- Utils ----------
+# =====================================
+# 🔹 POLLI_TEXT: función local (no llama tu API)
+# =====================================
+def polli_text(prompt: str) -> str:
+    # En tu caso, puedes dejarlo vacío si no quieres llamar nada
+    # o conectar esto a tu modelo local / API si lo deseas.
+    # Ejemplo de uso directo de tu API Cloud Run:
+  
+    API_URL = "https://gpt-proxy-github-619255898589.us-central1.run.app/infer"
+    r = requests.post(API_URL, json={"text": prompt})
+    r.raise_for_status()
+    return r.text
+
+# =====================================
+# 🔹 Función de renderizado con MathJax
+# =====================================
 _num_pat = re.compile(r'^\s*(\d+)[\.\)]\s+(.*)')
 
 def _escape_keep_math(s: str) -> str:
-    """Escapa HTML pero conserva $...$, $$...$$ y \(...\) para que MathJax los procese."""
     parts = re.split(r'(\$\$.*?\$\$|\$.*?\$|\\\(.*?\\\))', s, flags=re.S)
     out = []
     for p in parts:
@@ -283,20 +282,15 @@ def _escape_keep_math(s: str) -> str:
     return ''.join(out)
 
 def auto_wrap_latex(text: str) -> str:
-    """Envuelve comandos LaTeX sueltos (\frac, \sin, etc.) con \(...\) fuera de delimitadores."""
     chunks = re.split(r'(\$\$.*?\$\$|\$.*?\$|\\\(.*?\\\))', text, flags=re.S)
     latex_cmd = re.compile(r'\\[a-zA-Z]+(?:\s*\{.*?\})*')
-
     def wrap(seg: str) -> str:
-        def repl(m):
-            return r'\(' + m.group(0) + r'\)'
+        def repl(m): return r'\(' + m.group(0) + r'\)'
         return latex_cmd.sub(repl, seg)
-
     return ''.join(part if (part.startswith('$') or part.startswith('\\(')) else wrap(part)
                    for part in chunks)
 
 def _split_summary_and_steps(text: str):
-    """Separa el primer bloque (resumen) de los pasos numerados."""
     lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
     summary_lines, steps, current = [], [], None
     for line in lines:
@@ -316,47 +310,32 @@ def _split_summary_and_steps(text: str):
         steps.append(current.strip())
     return ' '.join(summary_lines).strip(), steps
 
-# ---------- Render con fuente seleccionada ----------
+# =====================================
+# 🔹 Render con fuentes y colores
+# =====================================
 def _render_html(summary: str, steps: list, font_type: str):
     css = f"""
-<!-- Anton para títulos -->
 <link href="https://fonts.googleapis.com/css2?family=Anton&display=swap" rel="stylesheet">
-
-<!-- Algunas fuentes comunes -->
-<link href="https://fonts.googleapis.com/css2?family=Fira+Sans&family=Fira+Mono&family=Inconsolata&family=Roboto+Slab&family=Roboto+Mono&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=STIX+Two+Text&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fira+Sans&family=Roboto+Mono&display=swap" rel="stylesheet">
 <link href="https://fonts.cdnfonts.com/css/latin-modern-roman" rel="stylesheet">
 
 <style>
   .calc-wrap {{
     max-width: 980px; margin: 6px auto; padding: 4px 2px;
-    font-family: '{font_type}', serif;
-    color: #000;
-    -webkit-font-smoothing: antialiased;
-    font-synthesis: none;
+    font-family: '{font_type}', serif; color: #000;
   }}
   .title {{
-    font-family: 'Anton', sans-serif;
-    font-weight: 700;
-    color: teal;
-    font-size: 22px;
-    margin: 6px 0 10px;
-    letter-spacing: .3px;
+    font-family: 'Anton', sans-serif; color: teal; font-size: 22px;
+    font-weight: 700; margin: 6px 0 10px;
   }}
-  .p   {{ font-size: 18px; line-height: 1.6; margin: 8px 0; }}
-  .step{{ margin: 10px 0; }}
+  .p {{ font-size: 18px; line-height: 1.6; margin: 8px 0; }}
+  .step {{ margin: 10px 0; }}
   .idx {{ margin-right: 8px; font-weight: 700; }}
-  .calc-wrap .mjx-container {{ color: #000 !important; }}
 </style>
 
-<!-- MathJax v3 -->
 <script>
   window.MathJax = {{
-    tex: {{
-      inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
-      displayMath: [['$$', '$$']],
-      processEscapes: true
-    }},
+    tex: {{inlineMath: [['$', '$'], ['\\\\(', '\\\\)']], displayMath: [['$$','$$']] }},
     options: {{ skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }}
   }};
 </script>
@@ -375,74 +354,45 @@ def _render_html(summary: str, steps: list, font_type: str):
 """
     return css + body
 
-# ---------- Función principal ----------
+# =====================================
+# 🔹 Función principal: CalculusSummary
+# =====================================
 def CalculusSummary(numero, font_type="Latin Modern Roman"):
-    """
-    Usa la variable global `documento` y la función `polli_text(...)`.
-    Render: títulos teal (Anton); cuerpo con fuente configurable; ecuaciones LaTeX en negro.
-    Ejemplo: CalculusSummary(1, "Fira Sans")
-    """
     import re
     global documento
 
-    # --- Plantilla común para forzar estilo formal e impersonal ---
     base = (
         "Escribe en español, tono académico e impersonal (tercera persona). "
-        "No uses saludos ni frases introductorias o metadiscursivas como "
-        "'aquí tienes', 'claro', 'a continuación', 'este documento', 'este resumen', "
-        "'en este texto', 'se presenta', 'vamos a', ni te dirijas al lector. "
         "Empieza directamente con el contenido. "
-        "No uses 'probablemente' ni expresiones especulativas. "
         "Estructura la salida en dos partes: "
         "(1) un párrafo de resumen; "
-        "(2) luego una enumeración con pasos numerados 1., 2., 3., etc. "
-        "No incluyas viñetas adicionales ni conclusiones."
+        "(2) luego una enumeración con pasos numerados 1., 2., 3., etc."
     )
 
     if numero == 1:
-        detalle = (
-            " Redacta un resumen general, formal y preciso sin entrar al detalle técnico fino. "
-            "Tras el resumen, da una enumeración general paso por paso (un paso por línea). "
-        )
+        detalle = " Resumen general, formal y preciso sin entrar al detalle técnico fino."
     elif numero == 2:
-        detalle = (
-            " Redacta un resumen muy preciso entrando en detalles relevantes (fórmulas o símbolos clave cuando aporte claridad). "
-            "Tras el resumen, da una enumeración precisa paso por paso (un paso por línea y no menos de 15 pasos). "
-        )
+        detalle = " Resumen muy preciso con detalles relevantes (mínimo 15 pasos)."
     elif numero == 3:
-        detalle = (
-            " Redacta un resumen extremadamente preciso con el máximo nivel de especificidad "
-            "(incluye notación y ecuaciones LaTeX cuando corresponda). "
-            "Tras el resumen, da una enumeración extremadamente precisa paso por paso (un paso por línea y no menos de 30 pasos). "
-        )
+        detalle = " Resumen extremadamente preciso (mínimo 30 pasos, usa notación LaTeX cuando corresponda)."
     else:
-        detalle = " Redacta un resumen formal y una enumeración paso por paso."
+        detalle = ""
 
     prompt = base + detalle + " Contenido a resumir:\n\n"
-
-    # --- Llamada al modelo ---
     raw_text = polli_text(prompt + documento)
 
-    # --- Limpieza de muletillas si aparecieran por error ---
     def _dechat(s: str) -> str:
-        # Elimina frases introductorias comunes al inicio
         s = s.lstrip()
         patrones_inicio = [
-            r"^(claro[,:\s]|por supuesto[,:\s]|aquí tienes[,:\s]|a continuación[,:\s]).*?\n+",
+            r"^(claro|por supuesto|aquí tienes|a continuación).*?\n+",
             r"^(este (documento|resumen|texto)[^.\n]*\.)\s+",
-            r"^(en (este|el) (documento|resumen|texto)[^.\n]*\.)\s+",
         ]
         for pat in patrones_inicio:
             s = re.sub(pat, "", s, flags=re.IGNORECASE | re.MULTILINE)
-        # Quita espacios extra
         return s.strip()
 
     raw_text = _dechat(raw_text)
-
-    # --- Ajuste de LaTeX si corresponde ---
     raw_text = auto_wrap_latex(raw_text)
-
-    # --- Separación y render ---
     summary, steps = _split_summary_and_steps(raw_text)
     display(HTML(_render_html(summary, steps, font_type)))
 
