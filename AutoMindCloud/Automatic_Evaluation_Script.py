@@ -89,8 +89,9 @@ def S(c_componente):#Guardar
   dentro = False
   print(c_componente)
   print(DatosList)
-  print((DatosList.copy()).append(c_componente))
-  for element in (DatosList.copy()).append(c_componente):
+  copied_list = DatosList.copy()
+  print(copied_list)
+  for element in copied_list:
 
     #Si es un elemento None, entonces guardamos de forma especial:
     if element[1] == None:
