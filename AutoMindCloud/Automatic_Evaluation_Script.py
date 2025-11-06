@@ -87,18 +87,16 @@ def Redondear(expr):#Redondeamos la expresión.
 def S(c_componente):#Guardar
   global DatosList,Orden,Color#Documento
   dentro = False
-  print(c_componente)
-  print(DatosList)
+
   copied_list = DatosList.copy()
-  print(copied_list)
+
   for element in copied_list:
 
     #Si es un elemento None, entonces guardamos de forma especial:
     if element[1] == None:
-      element[1] = element[0]
+      c_componente[1] = element[0]
 
     if element[0] == c_componente[0]:
-      element[1] = c_componente[1]
       dentro = True#Si el elemento ha sido guardado antes, entonces no lo volvemos a ingresar. Sino que sobre escribimos lo que dicho
       #componente significaba con el valor actual que se desea guardar.
 
