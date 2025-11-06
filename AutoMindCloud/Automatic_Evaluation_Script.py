@@ -90,8 +90,7 @@ def S(c_componente):#Guardar
   for element in DatosList:
 
     #Si es un elemento None, entonces guardamos de forma especial:
-    if element[1] == None:
-      print("detectamos None")
+    if element[1] is type(None):
       element[1] = element[0]
 
     if element[0] == c_componente[0]:
@@ -103,7 +102,7 @@ def S(c_componente):#Guardar
   if dentro == False:
     
     DatosList.append(c_componente)#Si el elemento no estaba adentro, simplemente lo agregamos.
-
+  
   #Renderizado Gris
   if c_componente[1] == None or dentro == False:
     D(c_componente)#Hacemos un print renderizado en color gris para indicar que el elemento ha sido definido/guardado
