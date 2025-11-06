@@ -36,29 +36,6 @@ Orden = 0
 global documento
 
 documento = []
-# -------- TEXTO --------
-import requests, urllib.parse
-
-def polli_text(prompt: str) -> str:
-    url = "https://text.pollinations.ai/" + urllib.parse.quote(prompt, safe="")
-    r = requests.get(url, timeout=60)
-    r.raise_for_status()
-    return r.text  # respuesta en texto plano
-
-#print(polli_text("Explícame SymPy en bullets y un ejemplo al final."))
-
-# -------- IMAGEN --------
-def polli_image(prompt: str, outfile="imagen.jpg"):
-    url = "https://pollinations.ai/p/" + urllib.parse.quote(prompt, safe="")
-    r = requests.get(url, timeout=120)
-    r.raise_for_status()
-    with open(outfile, "wb") as f:
-        f.write(r.content)
-    return outfile
-
-# Ejemplo:
-#fn = polli_image("futuristic humanoid robot in a lab, ultra detailed, cinematic lighting")
-#print("Imagen guardada en:", fn)
 
 Color = ""
 
@@ -92,6 +69,7 @@ def search(symbolo,DatosList):
       elif isinstance(c_element[1],int):#Si tenemos un float
           return "("+str(c_element[1])+")"
       elif c_element[1] != None:#Si tenemos una expresión
+          print("detectamos None")
           return "("+sympy.latex(c_element[1])+")"
       else:
         return sympy.latex(symbolo)#Si es None
