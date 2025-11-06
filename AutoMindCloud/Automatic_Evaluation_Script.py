@@ -69,7 +69,6 @@ def search(symbolo,DatosList):
       elif isinstance(c_element[1],int):#Si tenemos un float
           return "("+str(c_element[1])+")"
       elif c_element[1] != None:#Si tenemos una expresión
-          print("detectamos None")
           return "("+sympy.latex(c_element[1])+")"
       else:
         return sympy.latex(symbolo)#Si es None
@@ -92,6 +91,7 @@ def S(c_componente):#Guardar
 
     #Si es un elemento None, entonces guardamos de forma especial:
     if element[1] == None:
+      print("detectamos None")
       element[1] = element[0]
 
     if element[0] == c_componente[0]:
