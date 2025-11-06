@@ -337,7 +337,7 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
 # =====================================
 # 🔹 Función principal: CalculusSummary (usa variable global)
 # =====================================
-def CalculusSummary(numero: int, font_type: str = "Latin Modern Roman"):
+def IA_CalculusSummary(numero: int, font_type: str = "Latin Modern Roman"):
     """
     Usa la variable global 'documento' como entrada (como antes).
     """
