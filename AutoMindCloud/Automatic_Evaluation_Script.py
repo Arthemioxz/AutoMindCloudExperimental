@@ -87,6 +87,9 @@ def Redondear(expr):#Redondeamos la expresión.
 def S(c_componente):#Guardar
   global DatosList,Orden,Color#Documento
   dentro = False
+  print(c_componente)
+  print(DatosList)
+  print((DatosList.copy()).append(c_componente))
   for element in (DatosList.copy()).append(c_componente):
 
     #Si es un elemento None, entonces guardamos de forma especial:
