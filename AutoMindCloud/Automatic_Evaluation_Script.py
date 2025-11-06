@@ -90,7 +90,7 @@ def S(c_componente):#Guardar
   for element in DatosList:
 
     #Si es un elemento None, entonces guardamos de forma especial:
-    if element[1] is type(None):
+    if type(element[1]) is type(None):
       element[1] = element[0]
 
     if element[0] == c_componente[0]:
