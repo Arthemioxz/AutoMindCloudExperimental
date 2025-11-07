@@ -1,5 +1,6 @@
 // urdf_viewer_main.js
-// Entrypoint that composes ViewerCore + AssetDB + Selection & Drag + UI (Tools & Components)
+// Entrypoint que compone ViewerCore + AssetDB + Interaction + UI (Tools & Components)
+// con soporte opcional para IA_Widgets (mini-lotes de thumbnails → Colab → API).
 
 import { THEME } from "./Theme.js";
 import { createViewer } from "./core/ViewerCore.js";
@@ -8,6 +9,16 @@ import { attachInteraction } from "./interaction/SelectionAndDrag.js";
 import { createToolsDock } from "./ui/ToolsDock.js";
 import { createComponentsPanel } from "./ui/ComponentsPanel.js";
 
+/**
+ * Public entry: render the URDF viewer.
+ * @param {Object} opts
+ * @param {HTMLElement} opts.container
+ * @param {string} opts.urdfContent
+ * @param {Object.<string,string>} opts.meshDB
+ * @param {string} [opts.selectMode="link"]
+ * @param {number|null} [opts.background]
+ * @param {boolean} [opts.IA_Widgets=false]  // ✅ si true, habilita integración con IA
+ */
 export function render(opts = {}) {
   const {
     container,
@@ -16,37 +27,48 @@ export function render(opts = {}) {
     selectMode = "link",
     background = THEME.bgCanvas || 0xffffff,
     clickAudioDataURL = null,
-    IA_Widgets = false, // ✅ opt-in
+    IA_Widgets = false,
   } = opts;
 
   // 1) Core viewer
   const core = createViewer({ container, background });
 
-  // 2) Asset DB
+  // 2) Asset DB + loadMeshCb con hook para mapear assetKey -> meshes
   const assetDB = buildAssetDB(meshDB);
-  const loadMeshCb = createLoadMeshCb(assetDB, core);
-
-  // Mapa assetKey -> [meshes]
   const assetToMeshes = new Map();
 
-  // Wrap para trackear meshes por asset
-  const trackedLoadMeshCb = (url, manager, onComplete) =>
-    loadMeshCb(url, manager, (mesh, meta) => {
-      if (mesh && meta && meta.assetKey) {
-        const key = meta.assetKey;
-        if (!assetToMeshes.has(key)) assetToMeshes.set(key, []);
-        assetToMeshes.get(key).push(mesh);
+  const loadMeshCb = createLoadMeshCb(assetDB, {
+    onMeshTag(obj, assetKey) {
+      const list = assetToMeshes.get(assetKey) || [];
+      obj.traverse((o) => {
+        if (o && o.isMesh && o.geometry) {
+          list.push(o);
+        }
+      });
+      if (list.length) {
+        assetToMeshes.set(assetKey, list);
       }
-      if (onComplete) onComplete(mesh, meta);
-    });
+      obj.traverse((o) => {
+        if (o && o.isMesh) {
+          o.userData = o.userData || {};
+          o.userData.__assetKey = assetKey;
+        }
+      });
+    },
+  });
 
-  // 3) Load URDF
-  const robot = core.loadURDF(urdfContent, { loadMeshCb: trackedLoadMeshCb });
+  // 3) Cargar URDF
+  const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // 4) Offscreen thumbnails (sistema viejo mejorado)
+  // 3b) Fallback: si el hook no llenó nada, reconstruimos desde userData.__assetKey
+  if (robot && !assetToMeshes.size) {
+    rebuildAssetMapFromRobot(robot, assetToMeshes);
+  }
+
+  // 4) Offscreen thumbnails (tipo thumbalist)
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
-  // 5) Interacción
+  // 5) Interacción selección / drag
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -64,7 +86,6 @@ export function render(opts = {}) {
 
     assets: {
       list: () => listAssets(assetToMeshes),
-      // Thumbnails mostrados en ComponentsPanel:
       thumbnail: (assetKey) => off?.thumbnail(assetKey),
     },
 
@@ -103,14 +124,14 @@ export function render(opts = {}) {
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // 8) Click sound opcional
+  // 8) Sonido opcional
   if (clickAudioDataURL) {
     try {
       installClickSound(clickAudioDataURL);
     } catch (_) {}
   }
 
-  // 9) IA opcional: solo si IA_Widgets está activo
+  // 9) IA opcional
   if (IA_Widgets) {
     bootstrapComponentDescriptions(app, assetToMeshes, off);
   }
@@ -127,23 +148,44 @@ export function render(opts = {}) {
   return { ...app, destroy };
 }
 
-/* ---------- Helpers: assets / isolate / thumbnails ---------- */
+/* ---------- Helpers: assets / isolate / frame ---------- */
+
+function rebuildAssetMapFromRobot(robot, assetToMeshes) {
+  const tmp = new Map();
+  robot.traverse((o) => {
+    if (o && o.isMesh && o.geometry) {
+      const k =
+        (o.userData && (o.userData.__assetKey || o.userData.assetKey)) || null;
+      if (!k) return;
+      const arr = tmp.get(k) || [];
+      arr.push(o);
+      tmp.set(k, arr);
+    }
+  });
+  if (!tmp.size) return;
+  tmp.forEach((arr, k) => {
+    if (arr && arr.length) assetToMeshes.set(k, arr);
+  });
+}
 
 function listAssets(assetToMeshes) {
-  const out = [];
-  for (const [assetKey, meshes] of assetToMeshes.entries()) {
-    if (!meshes || !meshes.length) continue;
-    const base = assetKey.split("/").pop() || assetKey;
-    const ext = base.includes(".") ? base.split(".").pop() : "";
-    out.push({
-      assetKey,
-      base,
-      ext,
-      count: meshes.length,
-    });
-  }
-  out.sort((a, b) => a.base.localeCompare(b.base));
-  return out;
+  const items = [];
+  assetToMeshes.forEach((meshes, assetKey) => {
+    if (!meshes || !meshes.length) return;
+    const clean = String(assetKey || "").split("?")[0].split("#")[0];
+    const baseFull = clean.split("/").pop();
+    const dot = baseFull.lastIndexOf(".");
+    const base = dot >= 0 ? baseFull.slice(0, dot) : baseFull;
+    const ext = dot >= 0 ? baseFull.slice(dot + 1).toLowerCase() : "";
+    items.push({ assetKey, base, ext, count: meshes.length });
+  });
+  items.sort((a, b) =>
+    a.base.localeCompare(b.base, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    })
+  );
+  return items;
 }
 
 function isolateAsset(core, assetToMeshes, assetKey) {
@@ -177,8 +219,10 @@ function frameMeshes(core, meshes) {
     tmp.setFromObject(m);
     if (!has) {
       box.copy(tmp);
-      has = True;
-    } else box.union(tmp);
+      has = true;
+    } else {
+      box.union(tmp);
+    }
   }
 
   if (!has) return;
@@ -206,7 +250,7 @@ function frameMeshes(core, meshes) {
   renderer.render(scene, camera);
 }
 
-/* ---------- Offscreen thumbnails (sistema viejo mejorado) ---------- */
+/* ---------- Offscreen thumbnails ---------- */
 
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   if (!core.robot || typeof THREE === "undefined") {
@@ -215,8 +259,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       destroy() {},
     };
   }
-
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const OFF_W = 640;
   const OFF_H = 480;
@@ -238,7 +280,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     renderer.toneMapping = core.renderer.toneMapping;
     renderer.toneMappingExposure =
       core.renderer.toneMappingExposure ?? 1.0;
-
     if ("outputColorSpace" in renderer) {
       renderer.outputColorSpace =
         core.renderer.outputColorSpace ?? THREE.SRGBColorSpace;
@@ -246,9 +287,9 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       renderer.outputEncoding =
         core.renderer.outputEncoding ?? THREE.sRGBEncoding;
     }
-
     renderer.shadowMap.enabled = core.renderer.shadowMap?.enabled ?? false;
-    renderer.shadowMap.type = core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type =
+      core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
   }
 
   const baseScene = new THREE.Scene();
@@ -259,7 +300,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   baseScene.environment = core.scene ? core.scene.environment : null;
 
   const amb = new THREE.AmbientLight(0xffffff, 0.95);
-  const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.2);
   dir.position.set(2.5, 2.5, 2.5);
   baseScene.add(amb, dir);
 
@@ -270,41 +311,37 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     10000
   );
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   const ready = (async () => {
-    await sleep(300);
-    await new Promise((r) =>
-      requestAnimationFrame(() => requestAnimationFrame(r))
+    await sleep(200);
+    await new Promise((res) =>
+      requestAnimationFrame(() => requestAnimationFrame(res))
     );
     renderer.render(baseScene, camera);
   })();
 
-  function buildCloneAndMap() {
+  function buildClone() {
     const scene = baseScene.clone();
     scene.background = baseScene.background;
     scene.environment = baseScene.environment;
-
     const robotClone = core.robot.clone(true);
     scene.add(robotClone);
-
     return { scene, robotClone };
   }
 
   async function captureForAsset(assetKey, meshes) {
     await ready;
+    const { scene, robotClone } = buildClone();
 
-    const { scene, robotClone } = buildCloneAndMap();
-
-    const cloned = [];
     robotClone.traverse((o) => {
-      if (o.isMesh && o.material && o.geometry) {
-        o.visible = false;
-      }
+      if (o.isMesh && o.geometry) o.visible = false;
     });
 
     meshes.forEach((m) => {
       const clone = m.clone();
       clone.material = m.material.clone();
-      cloned.push(clone);
+      clone.visible = true;
       robotClone.add(clone);
     });
 
@@ -331,15 +368,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     renderer.setSize(OFF_W, OFF_H, false);
     renderer.render(scene, camera);
 
-    const url = canvas.toDataURL("image/png");
-
-    cloned.forEach((c) => {
-      try {
-        robotClone.remove(c);
-      } catch (_) {}
-    });
-
-    return url;
+    return canvas.toDataURL("image/png");
   }
 
   const cache = new Map();
@@ -354,20 +383,17 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       return url;
     },
     destroy() {
-      try {
-        renderer.dispose();
-      } catch (_) {}
+      try { renderer.dispose(); } catch (_) {}
       cache.clear();
     },
   };
 }
 
-/* ---------- JS <-> Colab: thumbnails comprimidos (~5KB) ---------- */
+/* ---------- IA: mini-lotes comprimidos (~5KB) ---------- */
 
 function bootstrapComponentDescriptions(app, assetToMeshes, off) {
-  // Solo continuar si IA_Widgets está activo
   if (!app || app.IA_Widgets !== true) {
-    console.debug("[Components] IA_Widgets desactivado; no se pedirán descripciones.");
+    console.debug("[Components] IA_Widgets desactivado: no se piden descripciones.");
     return;
   }
 
@@ -379,7 +405,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     typeof window.google.colab.kernel.invokeFunction === "function";
 
   if (!hasColab) {
-    console.debug("[Components] Colab bridge no disponible; sin descripciones.");
+    console.debug("[Components] Colab bridge no disponible; sin IA.");
     return;
   }
 
@@ -394,45 +420,37 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
 
     for (const ent of items) {
       try {
-        const url = await off.thumbnail(ent.assetKey);
-        if (!url || typeof url !== "string") continue;
-
-        const b64_5kb = await make5KBBase64FromDataURL(url, 5);
+        const fullURL = await off.thumbnail(ent.assetKey);
+        if (!fullURL) continue;
+        const b64_5kb = await makeApproxSizedBase64(fullURL, 5);
         if (!b64_5kb) continue;
-
-        entries.push({
-          key: ent.assetKey,
-          image_b64: b64_5kb,
-        });
+        entries.push({ key: ent.assetKey, image_b64: b64_5kb });
       } catch (e) {
-        console.warn("[Components] Error thumbnail", ent.assetKey, e);
+        console.warn("[Components] Error generando thumb IA", ent.assetKey, e);
       }
     }
 
     console.debug(
-      `[Components] Enviando ${entries.length} capturas (5KB) a Colab para descripción.`
+      `[Components] Enviando ${entries.length} thumbnails (~5KB) a Colab para IA.`
     );
     if (!entries.length) return;
 
     try {
-      const result = await window.google.colab.kernel.invokeFunction(
+      const res = await window.google.colab.kernel.invokeFunction(
         "describe_component_images",
         [entries],
         {}
       );
+      const map = extractDescMap(res);
+      console.debug("[Components] Mapa IA:", map);
 
-      console.debug("[Components] Respuesta raw:", result);
-
-      const descMap = extractDescMap(result);
-      console.debug("[Components] Mapa final de descripciones:", descMap);
-
-      if (descMap && typeof descMap === "object") {
-        app.componentDescriptions = descMap;
+      if (map && typeof map === "object") {
+        app.componentDescriptions = map;
         if (typeof window !== "undefined") {
-          window.COMPONENT_DESCRIPTIONS = descMap;
+          window.COMPONENT_DESCRIPTIONS = map;
         }
       } else {
-        console.warn("[Components] No se obtuvo mapa de descripciones válido.");
+        console.warn("[Components] Respuesta IA sin mapa utilizable.");
       }
     } catch (err) {
       console.error("[Components] Error invokeFunction:", err);
@@ -440,92 +458,81 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   })();
 }
 
-function extractDescMap(result) {
-  if (!result) return {};
-  const d = result.data || result;
-
-  if (d["application/json"] && typeof d["application/json"] === "object") {
-    return d["application/json"];
+function extractDescMap(res) {
+  if (!res) return {};
+  const data = res.data || res;
+  if (data["application/json"] && typeof data["application/json"] === "object") {
+    return data["application/json"];
   }
-
-  if (Array.isArray(d) && d.length && typeof d[0] === "object") {
-    return d[0];
+  if (Array.isArray(data) && data.length && typeof data[0] === "object") {
+    return data[0];
   }
-
+  if (typeof data === "object") return data;
   return {};
 }
 
-/* make5KBBase64FromDataURL: ajusta a ~N KB */
-async function make5KBBase64FromDataURL(dataURL, targetKB = 5) {
+async function makeApproxSizedBase64(dataURL, targetKB = 5) {
   try {
     const maxBytes = targetKB * 1024;
-
-    const [header, b64] = dataURL.split(",");
-    if (!b64) return null;
-
-    const bin = atob(b64);
-    if (bin.length <= maxBytes) {
-      return b64;
-    }
-
-    const ratio = maxBytes / bin.length;
-    const canvas = document.createElement("canvas");
+    const resp = await fetch(dataURL);
+    const blob = await resp.blob();
     const img = document.createElement("img");
-    const blob = await (await fetch(dataURL)).blob();
-    const imgURL = URL.createObjectURL(blob);
+    const url = URL.createObjectURL(blob);
 
     await new Promise((res, rej) => {
       img.onload = () => res();
       img.onerror = (e) => rej(e);
-      img.src = imgURL;
+      img.src = url;
     });
 
-    const w = Math.max(16, Math.floor(img.width * Math.sqrt(ratio)));
-    const h = Math.max(16, Math.floor(img.height * Math.sqrt(ratio)));
+    const ratio = Math.min(1, Math.max(0.05, maxBytes / (blob.size || maxBytes)));
+    const scale = Math.sqrt(ratio);
+    const w = Math.max(16, Math.floor(img.width * scale));
+    const h = Math.max(16, Math.floor(img.height * scale));
 
+    const canvas = document.createElement("canvas");
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext("2d");
     ctx.drawImage(img, 0, 0, w, h);
 
-    let q = 0.92;
-    let outB64 = "";
-    for (let i = 0; i < 8; i++) {
-      const qClamped = Math.max(0.4, Math.min(0.95, q));
-      const outURL = canvas.toDataURL("image/jpeg", qClamped);
-      const [, out] = outURL.split(",");
-      if (!out) break;
-      const bytes = atob(out).length;
-      outB64 = out;
-      if (bytes <= maxBytes) break;
-      q *= 0.75;
-    }
+    URL.revokeObjectURL(url);
 
-    URL.revokeObjectURL(imgURL);
-    return outB64 || null;
+    let bestB64 = "";
+    let q = 0.92;
+    for (let i = 0; i < 8; i++) {
+      const qq = Math.max(0.4, Math.min(0.96, q));
+      const out = canvas.toDataURL("image/jpeg", qq);
+      const b64 = out.split(",")[1] || "";
+      if (!b64) break;
+      bestB64 = b64;
+      const bytes = Math.floor((b64.length * 3) / 4);
+      if (bytes <= maxBytes) break;
+      q *= 0.7;
+    }
+    return bestB64 || null;
   } catch (e) {
-    console.warn("[make5KBBase64FromDataURL] Error", e);
+    console.warn("[makeApproxSizedBase64] Error", e);
     return null;
   }
 }
 
-/* Click sound hook opcional (igual que antes) */
+/* ---------- Click sound opcional ---------- */
+
 function installClickSound(dataURL) {
   try {
     const audio = new Audio(dataURL);
-    const origPlay = window.__urdf_click__ || (() => audio.play().catch(() => {}));
-    window.__urdf_click__ = () => {
+    const play = () => {
       try {
         audio.currentTime = 0;
-        audio.play().catch(() => origPlay());
-      } catch (_) {
-        origPlay();
-      }
+        audio.play().catch(() => {});
+      } catch (_) {}
     };
+    window.__urdf_click__ = play;
   } catch (_) {}
 }
 
-/* Hook global */
+/* ---------- Hook global ---------- */
 
 if (typeof window !== "undefined") {
   window.URDFViewer = window.URDFViewer || {};
