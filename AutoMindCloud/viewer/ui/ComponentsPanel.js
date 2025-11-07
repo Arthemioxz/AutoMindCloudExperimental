@@ -1,5 +1,5 @@
 // ComponentsPanel.js
-// Lista de componentes + frame de descripción al hacer click.
+// Panel de componentes: lista + thumbnails + frame con descripción al hacer click.
 
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll) {
@@ -74,7 +74,11 @@ export function createComponentsPanel(app, theme) {
       borderBottom: `1px solid ${theme.stroke}`,
       background: theme.tealFaint,
     },
-    title: { fontWeight: "800", color: theme.text, fontSize: "14px" },
+    title: {
+      fontWeight: "800",
+      color: theme.text,
+      fontSize: "14px",
+    },
     showAllBtn: {
       padding: "6px 10px",
       borderRadius: "10px",
@@ -141,7 +145,7 @@ export function createComponentsPanel(app, theme) {
       : null) || document.body;
   host.appendChild(ui.root);
 
-  // Hover botón principal
+  // --- Hover botón principal ---
   ui.btn.addEventListener("mouseenter", () => {
     ui.btn.style.transform = "translateY(-1px) scale(1.02)";
     ui.btn.style.background = theme.tealFaint;
@@ -153,7 +157,7 @@ export function createComponentsPanel(app, theme) {
     ui.btn.style.borderColor = theme.stroke;
   });
 
-  // Hover Show all
+  // --- Hover Show all ---
   ui.showAllBtn.addEventListener("mouseenter", () => {
     ui.showAllBtn.style.transform = "translateY(-1px) scale(1.02)";
     ui.showAllBtn.style.background = theme.tealFaint;
@@ -166,7 +170,9 @@ export function createComponentsPanel(app, theme) {
   });
 
   ui.showAllBtn.addEventListener("click", () => {
-    try { app.showAll(); } catch (_) {}
+    try {
+      app.showAll();
+    } catch (_) {}
     hideDetails();
   });
 
@@ -260,7 +266,6 @@ export function createComponentsPanel(app, theme) {
 
       meta.appendChild(title);
       meta.appendChild(small);
-
       row.appendChild(img);
       row.appendChild(meta);
       ui.list.appendChild(row);
@@ -277,15 +282,17 @@ export function createComponentsPanel(app, theme) {
         row.style.borderColor = theme.stroke;
       });
 
-      // CLICK: aislar + mostrar frame de descripción
+      // Click: aisla + muestra frame con descripción
       row.addEventListener("click", () => {
         console.debug("[ComponentsPanel] Click en", ent.assetKey);
-        try { app.isolate.asset(ent.assetKey); } catch (_) {}
+        try {
+          app.isolate.asset(ent.assetKey);
+        } catch (_) {}
         showDetails(ent, index);
         set(true);
       });
 
-      // Thumbnail
+      // Thumbnail (usa cache; no recalcula al click)
       (async () => {
         try {
           const url = await app.assets.thumbnail?.(ent.assetKey);
@@ -302,6 +309,7 @@ export function createComponentsPanel(app, theme) {
     if (disposed) return;
 
     let text = "";
+
     try {
       if (typeof app.getComponentDescription === "function") {
         text = app.getComponentDescription(ent.assetKey, index) || "";
@@ -310,21 +318,12 @@ export function createComponentsPanel(app, theme) {
       text = "";
     }
 
-    if (!text && app.componentDescriptions) {
-      const src = app.componentDescriptions;
-      if (src[ent.assetKey]) text = src[ent.assetKey];
-      else {
-        const base = basenameNoExt(ent.assetKey);
-        if (src[base]) text = src[base];
-      }
-    }
-
     if (!text) {
-      text = "Sin descripción generada para esta pieza.";
-      console.debug(
-        "[ComponentsPanel] No se encontró descripción para",
-        ent.assetKey
-      );
+      if (!app.descriptionsReady) {
+        text = "Generando descripción de esta pieza...";
+      } else {
+        text = "Sin descripción generada para esta pieza.";
+      }
     }
 
     ui.detailsTitle.textContent = ent.base;
@@ -335,7 +334,7 @@ export function createComponentsPanel(app, theme) {
       "[ComponentsPanel] showDetails:",
       ent.assetKey,
       "=>",
-      text
+      text.slice(0, 80)
     );
   }
 
@@ -352,13 +351,21 @@ export function createComponentsPanel(app, theme) {
 
   function destroy() {
     disposed = true;
-    try { document.removeEventListener("keydown", onHotkeyC, true); } catch (_) {}
-    try { ui.btn.remove(); } catch (_) {}
-    try { ui.panel.remove(); } catch (_) {}
-    try { ui.root.remove(); } catch (_) {}
+    try {
+      document.removeEventListener("keydown", onHotkeyC, true);
+    } catch (_) {}
+    try {
+      ui.btn.remove();
+    } catch (_) {}
+    try {
+      ui.panel.remove();
+    } catch (_) {}
+    try {
+      ui.root.remove();
+    } catch (_) {}
   }
 
-  // Hotkey 'c'
+  // Hotkey 'c' para abrir/cerrar
   function onHotkeyC(e) {
     const tag = (e.target && e.target.tagName) || "";
     const t = tag.toLowerCase();
@@ -380,7 +387,7 @@ export function createComponentsPanel(app, theme) {
   return { open: openPanel, close: closePanel, set, refresh, destroy };
 }
 
-/* ----- Helpers ----- */
+/* ---------- Helpers ---------- */
 
 function applyStyles(el, styles) {
   Object.assign(el.style, styles);
@@ -388,12 +395,6 @@ function applyStyles(el, styles) {
 
 function clearElement(el) {
   while (el.firstChild) el.removeChild(el.firstChild);
-}
-
-function basenameNoExt(p) {
-  const q = String(p || "").split("/").pop().split("?")[0].split("#")[0];
-  const dot = q.lastIndexOf(".");
-  return dot >= 0 ? q.slice(0, dot) : q;
 }
 
 function rowStyles(theme) {
