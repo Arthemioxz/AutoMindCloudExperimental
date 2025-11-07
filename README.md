@@ -2,7 +2,13 @@
 
 <br><br>
 
-<img width="180" height="100" alt="image" src="https://github.com/user-attachments/assets/18c36cdb-51f9-48f0-9458-52fa5ef2e844" />
+<div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+  <img width="180" height="100" alt="image" 
+       src="https://github.com/user-attachments/assets/18c36cdb-51f9-48f0-9458-52fa5ef2e844" />
+
+  <img width="960" height="540" alt="image" 
+       src="https://github.com/user-attachments/assets/e5e36d66-31bd-4abd-a1c4-029d65075082" />
+</div>
 
 <br><br>
 
