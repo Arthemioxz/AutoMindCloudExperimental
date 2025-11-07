@@ -1,4 +1,4 @@
-# ========================================================== 
+# ==========================================================
 # URDF_Render_Script.py  (versión optimizada con batch IA)
 # ==========================================================
 # Puente Colab <-> JS para descripciones de piezas del URDF.
@@ -8,10 +8,15 @@
 #   URDF_Render("Model")
 #
 # JS:
-#   - Genera thumbnails base64 de cada componente al inicio.
-#   - Llama a google.colab.kernel.invokeFunction("describe_component_images", [entries], {}).
-#   - Recibe { assetKey: descripcion }.
-#   - Al hacer click en un componente, muestra la descripción en el frame del panel.
+#   - Genera thumbnails offscreen centrados por componente.
+#   - Usa esos thumbnails grandes para la UI (Components Panel).
+#   - Antes de mandar a la API, comprime cada imagen a ~5KB
+#     y recién ahí extrae el base64 para enviarlo.
+#   - Llama: google.colab.kernel.invokeFunction(
+#         "describe_component_images", [entries], {}
+#     )
+#     donde entries = [{key, image_b64}, ...].
+# ==========================================================
 
 import base64
 import re
@@ -43,8 +48,8 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
         shutil.rmtree(final_dir)
 
     import gdown
-
     gdown.download(url, zip_path, quiet=True)
+
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(tmp_extract)
 
@@ -64,7 +69,7 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 
 # ==========================================================
-# 🔹 Nuevo Callback Optimizado (envía todas las imágenes juntas)
+# Callback batch: recibe TODAS o mini-lotes de imágenes
 # ==========================================================
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90):
     """Registra el callback 'describe_component_images' una sola vez."""
@@ -79,52 +84,46 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
         infer_url = api_base + API_INFER_PATH
 
         def _describe_component_images(entries):
-            """Recibe [{key, image_b64}, ...] y devuelve {key: descripcion}"""
+            """
+            entries: [{ "key": <assetKey>, "image_b64": <jpeg<=5KB> }, ...]
+            Devuelve { key: "descripcion en español" }.
+            """
             try:
                 n = len(entries)
             except TypeError:
                 n = 0
-            print(f"[Colab] describe_component_images: recibido {n} imágenes totales.")
+            print(f"[Colab] describe_component_images: recibido {n} imágenes.")
 
             if not isinstance(entries, (list, tuple)) or n == 0:
                 print("[Colab] ❌ Payload inválido o vacío.")
                 return {}
 
-            # Preparar lote de imágenes
-            keys, imgs = [], []
-            for i, item in enumerate(entries):
+            keys = []
+            imgs = []
+            for item in entries:
                 if not isinstance(item, dict):
                     continue
                 key = item.get("key")
                 img_b64 = item.get("image_b64")
                 if key and img_b64:
                     keys.append(key)
-                    imgs.append({"image_b64": img_b64, "mime": "image/png"})
+                    imgs.append({"image_b64": img_b64, "mime": "image/jpeg"})
 
             if not imgs:
                 print("[Colab] ⚠️ No hay imágenes válidas para enviar.")
                 return {}
 
-            print(f"[Colab] 🚀 Enviando {len(imgs)} imágenes en batch al modelo...")
+            print(f"[Colab] 🚀 Enviando {len(imgs)} imágenes (<=5KB c/u) al modelo...")
 
-            # Prompt estructurado
-            #text = (
-            #    "Analiza las imágenes de componentes de un robot URDF.\n"
-            #    "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre de la pieza (de la lista 'keys') "
-            #    "y cada valor una descripción breve en español (máx. 2 frases) explicando su función mecánica, "
-            #    "ubicación en el robot y tipo de unión o movimiento que sugiere.\n"
-            #    + json.dumps({"keys": keys}, ensure_ascii=False)
-            #)
-            
             text = (
-                 "Describe con certeza y tono técnico cada componente mostrado en las imágenes del robot URDF.\n"
-                  "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre de la pieza (de la lista 'keys') "
-                  "y cada valor una descripción breve en español (máx. 5 frases) que indique directamente su función mecánica, "
-                  "posición aproximada en el robot y tipo de unión o movimiento, SIN usar expresiones como 'la imagen muestra', "
-                  "'parece ser' o 'probablemente', 'la pieza muestra'. Usa afirmaciones directas"
-                  + json.dumps({"keys": keys}, ensure_ascii=False)
-              )
-
+                "Describe con certeza y tono técnico cada componente del robot URDF.\n"
+                "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre "
+                "de la pieza (coincidente con las keys entregadas) y cada valor es una "
+                "descripción breve en español (máx. 5 frases) indicando función mecánica, "
+                "posición en el robot y tipo de unión/movimiento. Sin frases débiles como "
+                "'la imagen muestra', 'parece', 'probablemente'.\n"
+                + json.dumps({"keys": keys}, ensure_ascii=False)
+            )
 
             payload = {"text": text, "images": imgs}
 
@@ -143,7 +142,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                 print("[Colab] ⚠️ Respuesta vacía del modelo.")
                 return {}
 
-            # Intentar parsear JSON
             def parse_json(s):
                 try:
                     return json.loads(s)
@@ -151,14 +149,16 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                     s0, s1 = s.find("{"), s.rfind("}")
                     if s0 != -1 and s1 != -1:
                         try:
-                            return json.loads(s[s0:s1+1])
+                            return json.loads(s[s0 : s1 + 1])
                         except Exception:
                             pass
                     return None
 
             parsed = parse_json(raw)
             if isinstance(parsed, dict):
-                print(f"[Colab] ✅ JSON parseado correctamente ({len(parsed)} descripciones).")
+                print(
+                    f"[Colab] ✅ JSON parseado correctamente ({len(parsed)} descripciones)."
+                )
                 return parsed
 
             print(f"[Colab] ⚠️ No se pudo interpretar JSON, preview:\n{raw[:400]}")
@@ -166,14 +166,14 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
 
         output.register_callback("describe_component_images", _describe_component_images)
         _COLAB_CALLBACK_REGISTERED = True
-        print("[Colab] ✅ Callback 'describe_component_images' registrado (modo batch).")
+        print("[Colab] ✅ Callback 'describe_component_images' registrado (batch/mini-lotes).")
 
     except Exception as e:
         print(f"[Colab] ❌ No se pudo registrar callback: {e}")
 
 
 # ==========================================================
-# 🔹 Render principal (idéntico al original)
+# Render principal (pantalla completa en la celda)
 # ==========================================================
 def URDF_Render(
     folder_path: str = "Model",
@@ -185,15 +185,11 @@ def URDF_Render(
     api_base: str = API_DEFAULT_BASE,
 ):
     """
-    Renderiza el URDF Viewer.
-    - JS captura imágenes base64 al inicio.
-    - JS manda base64 a Colab.
-    - Colab llama a la API en batch y responde con descripciones.
-    - JS muestra descripción en frame al hacer click.
+    Renderiza el URDF Viewer en pantalla completa dentro de la salida de Colab.
     """
     _register_colab_callback(api_base=api_base)
 
-    # Buscar carpetas urdf/meshes
+    # Detectar /urdf y /meshes
     def find_dirs(root):
         u = os.path.join(root, "urdf")
         m = os.path.join(root, "meshes")
@@ -210,15 +206,19 @@ def URDF_Render(
 
     urdf_dir, meshes_dir = find_dirs(folder_path)
     if not urdf_dir or not meshes_dir:
-        return HTML(f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>")
+        return HTML(
+            f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>"
+        )
 
-    # Leer URDF principal
+    # Leer URDF principal con más referencias
     urdf_files = [
         os.path.join(urdf_dir, f)
         for f in os.listdir(urdf_dir)
         if f.lower().endswith(".urdf")
     ]
-    urdf_files.sort(key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0, reverse=True)
+    urdf_files.sort(
+        key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0, reverse=True
+    )
 
     urdf_raw = ""
     mesh_refs: list[str] = []
@@ -227,7 +227,9 @@ def URDF_Render(
         try:
             with open(upath, "r", encoding="utf-8", errors="ignore") as f:
                 txt = f.read().lstrip("\ufeff")
-            refs = re.findall(r'filename="([^"]+\.(?:stl|dae))"', txt, re.IGNORECASE)
+            refs = re.findall(
+                r'filename="([^"]+\.(?:stl|dae))"', txt, re.IGNORECASE
+            )
             if refs:
                 urdf_raw = txt
                 mesh_refs = list(dict.fromkeys(refs))
@@ -239,11 +241,13 @@ def URDF_Render(
         with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
             urdf_raw = f.read().lstrip("\ufeff")
 
-    # Crear meshDB
+    # Construir meshDB B64
     disk_files = []
     for root, _, files in os.walk(meshes_dir):
         for name in files:
-            if name.lower().endswith((".stl", ".dae", ".png", ".jpg", ".jpeg")):
+            if name.lower().endswith(
+                (".stl", ".dae", ".png", ".jpg", ".jpeg")
+            ):
                 disk_files.append(os.path.join(root, name))
 
     meshes_root_abs = os.path.abspath(meshes_dir)
@@ -301,7 +305,7 @@ def URDF_Render(
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
 
-    # HTML del viewer (sin cambios)
+    # Viewer a pantalla completa en la salida de Colab
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -311,12 +315,28 @@ def URDF_Render(
 <title>URDF Viewer</title>
 <style>
   html, body {{
-    margin:0; padding:0; width:100%; height:100dvh; overflow:hidden;
+    margin:0; padding:0;
+    width:100%; height:100dvh;
+    overflow:hidden;
     background:#{int(background or 0xFFFFFF):06x};
   }}
-  #app {{ position:fixed; inset:0; width:100%; height:100dvh; touch-action:none; }}
-  .badge {{ position:fixed; right:14px; bottom:12px; z-index:10; }}
-  .badge img {{ max-height:40px; display:block; }}
+  #app {{
+    position:fixed;
+    inset:0;
+    width:100%;
+    height:100dvh;
+    touch-action:none;
+  }}
+  .badge {{
+    position:fixed;
+    right:14px;
+    bottom:12px;
+    z-index:10;
+  }}
+  .badge img {{
+    max-height:40px;
+    display:block;
+  }}
 </style>
 </head>
 <body>
