@@ -2,17 +2,17 @@
 # URDF_Render_Script.py
 # Puente Colab <-> JS para descripciones de piezas del URDF.
 #
-# - Genera viewer HTML embebido.
-# - Registra callback "describe_component_images" para ser llamado desde JS.
+# - Registra callback "describe_component_images".
 # - Callback:
-#     * Recibe mini-lotes con {key, image_b64}
-#     * Baja resolución SOLO para la copia enviada a la API
-#     * Aplica 3 mecanismos:
-#           M1: batch grande
-#           M2: mini-batches
-#           M3: 1x1 fallback
+#     * Recibe mini-lotes [{key, image_b64}, ...]
+#     * Baja resolución SOLO para la copia enviada a la API.
+#     * Aplica 3 mecanismos sobre ese mini-lote:
+#           M1: un solo JSON para todo el lote
+#           M2: sub-lotes pequeños
+#           M3: 1x1 para faltantes
 #     * Devuelve SIEMPRE dict Python { assetKey: "descripcion" }
-#       (Colab lo serializa bien → JS lo lee como objeto)
+#       (Colab lo serializa como JSON hacia JS).
+# - No se tocan las thumbnails que usa el viewer en la UI.
 # ==========================================================
 
 import base64
@@ -69,7 +69,7 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 # ======================= Helpers =======================
 def _parse_json_flexible(raw: str):
-    """Intenta extraer un dict JSON desde texto potencialmente ruidoso."""
+    """Intenta extraer un dict JSON válido desde texto potencialmente ruidoso."""
     if not raw:
         return None
     raw = raw.strip()
@@ -82,7 +82,7 @@ def _parse_json_flexible(raw: str):
     except Exception:
         pass
 
-    # Buscar primer bloque {...}
+    # Intento buscando bloque {...}
     s0 = raw.find("{")
     s1 = raw.rfind("}")
     if s0 != -1 and s1 != -1 and s1 > s0:
@@ -112,7 +112,7 @@ def _call_api(infer_url: str, text: str, images, timeout: int) -> str:
 def _downscale_b64_for_api(img_b64: str, max_size: int = 384) -> str:
     """
     Baja resolución SOLO para la copia enviada a la API.
-    No toca la imagen original que usa la UI.
+    No modifica las imágenes que usa la UI.
     """
     try:
         import io
@@ -132,7 +132,6 @@ def _downscale_b64_for_api(img_b64: str, max_size: int = 384) -> str:
         new_w = max(32, int(w * scale))
         new_h = max(32, int(h * scale))
         im = im.resize((new_w, new_h), Image.LANCZOS)
-
         buf = io.BytesIO()
         im.save(buf, format="JPEG", quality=80)
         return base64.b64encode(buf.getvalue()).decode("ascii")
@@ -150,8 +149,11 @@ def _register_colab_callback(
     """
     Registra el callback 'describe_component_images' para ser llamado desde JS.
 
-    Retorna SIEMPRE un dict Python:
-      { assetKey: "descripcion en español (≤2 frases)", ... }
+    El callback trabaja por mini-lote:
+      - Intenta describir todas las imágenes del lote (M1).
+      - Si falla/incompleto, usa sub-lotes (M2).
+      - Si sigue faltando, 1x1 (M3).
+    Devuelve SIEMPRE un dict Python: { assetKey: "descripcion", ... }
     """
     global _COLAB_CALLBACK_REGISTERED
     if _COLAB_CALLBACK_REGISTERED:
@@ -169,7 +171,6 @@ def _register_colab_callback(
 
             keys = []
             imgs = []
-
             for item in entries:
                 if not isinstance(item, dict):
                     continue
@@ -177,7 +178,6 @@ def _register_colab_callback(
                 img_b64 = item.get("image_b64")
                 if not key or not isinstance(img_b64, str) or not img_b64.strip():
                     continue
-
                 small_b64 = _downscale_b64_for_api(img_b64.strip())
                 keys.append(str(key))
                 imgs.append({"image_b64": small_b64, "mime": "image/jpeg"})
@@ -186,16 +186,16 @@ def _register_colab_callback(
                 return {}
 
             n = len(keys)
-            print(f"[Colab] describe_component_images: {n} imágenes válidas.")
+            print(f"[Colab] describe_component_images: mini-lote de {n} imágenes.")
             results: dict[str, str] = {}
 
-            # ---------- M1: Batch grande ----------
+            # --------- M1: todo el mini-lote en una sola llamada ---------
             try:
                 instr = {
                     "keys": keys,
                     "reglas": [
                         "Responde SOLO con un JSON válido.",
-                        "Cada clave debe ser una de 'keys'.",
+                        "Cada clave debe estar en 'keys'.",
                         "Máximo 2 frases por componente.",
                         "Idioma: español.",
                     ],
@@ -206,42 +206,42 @@ def _register_colab_callback(
                 )
                 raw = _call_api(infer_url, prompt, imgs, timeout)
                 parsed = _parse_json_flexible(raw)
-
                 if isinstance(parsed, dict):
                     for k, v in parsed.items():
                         if k in keys:
                             if isinstance(v, (dict, list)):
                                 v = json.dumps(v, ensure_ascii=False)
                             results[k] = (str(v).strip() if v is not None else "")
-
-                    if len(results) >= max(1, int(0.6 * n)):
-                        print(f"[Colab] ✅ M1 OK: {len(results)}/{n}.")
+                    if len(results) == n:
+                        print(f"[Colab] ✅ M1 OK ({n}/{n}).")
                         return results
                     else:
-                        print(
-                            f"[Colab] ⚠️ M1 incompleto ({len(results)}/{n}), usando M2."
-                        )
+                        print(f"[Colab] ⚠️ M1 parcial ({len(results)}/{n}), paso a M2.")
                 else:
-                    print("[Colab] ⚠️ M1 sin JSON utilizable, usando M2.")
+                    print("[Colab] ⚠️ M1 sin JSON utilizable, paso a M2.")
             except Exception as e:
                 print(f"[Colab] ⚠️ M1 falló: {e}")
 
-            # ---------- M2: Mini-batches ----------
-            print("[Colab] 🔁 M2 Mini-batches.")
-            BATCH = 6
-            for i in range(0, n, BATCH):
-                sub_keys = keys[i : i + BATCH]
-                sub_imgs = imgs[i : i + BATCH]
+            # --------- M2: sub-lotes pequeños ---------
+            B2 = 3
+            print("[Colab] 🔁 M2 sobre sub-lotes.")
+            for i in range(0, n, B2):
+                sub_keys = keys[i : i + B2]
+                sub_imgs = imgs[i : i + B2]
+                faltan = [k for k in sub_keys if k not in results]
+                if not faltan:
+                    continue
+
                 instr2 = {
-                    "keys": sub_keys,
+                    "keys": faltan,
                     "reglas": [
                         "Responde SOLO con un JSON.",
-                        "Solo usa claves dentro de 'keys'.",
+                        "Solo claves de 'keys'.",
                         "Máximo 2 frases, español.",
                     ],
                 }
                 prompt2 = (
-                    "Genera descripciones para este subconjunto de componentes.\n"
+                    "Genera descripciones para este subconjunto.\n"
                     + json.dumps(instr2, ensure_ascii=False)
                 )
                 try:
@@ -249,32 +249,29 @@ def _register_colab_callback(
                     parsed2 = _parse_json_flexible(raw2)
                     if isinstance(parsed2, dict):
                         for k, v in parsed2.items():
-                            if k in sub_keys:
+                            if k in faltan:
                                 if isinstance(v, (dict, list)):
                                     v = json.dumps(v, ensure_ascii=False)
                                 results[k] = (str(v).strip() if v is not None else "")
                 except Exception as e:
-                    print(f"[Colab] ⚠️ M2 error lote {i//BATCH}: {e}")
+                    print(f"[Colab] ⚠️ M2 error sub-lote {i//B2}: {e}")
 
             if len(results) == n:
-                print(f"[Colab] ✅ M2 completó {n}/{n}.")
+                print(f"[Colab] ✅ M2 completó mini-lote ({n}/{n}).")
                 return results
             elif results:
-                print(
-                    f"[Colab] ⚠️ M2 parcial {len(results)}/{n}, el resto pasa a M3."
-                )
+                print(f"[Colab] ⚠️ M2 parcial ({len(results)}/{n}), paso a M3.")
             else:
-                print("[Colab] ⚠️ M2 sin resultados, pasamos a M3.")
+                print("[Colab] ⚠️ M2 sin resultados, paso a M3.")
 
-            # ---------- M3: 1x1 ----------
+            # --------- M3: 1x1 para lo que falte ---------
             print("[Colab] 🛟 M3 1x1.")
             for k, img in zip(keys, imgs):
                 if k in results:
                     continue
-
                 single_prompt = (
                     "Describe brevemente la pieza del robot en la imagen: "
-                    "indica función mecánica, zona aproximada en el robot y tipo de unión o movimiento. "
+                    "función mecánica, zona aproximada y tipo de unión o movimiento. "
                     "Máximo 2 frases. Español."
                 )
                 try:
@@ -294,21 +291,17 @@ def _register_colab_callback(
 
                 results[k] = desc
 
-            print(f"[Colab] ✅ M3 completado. Total: {len(results)}/{n}.")
+            print(f"[Colab] ✅ M3 mini-lote listo ({len(results)}/{n}).")
             return results
 
         output.register_callback(
             "describe_component_images", _describe_component_images
         )
         _COLAB_CALLBACK_REGISTERED = True
-        print(
-            "[Colab] ✅ Callback 'describe_component_images' registrado (M1+M2+M3 + downscale)."
-        )
+        print("[Colab] ✅ Callback 'describe_component_images' registrado (M1+M2+M3).")
 
     except Exception as e:
-        print(
-            f"[Colab] ❌ No se pudo registrar callback describe_component_images: {e}"
-        )
+        print(f"[Colab] ❌ No se pudo registrar callback: {e}")
 
 
 # ======================= URDF_Render =======================
@@ -316,15 +309,14 @@ def URDF_Render(
     folder_path: str = "Model",
     select_mode: str = "link",
     background: int | None = 0xFFFFFF,
-    # Ajusta repo/branch a tu repo real:
-    repo: str = "Arthemioxz/AutoMindCloudExperimental",
+    repo: str = "ArtemioA/AutoMindCloudExperimental",
     branch: str = "main",
     compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
 ):
     _register_colab_callback(api_base=api_base)
 
-    # ---- localizar /urdf y /meshes ----
+    # localizar /urdf y /meshes
     def find_dirs(root):
         u = os.path.join(root, "urdf")
         m = os.path.join(root, "meshes")
@@ -345,7 +337,7 @@ def URDF_Render(
             f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>"
         )
 
-    # ---- URDF principal ----
+    # URDF principal
     urdf_files = [
         os.path.join(urdf_dir, f)
         for f in os.listdir(urdf_dir)
@@ -376,7 +368,7 @@ def URDF_Render(
         with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
             urdf_raw = f.read().lstrip("\ufeff")
 
-    # ---- meshDB ----
+    # meshDB
     disk_files = []
     for root, _, files in os.walk(meshes_dir):
         for name in files:
