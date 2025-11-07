@@ -63,18 +63,25 @@ export function render(opts = {}) {
       tools.set(!!open);
     },
 
+    // se llenará con { assetKey: descripcion }
     componentDescriptions: {},
 
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions;
       if (!src) return "";
 
+      // mapa tipo { 'drive.dae': '...' }
       if (!Array.isArray(src) && typeof src === "object") {
         if (src[assetKey]) return src[assetKey];
-        const base = (assetKey || "").split("/").pop().split(".")[0];
+
+        const base = (assetKey || "").split("/").pop();
         if (src[base]) return src[base];
+
+        const baseNoExt = base.split(".")[0];
+        if (src[baseNoExt]) return src[baseNoExt];
       }
 
+      // array (fallback)
       if (Array.isArray(src) && typeof index === "number") {
         return src[index] || "";
       }
@@ -92,7 +99,7 @@ export function render(opts = {}) {
     } catch (_) {}
   }
 
-  // Capturar imágenes y pedir descripciones al inicio
+  // --- Bootstrap Colab: capturas + descripciones al inicio ---
   bootstrapComponentDescriptions(app, assetToMeshes, off);
 
   const destroy = () => {
@@ -106,7 +113,7 @@ export function render(opts = {}) {
   return { ...app, destroy };
 }
 
-/* ---------- JS <-> Colab ---------- */
+/* ==================== JS <-> Colab ==================== */
 
 function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   const hasColab =
@@ -178,34 +185,52 @@ function extractDescMap(result) {
   if (!result) return {};
   const d = result.data || result;
 
+  // 1) application/json directo
   if (d["application/json"] && typeof d["application/json"] === "object") {
     return d["application/json"];
   }
 
+  // 2) lista con objeto
   if (Array.isArray(d) && d.length && typeof d[0] === "object") {
     return d[0];
   }
 
-  if (d["text/plain"] && typeof d["text/plain"] === "string") {
-    const t = d["text/plain"].trim();
+  // 3) text/plain con dict de Python (lo que tienes ahora)
+  const tp = d["text/plain"];
+  if (typeof tp === "string") {
+    const t = tp.trim();
+
+    // a) por si acaso ya viene como JSON válido
+    if ((t.startsWith("{") || t.startsWith("[")) && t.includes('"')) {
+      try {
+        const parsed = JSON.parse(t);
+        if (parsed && typeof parsed === "object") return parsed;
+      } catch {
+        // seguimos al fallback
+      }
+    }
+
+    // b) típico: representación de dict de Python con comillas simples
+    //    Ej: {'drive.dae': 'La imagen ...', ...}
     try {
-      const jsonLike = t
-        .replace(/^dict\(/, "{")
-        .replace(/\)$/, "}")
-        .replace(/'/g, '"');
-      const parsed = JSON.parse(jsonLike);
-      if (parsed && typeof parsed === "object") return parsed;
+      if (t.startsWith("{") && t.endsWith("}")) {
+        // Lo interpretamos como literal JS/ Python-like usando Function.
+        // No usamos replace de comillas, respetamos apóstrofes dentro de los textos.
+        const obj = Function('"use strict"; return (' + t + ");")();
+        if (obj && typeof obj === "object") return obj;
+      }
     } catch (e) {
-      console.warn("[Components] No se pudo parsear text/plain:", e, t);
+      console.warn("[Components] No se pudo parsear text/plain como dict:", e, t);
     }
   }
 
+  // 4) si ya es objeto simple
   if (typeof d === "object" && !Array.isArray(d)) return d;
 
   return {};
 }
 
-/* ---------- Helpers viewer ---------- */
+/* ==================== Helpers viewer ==================== */
 
 function listAssets(assetToMeshes) {
   const items = [];
