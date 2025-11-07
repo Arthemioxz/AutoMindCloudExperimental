@@ -3,9 +3,20 @@
 #
 # Uso en Colab:
 #   from URDF_Render_Script import URDF_Render
-#   URDF_Render("Model")   # listo, el JS hace capturas, llama al callback, recibe descripciones
+#   URDF_Render("Model")
 #
-# No pongas lógica suelta en Colab: todo vive aquí.
+# El flujo:
+#  - JS (urdf_viewer_main.js) genera thumbnails base64 de cada componente al iniciar.
+#  - JS llama a google.colab.kernel.invokeFunction(
+#        "describe_component_images",
+#        [entries],
+#        {}
+#    )
+#    donde entries = [{ "key": assetKey, "image_b64": "<base64>" }, ...]
+#  - Aquí: describimos cada imagen con la API externa y devolvemos { assetKey: descripcion }.
+#  - JS guarda eso en app.componentDescriptions y ComponentsPanel lo muestra al click.
+#
+# No pongas lógica suelta fuera de este archivo.
 
 import base64
 import re
@@ -36,7 +47,7 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
     if os.path.exists(final_dir):
         shutil.rmtree(final_dir)
 
-    import gdown  # import aquí para evitar dependencia si no se usa
+    import gdown  # import lazy
 
     gdown.download(url, zip_path, quiet=True)
     with zipfile.ZipFile(zip_path, "r") as zf:
@@ -59,8 +70,10 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120):
     """
-    Registra el callback 'describe_component_images' una sola vez.
-    Este callback será invocado desde JS via google.colab.kernel.invokeFunction.
+    Registra el callback 'describe_component_images' UNA SOLA VEZ.
+    Usamos la forma correcta:
+        output.register_callback("name", callback)
+    compatible con tu error.
     """
     global _COLAB_CALLBACK_REGISTERED
     if _COLAB_CALLBACK_REGISTERED:
@@ -72,18 +85,23 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         api_base = api_base.rstrip("/")
         infer_url = api_base + API_INFER_PATH
 
-        @output.register_callback("describe_component_images")
         def _describe_component_images(entries):
             """
-            entries: lista de dicts:
-              { "key": assetKey, "image_b64": "<solo base64, sin data:>" }
+            entries: lista de dicts
+              { "key": assetKey, "image_b64": "<solo base64>" }
             Devuelve: { assetKey: descripcion }
             """
-            print(
-                f"[Colab] describe_component_images: recibido payload con {len(entries)} imágenes."
-            )
+            try:
+                n = len(entries)
+            except TypeError:
+                n = 0
+            print(f"[Colab] describe_component_images: recibido payload con {n} imágenes.")
 
             results = {}
+
+            if not isinstance(entries, (list, tuple)):
+                print("[Colab] Payload inválido (no lista).")
+                return results
 
             for item in entries:
                 try:
@@ -98,8 +116,8 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 payload = {
                     "text": (
                         "Describe brevemente qué pieza de robot se ve en esta imagen. "
-                        "Enfócate en función mecánica, posición aproximada en el robot y tipo de unión. "
-                        "Español, máximo 2 frases."
+                        "Enfócate en su función mecánica, ubicación aproximada en el robot "
+                        "y tipo de unión. Español, máximo 2 frases."
                     ),
                     "images": [{"image_b64": img_b64, "mime": "image/png"}],
                 }
@@ -107,9 +125,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 try:
                     r = requests.post(infer_url, json=payload, timeout=timeout)
                 except Exception as e:
-                    print(
-                        f"[Colab] Error de conexión API para {key}: {e}"
-                    )
+                    print(f"[Colab] Error de conexión API para {key}: {e}")
                     results[key] = ""
                     continue
 
@@ -121,7 +137,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                     continue
 
                 txt = r.text.strip()
-                # Si viene como string JSON con comillas
+                # Si viene como string JSON (entre comillas)
                 try:
                     if txt.startswith('"') and txt.endswith('"'):
                         txt = json.loads(txt)
@@ -135,13 +151,13 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
             )
             return results
 
+        # ✅ Registro correcto (sin decorador)
+        output.register_callback("describe_component_images", _describe_component_images)
         _COLAB_CALLBACK_REGISTERED = True
-        print(
-            "[Colab] Callback 'describe_component_images' registrado correctamente."
-        )
+        print("[Colab] Callback 'describe_component_images' registrado correctamente.")
 
     except Exception as e:
-        # Si no estamos en Colab, solo logueamos; el JS detectará que no hay puente
+        # Si no estamos en Colab o falla algo, no rompemos el viewer.
         print(
             f"[Colab] No se pudo registrar callback describe_component_images (no Colab o error): {e}"
         )
@@ -157,19 +173,24 @@ def URDF_Render(
     api_base: str = API_DEFAULT_BASE,
 ):
     """
-    Renderiza el URDF Viewer de pantalla completa y registra el callback Colab→JS:
+    Renderiza el URDF Viewer y habilita el flujo:
 
-    Flujo:
-      1. JS construye thumbnails de cada componente al inicio.
-      2. JS llama a google.colab.kernel.invokeFunction('describe_component_images', [entries], {}).
-      3. Este script llama a la API externa y devuelve { assetKey: descripción }.
-      4. JS guarda esas descripciones y ComponentsPanel las muestra al hacer click.
+      JS (urdf_viewer_main.js):
+        - genera capturas base64 de componentes al inicio (buildOffscreenForThumbnails)
+        - llama a google.colab.kernel.invokeFunction("describe_component_images", [entries], {})
+      Python (este archivo):
+        - describe_component_images llama a la API externa por cada imagen
+        - devuelve { assetKey: descripcion }
+      JS:
+        - guarda ese mapa y ComponentsPanel muestra la descripción al seleccionar.
+
+    No requiere código adicional suelto en el notebook.
     """
 
-    # Registrar callback (si estamos en Colab)
+    # Registrar el callback si estamos en Colab (si no, solo se loguea).
     _register_colab_callback(api_base=api_base)
 
-    # ---------- Encontrar directorios urdf / meshes ----------
+    # ---------- Encontrar /urdf y /meshes ----------
     def find_dirs(root):
         u = os.path.join(root, "urdf")
         m = os.path.join(root, "meshes")
@@ -197,8 +218,7 @@ def URDF_Render(
         if f.lower().endswith(".urdf")
     ]
     urdf_files.sort(
-        key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
-        reverse=True,
+        key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0, reverse=True
     )
 
     urdf_raw = ""
@@ -206,9 +226,7 @@ def URDF_Render(
 
     for upath in urdf_files:
         try:
-            with open(
-                upath, "r", encoding="utf-8", errors="ignore"
-            ) as f:
+            with open(upath, "r", encoding="utf-8", errors="ignore") as f:
                 txt = f.read().lstrip("\ufeff")
             refs = re.findall(
                 r'filename="([^"]+\.(?:stl|dae))"', txt, re.IGNORECASE
@@ -221,9 +239,7 @@ def URDF_Render(
             pass
 
     if not urdf_raw and urdf_files:
-        with open(
-            urdf_files[0], "r", encoding="utf-8", errors="ignore"
-        ) as f:
+        with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
             urdf_raw = f.read().lstrip("\ufeff")
 
     # ---------- Construir meshDB ----------
