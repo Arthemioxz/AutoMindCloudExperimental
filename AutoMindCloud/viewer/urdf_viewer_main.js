@@ -18,7 +18,6 @@ export function render(opts = {}) {
 
   const core = createViewer({ container, background });
 
-  // assetKey -> meshes[]
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map();
 
@@ -33,8 +32,6 @@ export function render(opts = {}) {
   });
 
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
-
-  // offscreen thumbnails cacheado
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
   const inter = attachInteraction({
@@ -66,21 +63,18 @@ export function render(opts = {}) {
       tools.set(!!open);
     },
 
-    // Se llena luego de llamar a Colab
     componentDescriptions: {},
 
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions;
       if (!src) return "";
 
-      // Mapa: assetKey o basename
       if (!Array.isArray(src) && typeof src === "object") {
         if (src[assetKey]) return src[assetKey];
         const base = (assetKey || "").split("/").pop().split(".")[0];
         if (src[base]) return src[base];
       }
 
-      // Array (fallback)
       if (Array.isArray(src) && typeof index === "number") {
         return src[index] || "";
       }
@@ -98,7 +92,7 @@ export function render(opts = {}) {
     } catch (_) {}
   }
 
-  // 🔹 Llama a Colab al inicio para obtener descripciones
+  // Capturar imágenes y pedir descripciones al inicio
   bootstrapComponentDescriptions(app, assetToMeshes, off);
 
   const destroy = () => {
@@ -112,7 +106,7 @@ export function render(opts = {}) {
   return { ...app, destroy };
 }
 
-/* ---------------- Bootstrap JS <-> Colab ---------------- */
+/* ---------- JS <-> Colab ---------- */
 
 function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   const hasColab =
@@ -145,7 +139,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
         const b64 = parts[1];
         entries.push({ key: ent.assetKey, image_b64: b64 });
       } catch (e) {
-        console.warn("[Components] Error generando thumbnail para", ent.assetKey, e);
+        console.warn("[Components] Error thumbnail", ent.assetKey, e);
       }
     }
 
@@ -161,54 +155,40 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
         {}
       );
 
-      console.debug(
-        "[Components] Respuesta raw de describe_component_images:",
-        result
-      );
+      console.debug("[Components] Respuesta raw:", result);
 
       const descMap = extractDescMap(result);
-      console.debug("[Components] Mapa de descripciones final:", descMap);
+      console.debug("[Components] Mapa final de descripciones:", descMap);
 
       if (descMap && typeof descMap === "object") {
         app.componentDescriptions = descMap;
         if (typeof window !== "undefined") {
-          window.COMPONENT_DESCRIPTIONS = descMap; // debug global
+          window.COMPONENT_DESCRIPTIONS = descMap; // debug
         }
       } else {
-        console.warn(
-          "[Components] No se obtuvo un mapa de descripciones válido."
-        );
+        console.warn("[Components] No se obtuvo mapa de descripciones válido.");
       }
     } catch (err) {
-      console.error(
-        "[Components] Error al invocar describe_component_images:",
-        err
-      );
+      console.error("[Components] Error invokeFunction:", err);
     }
   })();
 }
 
 function extractDescMap(result) {
   if (!result) return {};
-
-  // Colab suele empaquetar en result.data
   const d = result.data || result;
 
-  // 1) application/json directo
   if (d["application/json"] && typeof d["application/json"] === "object") {
     return d["application/json"];
   }
 
-  // 2) lista con objeto dentro
   if (Array.isArray(d) && d.length && typeof d[0] === "object") {
     return d[0];
   }
 
-  // 3) text/plain con repr de dict Python
   if (d["text/plain"] && typeof d["text/plain"] === "string") {
     const t = d["text/plain"].trim();
     try {
-      // dict python -> JSON: comillas simples a dobles
       const jsonLike = t
         .replace(/^dict\(/, "{")
         .replace(/\)$/, "}")
@@ -220,19 +200,22 @@ function extractDescMap(result) {
     }
   }
 
-  // 4) si todo falla y d ya parece mapa
   if (typeof d === "object" && !Array.isArray(d)) return d;
 
   return {};
 }
 
-/* ---------------- Helpers viewer ---------------- */
+/* ---------- Helpers viewer ---------- */
 
 function listAssets(assetToMeshes) {
   const items = [];
   assetToMeshes.forEach((meshes, assetKey) => {
     if (!meshes || !meshes.length) return;
-    const { base, ext } = splitName(assetKey);
+    const clean = String(assetKey || "").split("?")[0].split("#")[0];
+    const baseFull = clean.split("/").pop();
+    const dot = baseFull.lastIndexOf(".");
+    const base = dot >= 0 ? baseFull.slice(0, dot) : baseFull;
+    const ext = dot >= 0 ? baseFull.slice(dot + 1).toLowerCase() : "";
     items.push({ assetKey, base, ext, count: meshes.length });
   });
   items.sort((a, b) =>
@@ -242,16 +225,6 @@ function listAssets(assetToMeshes) {
     })
   );
   return items;
-}
-
-function splitName(key) {
-  const clean = String(key || "").split("?")[0].split("#")[0];
-  const base = clean.split("/").pop();
-  const dot = base.lastIndexOf(".");
-  return {
-    base: dot >= 0 ? base.slice(0, dot) : base,
-    ext: dot >= 0 ? base.slice(dot + 1).toLowerCase() : "",
-  };
 }
 
 function isolateAsset(core, assetToMeshes, assetKey) {
@@ -270,9 +243,7 @@ function showAll(core) {
   core.robot.traverse((o) => {
     if (o.isMesh && o.geometry) o.visible = true;
   });
-  if (core.fitAndCenter) {
-    core.fitAndCenter(core.robot, 1.06);
-  }
+  if (core.fitAndCenter) core.fitAndCenter(core.robot, 1.06);
 }
 
 function frameMeshes(core, meshes) {
@@ -315,6 +286,7 @@ function frameMeshes(core, meshes) {
     Math.sin(el),
     Math.cos(el) * Math.sin(az)
   ).multiplyScalar(dist);
+
   camera.position.copy(center.clone().add(dirV));
   camera.lookAt(center);
 
@@ -378,6 +350,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       Math.sin(el),
       Math.cos(el) * Math.sin(az)
     ).multiplyScalar(dist);
+
     camera.position.copy(center.clone().add(dirV));
     camera.lookAt(center);
 
