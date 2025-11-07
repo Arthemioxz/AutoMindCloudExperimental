@@ -119,11 +119,9 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
             text = (
                  "Describe con certeza y tono técnico cada componente mostrado en las imágenes del robot URDF.\n"
                   "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre de la pieza (de la lista 'keys') "
-                  "y cada valor una descripción breve en español (máx. 2 frases) que indique directamente su función mecánica, "
+                  "y cada valor una descripción breve en español (máx. 5 frases) que indique directamente su función mecánica, "
                   "posición aproximada en el robot y tipo de unión o movimiento, SIN usar expresiones como 'la imagen muestra', "
-                  "'parece ser' o 'probablemente'. Usa afirmaciones directas, por ejemplo: "
-                  "'Soporte lateral derecho del chasis que conecta el motor con la base' o "
-                  "'Eje rotacional central que permite el giro del brazo principal'.\n"
+                  "'parece ser' o 'probablemente', 'la pieza muestra'. Usa afirmaciones directas"
                   + json.dumps({"keys": keys}, ensure_ascii=False)
               )
 
