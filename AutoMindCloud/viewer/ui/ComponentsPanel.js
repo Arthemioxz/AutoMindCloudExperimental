@@ -1,129 +1,117 @@
-// /viewer/ui/ComponentsPanel.js 
-// Floating gallery of components (assets) with thumbnails + isolate/show-all
-// Dependencies: None (expects an app facade and a theme object)  
-
-/**
- * @typedef {Object} Theme
- * @property {string} teal
- * @property {string} tealSoft
- * @property {string} tealFaint
- * @property {string} bgPanel
- * @property {string|number} bgCanvas
- * @property {string} stroke
- * @property {string} text
- * @property {string} textMuted
- * @property {string} shadow
- */
-
-/**
- * Create the Components Panel (floating UI).
- * @param {Object} app
- * @param {Theme} theme
- * @returns {{
- *   open: () => void,
- *   close: () => void,
- *   set: (open:boolean) => void,
- *   refresh: () => Promise<void>,
- *   destroy: () => void
- * }}
- */
-
-
-
+// /viewer/ui/ComponentsPanel.js
+// Panel de componentes + thumbnails + frame de descripción por componente.
 
 export function createComponentsPanel(app, theme) {
-  
+  if (!app || !app.assets || !app.isolate || !app.showAll) {
+    throw new Error("[ComponentsPanel] Missing required app APIs");
+  }
 
-  if (!app || !app.assets || !app.isolate || !app.showAll)
-    throw new Error('[ComponentsPanel] Missing required app APIs');
-
-  // ---- DOM structure
   const ui = {
-    root: document.createElement('div'),
-    btn: document.createElement('button'),
-    panel: document.createElement('div'),
-    header: document.createElement('div'),
-    title: document.createElement('div'),
-    showAllBtn: document.createElement('button'),
-    list: document.createElement('div')
+    root: document.createElement("div"),
+    btn: document.createElement("button"),
+    panel: document.createElement("div"),
+    header: document.createElement("div"),
+    title: document.createElement("div"),
+    showAllBtn: document.createElement("button"),
+    details: document.createElement("div"),
+    detailsTitle: document.createElement("div"),
+    detailsBody: document.createElement("div"),
+    list: document.createElement("div"),
   };
 
-  
-  //efecto botones
-
-    ui.showAllBtn.addEventListener('mouseenter', () => {
-    ui.showAllBtn.style.transform = 'translateY(-1px) scale(1.02)';
-    ui.showAllBtn.style.background = theme.tealFaint;
-    ui.showAllBtn.style.borderColor = theme.tealSoft ?? theme.teal;
-  });
-  ui.showAllBtn.addEventListener('mouseleave', () => {
-    ui.showAllBtn.style.transform = 'none';
-    ui.showAllBtn.style.background = theme.bgPanel;
-    ui.showAllBtn.style.borderColor = theme.stroke;
-  });
-
-  
-  // ---- Styles
   const css = {
     root: {
-      position: 'absolute',
-      left: '0', top: '0',
-      width: '100%', height: '100%',
-      pointerEvents: 'none',
-      zIndex: '9999',
-      fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial',
+      position: "absolute",
+      left: "0",
+      top: "0",
+      width: "100%",
+      height: "100%",
+      pointerEvents: "none",
+      zIndex: "9999",
+      fontFamily:
+        "Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
     },
     btn: {
-      position: 'absolute',
-      left: '14px',
-      bottom: '14px',
-      padding: '8px 12px',
-      borderRadius: '12px',
+      position: "absolute",
+      left: "14px",
+      bottom: "14px",
+      padding: "8px 12px",
+      borderRadius: "12px",
       border: `1px solid ${theme.stroke}`,
       background: theme.bgPanel,
       color: theme.text,
-      fontWeight: '700',
-      cursor: 'pointer',
+      fontWeight: "700",
+      cursor: "pointer",
       boxShadow: theme.shadow,
-      pointerEvents: 'auto'
+      pointerEvents: "auto",
+      transition: "all .12s ease",
     },
     panel: {
-      position: 'absolute',
-      right: '14px',
-      bottom: '14px',
-      width: '440px',
-      maxHeight: '72%',
+      position: "absolute",
+      right: "14px",
+      bottom: "14px",
+      width: "440px",
+      maxHeight: "72%",
       background: theme.bgPanel,
       border: `1px solid ${theme.stroke}`,
       boxShadow: theme.shadow,
-      borderRadius: '18px',
-      overflow: 'hidden',
-      display: 'none',
-      pointerEvents: 'auto'
+      borderRadius: "18px",
+      overflow: "hidden",
+      display: "block",
+      pointerEvents: "auto",
+      willChange: "transform, opacity",
+      transition:
+        "transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease",
+      transform: "translateX(520px)",
+      opacity: "0",
     },
     header: {
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: '8px',
-      padding: '10px 12px',
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: "8px",
+      padding: "10px 12px",
       borderBottom: `1px solid ${theme.stroke}`,
-      background: theme.tealFaint
+      background: theme.tealFaint,
     },
-    title: { fontWeight: '800', color: theme.text },
+    title: {
+      fontWeight: "800",
+      color: theme.text,
+      fontSize: "14px",
+    },
     showAllBtn: {
-      padding: '6px 10px',
-      borderRadius: '10px',
+      padding: "6px 10px",
+      borderRadius: "10px",
       border: `1px solid ${theme.stroke}`,
       background: theme.bgPanel,
-      fontWeight: '700',
-      cursor: 'pointer'
+      fontWeight: "700",
+      cursor: "pointer",
+      fontSize: "11px",
+      transition: "all .12s ease",
+    },
+    details: {
+      display: "none",
+      padding: "10px 12px",
+      borderBottom: `1px solid ${theme.stroke}`,
+      background: "#ffffff",
+    },
+    detailsTitle: {
+      fontWeight: "800",
+      fontSize: "13px",
+      marginBottom: "4px",
+      color: theme.text,
+    },
+    detailsBody: {
+      fontSize: "12px",
+      lineHeight: "1.5",
+      color: theme.textMuted,
+      whiteSpace: "pre-wrap",
     },
     list: {
-      overflowY: 'auto',
-      maxHeight: 'calc(72vh - 52px)',
-      padding: '10px'
-    }
+      overflowY: "auto",
+      maxHeight: "calc(72vh - 52px)",
+      padding: "10px",
+    },
   };
 
   applyStyles(ui.root, css.root);
@@ -132,95 +120,93 @@ export function createComponentsPanel(app, theme) {
   applyStyles(ui.header, css.header);
   applyStyles(ui.title, css.title);
   applyStyles(ui.showAllBtn, css.showAllBtn);
+  applyStyles(ui.details, css.details);
+  applyStyles(ui.detailsTitle, css.detailsTitle);
+  applyStyles(ui.detailsBody, css.detailsBody);
   applyStyles(ui.list, css.list);
 
-  ui.btn.textContent = 'Components';
-  ui.title.textContent = 'Components';
-  ui.showAllBtn.textContent = 'Show all';
+  ui.btn.textContent = "Components";
+  ui.title.textContent = "Components";
+  ui.showAllBtn.textContent = "Show all";
 
   ui.header.appendChild(ui.title);
   ui.header.appendChild(ui.showAllBtn);
+  ui.details.appendChild(ui.detailsTitle);
+  ui.details.appendChild(ui.detailsBody);
   ui.panel.appendChild(ui.header);
+  ui.panel.appendChild(ui.details);
   ui.panel.appendChild(ui.list);
-
   ui.root.appendChild(ui.panel);
   ui.root.appendChild(ui.btn);
 
-  // Attach to the same container as the viewer canvas (assume renderer DOM parent)
-  const host = (app?.renderer?.domElement?.parentElement) || document.body;
+  const host =
+    (app.renderer && app.renderer.domElement
+      ? app.renderer.domElement.parentElement
+      : null) || document.body;
   host.appendChild(ui.root);
 
-// ---- State (must be declared before set()/maybeBuild()/hotkeys)
+  // Hovers botón principal
+  ui.btn.addEventListener("mouseenter", () => {
+    ui.btn.style.transform = "translateY(-1px) scale(1.02)";
+    ui.btn.style.background = theme.tealFaint;
+    ui.btn.style.borderColor = theme.tealSoft ?? theme.teal;
+  });
+  ui.btn.addEventListener("mouseleave", () => {
+    ui.btn.style.transform = "none";
+    ui.btn.style.background = theme.bgPanel;
+    ui.btn.style.borderColor = theme.stroke;
+  });
 
+  // Hovers Show all
+  ui.showAllBtn.addEventListener("mouseenter", () => {
+    ui.showAllBtn.style.transform = "translateY(-1px) scale(1.02)";
+    ui.showAllBtn.style.background = theme.tealFaint;
+    ui.showAllBtn.style.borderColor = theme.tealSoft ?? theme.teal;
+  });
+  ui.showAllBtn.addEventListener("mouseleave", () => {
+    ui.showAllBtn.style.transform = "none";
+    ui.showAllBtn.style.background = theme.bgPanel;
+    ui.showAllBtn.style.borderColor = theme.stroke;
+  });
 
-let open = false;        // start hidden
-let building = false;    // guard to avoid concurrent builds
-let disposed = false;    // if you use it in destroy()
-  
-// ---- Right-side slide config
-const CLOSED_TX = 520; // px; off-screen to the RIGHT
+  ui.showAllBtn.addEventListener("click", () => {
+    try {
+      app.showAll();
+    } catch (_) {}
+    hideDetails();
+  });
 
-// Prepare panel styles once (bottom-right)
-Object.assign(ui.panel.style, {
-  position: 'absolute',
-  right: '14px',
-  bottom: '14px',
-  display: 'block', // keep in DOM; animate visibility with opacity/transform
-  willChange: 'transform, opacity',
-  transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
+  // Estado panel
+  let open = false;
+  let building = false;
+  let disposed = false;
+  const CLOSED_TX = 520;
 
-  // START HIDDEN (off-screen to the right)
-  transform: `translateX(${CLOSED_TX}px)`,
-  opacity: '0',
-  pointerEvents: 'none'
-});
-
-// --- Behavior (open/close with tween from right)
-function set(isOpen) {
-  open = !!isOpen;
-
-  if (open) {
-    ui.panel.style.opacity = '1';
-    ui.panel.style.transform = 'translateX(0)';               // slide in (right → left)
-    ui.panel.style.pointerEvents = 'auto';
-    //maybeBuild();
-  } else {
-    ui.panel.style.opacity = '0';
-    ui.panel.style.transform = `translateX(${CLOSED_TX}px)`;  // slide out to the right
-    ui.panel.style.pointerEvents = 'none';
+  function set(isOpen) {
+    open = !!isOpen;
+    if (open) {
+      ui.panel.style.opacity = "1";
+      ui.panel.style.transform = "translateX(0)";
+      ui.panel.style.pointerEvents = "auto";
+    } else {
+      ui.panel.style.opacity = "0";
+      ui.panel.style.transform = `translateX(${CLOSED_TX}px)`;
+      ui.panel.style.pointerEvents = "none";
+    }
   }
-}
 
+  function openPanel() {
+    set(true);
+    maybeBuild();
+  }
 
+  function closePanel() {
+    set(false);
+  }
 
-  
-
-  function openPanel() { set(true); maybeBuild(); }
-  function closePanel() { set(false); }
-  
-    // Edicion
-      // Hover/active animations (KEEP)
-    ui.btn.addEventListener('mouseenter', () => {
-      ui.btn.style.transform = 'translateY(-1px) scale(1.02)';
-      ui.btn.style.boxShadow = theme.shadow;
-      ui.btn.style.background = theme.tealFaint;
-      ui.btn.style.borderColor = theme.tealSoft ?? theme.teal;
-    });
-    ui.btn.addEventListener('mouseleave', () => {
-      ui.btn.style.transform = 'none';
-      ui.btn.style.boxShadow = theme.shadow;
-      ui.btn.style.background = theme.bgPanel;
-      ui.btn.style.borderColor = theme.stroke;
-    });
-  
-  //ui.btn.addEventListener('click', () => {
-   // set(ui.panel.style.display === 'none');
-    //if (open) maybeBuild();
-  //});
-
-  
-  ui.showAllBtn.addEventListener('click', () => {
-    try { app.showAll?.(); } catch (_) {}
+  ui.btn.addEventListener("click", () => {
+    set(!open);
+    if (open) maybeBuild();
   });
 
   async function maybeBuild() {
@@ -236,101 +222,145 @@ function set(isOpen) {
   async function renderList() {
     clearElement(ui.list);
 
-    // Retrieve assets list; support sync or async
     let items = [];
     try {
       const res = app.assets.list?.();
-      items = Array.isArray(res) ? res : (await res);
-    } catch (e) {
+      items = Array.isArray(res) ? res : await res;
+    } catch {
       items = [];
     }
 
-    if (!items || !items.length) {
-      const empty = document.createElement('div');
-      empty.textContent = 'No components with visual geometry found.';
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.textContent = "No components with visual geometry found.";
       empty.style.color = theme.textMuted;
-      empty.style.fontWeight = '600';
-      empty.style.padding = '8px 2px';
+      empty.style.fontWeight = "600";
+      empty.style.padding = "8px 2px";
       ui.list.appendChild(empty);
       return;
     }
 
-    // Normalize and sort (by base name)
-    const normalized = items.map((it) => ({
-      assetKey: it.assetKey || it.key || '',
-      base: it.base || basenameNoExt(it.assetKey || ''),
-      ext: it.ext || extOf(it.assetKey || ''),
-      count: it.count || 1,
-      desc: it.desc || ''
-    })).sort((a, b) => a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }));
+    const normalized = items
+      .map((it) => ({
+        assetKey: it.assetKey || it.key || "",
+        base: it.base || basenameNoExt(it.assetKey || ""),
+        ext: it.ext || extOf(it.assetKey || ""),
+        count: it.count || 1,
+      }))
+      .sort((a, b) =>
+        a.base.localeCompare(b.base, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        })
+      );
 
-    // Build rows
-    for (const ent of normalized) {
-      const row = document.createElement('div');
+    normalized.forEach((ent, index) => {
+      const row = document.createElement("div");
       applyStyles(row, rowStyles(theme));
 
-      const img = document.createElement('img');
+      const img = document.createElement("img");
       applyStyles(img, thumbStyles(theme));
       img.alt = ent.base;
-      img.loading = 'lazy';
+      img.loading = "lazy";
 
-      const meta = document.createElement('div');
-      const title = document.createElement('div');
+      const meta = document.createElement("div");
+
+      const title = document.createElement("div");
       title.textContent = ent.base;
-      title.style.fontWeight = '700';
-      title.style.fontSize = '14px';
+      title.style.fontWeight = "700";
+      title.style.fontSize = "14px";
       title.style.color = theme.text;
 
-      const small = document.createElement('div');
-      small.textContent = `.${ent.ext || 'asset'} • ${ent.count} instance${ent.count > 1 ? 's' : ''}`;
+      const small = document.createElement("div");
+      small.textContent = `.${ent.ext || "asset"} • ${ent.count} instance${
+        ent.count > 1 ? "s" : ""
+      }`;
       small.style.color = theme.textMuted;
-      small.style.fontSize = '12px';
-      small.style.marginTop = '2px';
-
-      const desc = document.createElement('div');
-      desc.textContent = ent.desc || ' ';
-      desc.style.color = theme.textMuted;
-      desc.style.fontSize = '12px';
-      desc.style.marginTop = '4px';
+      small.style.fontSize = "12px";
+      small.style.marginTop = "2px";
 
       meta.appendChild(title);
       meta.appendChild(small);
-      if (desc.textContent.trim()) meta.appendChild(desc);
 
       row.appendChild(img);
       row.appendChild(meta);
       ui.list.appendChild(row);
 
-      // Click → isolate this asset
-      row.addEventListener('click', () => {
-        try { app.isolate.asset?.(ent.assetKey); } catch (_) {}
+      // Hover fila
+      row.addEventListener("mouseenter", () => {
+        row.style.transform = "translateY(-1px) scale(1.02)";
+        row.style.background = theme.tealFaint;
+        row.style.borderColor = theme.tealSoft ?? theme.teal;
+      });
+      row.addEventListener("mouseleave", () => {
+        row.style.transform = "none";
+        row.style.background = "#fff";
+        row.style.borderColor = theme.stroke;
       });
 
-        //efecto botones2
+      // Click: aislar e inyectar descripción
+      row.addEventListener("click", () => {
+        try {
+          app.isolate.asset(ent.assetKey);
+        } catch (_) {}
+        showDetails(ent, index);
+        set(true);
+      });
 
-    row.addEventListener('mouseenter', () => {
-    row.style.transform = 'translateY(-1px) scale(1.02)';
-    row.style.background = theme.tealFaint;
-    row.style.borderColor = theme.tealSoft ?? theme.teal;
-  });
-  row.addEventListener('mouseleave', () => {
-    row.style.transform = 'none';
-    row.style.background = theme.bgPanel;
-    row.style.borderColor = theme.stroke;
-  });
-      
-      // Async thumbnail
-      try {
-        const url = await app.assets.thumbnail?.(ent.assetKey);
-        if (url) img.src = url;
-        else img.replaceWith(makeThumbFallback(ent.base, theme));
-      } catch (_) {
-        img.replaceWith(makeThumbFallback(ent.base, theme));
-      }
-    }
+      // Thumbnail async
+      (async () => {
+        try {
+          const url = await app.assets.thumbnail?.(ent.assetKey);
+          if (url) img.src = url;
+          else img.replaceWith(makeThumbFallback(ent.base, theme));
+        } catch {
+          img.replaceWith(makeThumbFallback(ent.base, theme));
+        }
+      })();
+    });
   }
 
-  // Public API
+  function showDetails(ent, index) {
+    if (disposed) return;
+
+    let text = "";
+    try {
+      if (typeof app.getComponentDescription === "function") {
+        text =
+          app.getComponentDescription(ent.assetKey, index) ||
+          "";
+      }
+    } catch (_) {
+      text = "";
+    }
+
+    if (!text && app.componentDescriptions) {
+      const src = app.componentDescriptions;
+      if (Array.isArray(src)) {
+        text = src[index] || "";
+      } else if (typeof src === "object") {
+        text =
+          src[ent.assetKey] ||
+          src[basenameNoExt(ent.assetKey)] ||
+          "";
+      }
+    }
+
+    if (!text) {
+      text = "Sin descripción generada para esta pieza.";
+    }
+
+    ui.detailsTitle.textContent = ent.base;
+    ui.detailsBody.textContent = text;
+    ui.details.style.display = "block";
+  }
+
+  function hideDetails() {
+    ui.details.style.display = "none";
+    ui.detailsTitle.textContent = "";
+    ui.detailsBody.textContent = "";
+  }
+
   async function refresh() {
     if (disposed) return;
     await renderList();
@@ -338,53 +368,43 @@ function set(isOpen) {
 
   function destroy() {
     disposed = true;
-    try { ui.btn.remove(); } catch (_) {}
-    try { ui.panel.remove(); } catch (_) {}
-    try { ui.root.remove(); } catch (_) {}
+    try {
+      document.removeEventListener("keydown", onHotkeyC, true);
+    } catch (_) {}
+    try {
+      ui.btn.remove();
+    } catch (_) {}
+    try {
+      ui.panel.remove();
+    } catch (_) {}
+    try {
+      ui.root.remove();
+    } catch (_) {}
   }
 
-  // Initial defaults
-  //set(false);
-
-    
-// 1) Hotkey handler: ONLY detects "c" and calls the tween
-//function onHotkeyH(e) {set(!isOpen)}
-
-function onHotkeyC(e) {
-  const tag = (e.target && e.target.tagName || '').toLowerCase();
-  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
-
-  if (e.key === 'c' || e.key === 'C' || e.code === 'KeyC') {
-    e.preventDefault();
-    try { console.log('pressed c'); } catch {}
-
-    // Call the tween function (pass your own elements/params)
-    set(!open);
-    //if (open) maybeBuild();
+  // Hotkey 'c' para abrir/cerrar
+  function onHotkeyC(e) {
+    const tag = (e.target && e.target.tagName) || "";
+    const t = tag.toLowerCase();
+    if (t === "input" || t === "textarea" || t === "select" || e.isComposing)
+      return;
+    if (e.key === "c" || e.key === "C" || e.code === "KeyC") {
+      e.preventDefault();
+      set(!open);
+      if (open) maybeBuild();
+    }
   }
-}
 
+  document.addEventListener("keydown", onHotkeyC, true);
 
-// Button toggler
-ui.btn.addEventListener('click', () => set(!open));
+  // Estado inicial
+  set(false);
+  maybeBuild();
 
-// Ensure initial hidden state is applied
-set(false);
-  
-maybeBuild();
-
-
-
-// Wire the hotkey:
-document.addEventListener('keydown', onHotkeyC, true);
-  
   return { open: openPanel, close: closePanel, set, refresh, destroy };
-
-
-
 }
 
-/* ------------------ Helpers ------------------ */
+/* ---------------------- Helpers internos ---------------------- */
 
 function applyStyles(el, styles) {
   Object.assign(el.style, styles);
@@ -395,61 +415,57 @@ function clearElement(el) {
 }
 
 function basenameNoExt(p) {
-  const q = String(p || '').split('/').pop().split('?')[0].split('#')[0];
-  const dot = q.lastIndexOf('.');
+  const q = String(p || "").split("/").pop().split("?")[0].split("#")[0];
+  const dot = q.lastIndexOf(".");
   return dot >= 0 ? q.slice(0, dot) : q;
 }
 
 function extOf(p) {
-  const q = String(p || '').split('?')[0].split('#')[0];
-  const dot = q.lastIndexOf('.');
-  return dot >= 0 ? q.slice(dot + 1).toLowerCase() : '';
+  const q = String(p || "").split("?")[0].split("#")[0];
+  const dot = q.lastIndexOf(".");
+  return dot >= 0 ? q.slice(dot + 1).toLowerCase() : "";
 }
 
 function rowStyles(theme) {
   return {
-    display: 'grid',
-    gridTemplateColumns: '128px 1fr',
-    gap: '12px',
-    alignItems: 'center',
-    padding: '10px',
-    borderRadius: '12px',
+    display: "grid",
+    gridTemplateColumns: "128px 1fr",
+    gap: "12px",
+    alignItems: "center",
+    padding: "10px",
+    borderRadius: "12px",
     border: `1px solid ${theme.stroke}`,
-    marginBottom: '10px',
-    background: '#fff',
-    cursor: 'pointer',
-    transition: 'transform .08s ease, box-shadow .12s ease',
+    marginBottom: "10px",
+    background: "#fff",
+    cursor: "pointer",
+    transition: "transform .08s ease, box-shadow .12s ease",
   };
 }
 
 function thumbStyles(theme) {
   return {
-    width: '128px',
-    height: '96px',
-    objectFit: 'contain',
-    background: '#f7fbfb',
-    borderRadius: '10px',
-    border: `1px solid ${theme.stroke}`
+    width: "128px",
+    height: "96px",
+    objectFit: "contain",
+    background: "#f7fbfb",
+    borderRadius: "10px",
+    border: `1px solid ${theme.stroke}`,
   };
 }
 
 function makeThumbFallback(label, theme) {
-  const wrap = document.createElement('div');
-  wrap.style.width = '128px';
-  wrap.style.height = '96px';
-  wrap.style.display = 'flex';
-  wrap.style.alignItems = 'center';
-  wrap.style.justifyContent = 'center';
-  wrap.style.background = '#f7fbfb';
+  const wrap = document.createElement("div");
+  wrap.style.width = "128px";
+  wrap.style.height = "96px";
+  wrap.style.display = "flex";
+  wrap.style.alignItems = "center";
+  wrap.style.justifyContent = "center";
+  wrap.style.background = "#f7fbfb";
   wrap.style.border = `1px solid ${theme.stroke}`;
-  wrap.style.borderRadius = '10px';
-  wrap.style.fontSize = '11px';
+  wrap.style.borderRadius = "10px";
+  wrap.style.fontSize = "11px";
   wrap.style.color = theme.textMuted;
-  wrap.style.textAlign = 'center';
-  wrap.textContent = label || '—';
+  wrap.style.textAlign = "center";
+  wrap.textContent = label || "—";
   return wrap;
 }
-
-
-
-
