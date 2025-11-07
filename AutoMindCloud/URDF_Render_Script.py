@@ -1,21 +1,11 @@
 # ==========================================================
-# URDF_Render_Script.py  (versión optimizada con batch IA)
+# URDF_Render_Script.py  (versión optimizada con batch IA + logs)
 # ==========================================================
 # Puente Colab <-> JS para descripciones de piezas del URDF.
 #
 # Uso en Colab:
 #   from URDF_Render_Script import URDF_Render
 #   URDF_Render("Model")
-#
-# JS:
-#   - Genera thumbnails offscreen centrados por componente.
-#   - Usa esos thumbnails grandes para la UI (Components Panel).
-#   - Antes de mandar a la API, comprime cada imagen a ~5KB
-#     y recién ahí extrae el base64 para enviarlo.
-#   - Llama: google.colab.kernel.invokeFunction(
-#         "describe_component_images", [entries], {}
-#     )
-#     donde entries = [{key, image_b64}, ...].
 # ==========================================================
 
 import base64
@@ -92,7 +82,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                 n = len(entries)
             except TypeError:
                 n = 0
-            print(f"[Colab] describe_component_images: recibido {n} imágenes.")
+            print(f"\n[Colab] describe_component_images: recibido {n} imágenes.")
 
             if not isinstance(entries, (list, tuple)) or n == 0:
                 print("[Colab] ❌ Payload inválido o vacío.")
@@ -100,6 +90,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
 
             keys = []
             imgs = []
+            debug_preview = []
             for item in entries:
                 if not isinstance(item, dict):
                     continue
@@ -108,12 +99,30 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                 if key and img_b64:
                     keys.append(key)
                     imgs.append({"image_b64": img_b64, "mime": "image/jpeg"})
+                    size_bytes = int(len(img_b64) * 3 / 4)
+                    debug_preview.append(
+                        {
+                            "key": key,
+                            "size_bytes": size_bytes,
+                            "size_kb": round(size_bytes / 1024, 2),
+                        }
+                    )
 
             if not imgs:
                 print("[Colab] ⚠️ No hay imágenes válidas para enviar.")
                 return {}
 
-            print(f"[Colab] 🚀 Enviando {len(imgs)} imágenes (<=5KB c/u) al modelo...")
+            print(
+                f"[Colab] 🚀 Enviando {len(imgs)} imágenes a la API (objetivo 5KB c/u):"
+            )
+            for p in debug_preview[:15]:
+                print(
+                    f"   - {p['key']}: {p['size_bytes']} bytes ({p['size_kb']} KB)"
+                )
+            if len(debug_preview) > 15:
+                print(
+                    f"   ... ({len(debug_preview) - 15} más no listadas para no llenar logs)"
+                )
 
             text = (
                 "Describe con certeza y tono técnico cada componente del robot URDF.\n"
@@ -127,14 +136,30 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
 
             payload = {"text": text, "images": imgs}
 
+            # ===== LOG: preview JSON que se manda a la API (sin imprimir los b64) =====
+            print("[Colab] 📤 Payload a API (preview, sin base64):")
+            print(
+                json.dumps(
+                    {
+                        "text_sample": text[:220] + "...",
+                        "num_images": len(imgs),
+                        "keys_sample": keys[:15],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+
+            # ======================= Llamada a la API ==========================
             try:
                 r = requests.post(infer_url, json=payload, timeout=timeout)
             except Exception as e:
                 print(f"[Colab] ❌ Error de conexión con API: {e}")
                 return {}
 
+            print(f"[Colab] ✅ Respuesta HTTP: {r.status_code}")
             if r.status_code != 200:
-                print(f"[Colab] ❌ Error HTTP {r.status_code}: {r.text[:300]}")
+                print(f"[Colab] ❌ Error body:\n{r.text[:600]}")
                 return {}
 
             raw = r.text.strip()
@@ -142,6 +167,11 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                 print("[Colab] ⚠️ Respuesta vacía del modelo.")
                 return {}
 
+            # ===== LOG: raw response corta =====
+            print("[Colab] 📥 Respuesta cruda (primeros 600 chars):")
+            print(raw[:600])
+
+            # ======================= Parseo JSON ==============================
             def parse_json(s):
                 try:
                     return json.loads(s)
@@ -157,11 +187,19 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
             parsed = parse_json(raw)
             if isinstance(parsed, dict):
                 print(
-                    f"[Colab] ✅ JSON parseado correctamente ({len(parsed)} descripciones)."
+                    f"[Colab] ✅ JSON parseado correctamente ({len(parsed)} claves)."
+                )
+                # LOG resumen de claves
+                print(
+                    "[Colab] 🔑 Claves devueltas:",
+                    list(parsed.keys())[:30],
+                    "..."
+                    if len(parsed.keys()) > 30
+                    else "",
                 )
                 return parsed
 
-            print(f"[Colab] ⚠️ No se pudo interpretar JSON, preview:\n{raw[:400]}")
+            print("[Colab] ⚠️ No se pudo interpretar JSON como dict.")
             return {}
 
         output.register_callback("describe_component_images", _describe_component_images)
@@ -210,7 +248,7 @@ def URDF_Render(
             f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>"
         )
 
-    # Leer URDF principal con más referencias
+    # Leer URDF principal
     urdf_files = [
         os.path.join(urdf_dir, f)
         for f in os.listdir(urdf_dir)
@@ -305,7 +343,6 @@ def URDF_Render(
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
 
-    # Viewer a pantalla completa en la salida de Colab
     html = f"""<!doctype html>
 <html lang="en">
 <head>
