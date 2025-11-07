@@ -8,16 +8,6 @@ import { attachInteraction } from "./interaction/SelectionAndDrag.js";
 import { createToolsDock } from "./ui/ToolsDock.js";
 import { createComponentsPanel } from "./ui/ComponentsPanel.js";
 
-/**
- * render(opts)
- *  - container: HTMLElement
- *  - urdfContent: string
- *  - meshDB: { [path:string]: base64 }
- *  - selectMode: "link" | "joint" | ...
- *  - background: number | null
- *  - pixelRatio: number
- *  - autoResize: boolean
- */
 export function render(opts = {}) {
   const {
     container,
@@ -26,15 +16,10 @@ export function render(opts = {}) {
     selectMode = "link",
     background = 0xffffff,
     pixelRatio = Math.min(window.devicePixelRatio || 1, 2),
-    autoResize = true,
   } = opts;
 
-  if (!container) {
-    throw new Error("[urdf_viewer_main] Falta 'container'.");
-  }
-  if (!urdfContent) {
-    throw new Error("[urdf_viewer_main] Falta 'urdfContent'.");
-  }
+  if (!container) throw new Error("[urdf_viewer_main] Falta 'container'.");
+  if (!urdfContent) throw new Error("[urdf_viewer_main] Falta 'urdfContent'.");
 
   // =========================
   // Crear Viewer base
@@ -48,14 +33,14 @@ export function render(opts = {}) {
   const {
     scene,
     camera,
-    controls,
     renderer,
+    controls,
     loadURDF,
     setProjection,
     setSceneToggles,
-    getState,
-    setState,
-    resize,
+    setBackground,
+    setPixelRatio,
+    onResize, // viene de ViewerCore
   } = viewer;
 
   const app = {
@@ -66,9 +51,9 @@ export function render(opts = {}) {
     renderer,
     setProjection,
     setSceneToggles,
-    getState,
-    setState,
-    resize,
+    setBackground,
+    setPixelRatio,
+    onResize,
   };
 
   // =========================
@@ -76,7 +61,6 @@ export function render(opts = {}) {
   // =========================
   const assetDB = buildAssetDB(meshDB);
   const loadMeshCb = createLoadMeshCb(assetDB);
-
   const robot = loadURDF(urdfContent, { loadMeshCb });
   app.robot = robot;
 
@@ -94,7 +78,7 @@ export function render(opts = {}) {
   });
 
   // =========================
-  // ToolsDock + ComponentsPanel
+  // UI: ToolsDock + ComponentsPanel
   // =========================
   const toolsDock = createToolsDock(app, THEME);
   const componentsPanel = createComponentsPanel(app, THEME);
@@ -102,14 +86,13 @@ export function render(opts = {}) {
   app.toolsDock = toolsDock;
   app.componentsPanel = componentsPanel;
 
-  // Exponer global opcional
   if (typeof window !== "undefined") {
     window._URDF_APP = app;
     window._componentsPanel = componentsPanel;
   }
 
   // =========================
-  // Focus helper (para rows)
+  // Focus helper para un assetKey
   // =========================
   app.focusComponent = function (assetKey) {
     if (!robot || !assetKey || !window.THREE) return;
@@ -152,15 +135,14 @@ export function render(opts = {}) {
 
   // =========================
   // Thumbalist: snapshots por componente
-  //  - thumbDataUrl: para la lista (no se baja resolución).
-  //  - image_b64: versión más pequeña solo para la API.
+  //  - thumbDataUrl: alta/buena resolución para la lista.
+  //  - image_b64: versión reducida SOLO para enviar a la API.
   // =========================
   async function snapshotComponents() {
     if (!robot || !window.THREE) return [];
     const THREE = window.THREE;
 
     const assetMeshes = new Map(); // assetKey -> [meshes]
-
     robot.traverse((o) => {
       const k =
         o?.userData?.__assetKey ||
@@ -182,7 +164,6 @@ export function render(opts = {}) {
       `[urdf_viewer_main] Generando thumbnails para ${keys.length} componentes...`
     );
 
-    // Guardar estado original
     const orig = {
       camPos: camera.position.clone(),
       camUp: camera.up.clone(),
@@ -200,19 +181,18 @@ export function render(opts = {}) {
     const tmpBox = new THREE.Box3();
     const tmpV = new THREE.Vector3();
 
-    const MAX_THUMB = 512; // buena calidad para la UI
-    const LOW_MAX = 320; // versión reducida para API
+    const MAX_THUMB = 512; // buena calidad UI
+    const LOW_MAX = 320; // baja resol para API
 
     for (const key of keys) {
       const meshes = assetMeshes.get(key) || [];
       if (!meshes.length) continue;
 
-      // Ocultar todo
+      // ocultar todo
       orig.vis.forEach((v) => (v.o.visible = false));
-      // Mostrar solo este componente
+      // mostrar solo este componente
       meshes.forEach((m) => (m.visible = true));
 
-      // Bounds
       tmpBox.makeEmpty();
       meshes.forEach((m) => tmpBox.expandByObject(m));
       if (tmpBox.isEmpty()) continue;
@@ -234,7 +214,7 @@ export function render(opts = {}) {
         controls.update();
       }
 
-      // Render hi-res para UI
+      // Hi-res para UI
       const baseW = orig.size.x || renderer.domElement.width || 640;
       const baseH = orig.size.y || renderer.domElement.height || 480;
       const scaleHi = Math.min(1, MAX_THUMB / Math.max(baseW, baseH));
@@ -247,7 +227,7 @@ export function render(opts = {}) {
 
       const hiDataUrl = renderer.domElement.toDataURL("image/png");
 
-      // Low-res para API (sin tocar hiDataUrl)
+      // Low-res SOLO para API
       let lowB64;
       {
         const canvas = document.createElement("canvas");
@@ -264,12 +244,12 @@ export function render(opts = {}) {
         key,
         assetKey: key,
         base: key.split("/").pop(),
-        thumbDataUrl: hiDataUrl, // 👍 buena resolución para la lista
-        image_b64: lowB64, // 👍 versión reducida solo para API
+        thumbDataUrl: hiDataUrl, // buena para lista
+        image_b64: lowB64, // low-res para API
       });
     }
 
-    // Restaurar estado
+    // restaurar estado
     orig.vis.forEach((v) => (v.o.visible = v.visible));
     camera.position.copy(orig.camPos);
     camera.up.copy(orig.camUp);
@@ -307,15 +287,13 @@ export function render(opts = {}) {
         },
       };
 
-      // Cuando abramos el panel, ya tendrá datos
       app.componentsPanel.refresh();
 
-      // === Mini-lotes + callback Colab ===
       if (window.google?.colab?.kernel) {
         await analyzeInMiniBatches(entries, 8);
       } else {
         console.warn(
-          "[urdf_viewer_main] Entorno sin google.colab.kernel: no se solicitarán descripciones."
+          "[urdf_viewer_main] Sin google.colab.kernel: no se pedirán descripciones."
         );
       }
     } catch (e) {
@@ -323,6 +301,9 @@ export function render(opts = {}) {
     }
   })();
 
+  // =========================
+  // Mini-lotes: usa 3 mecanismos del callback
+  // =========================
   async function analyzeInMiniBatches(entries, batchSize = 8) {
     const kernel = window.google?.colab?.kernel;
     if (!kernel || typeof kernel.invokeFunction !== "function") {
@@ -347,20 +328,40 @@ export function render(opts = {}) {
           {}
         );
 
-        // Colab suele devolver JSON como string en 'text/plain'
+        // Colab suele devolver algo como:
+        // { data: { "text/plain": "{...json...}" } }
         let payload =
-          (res && res.data && res.data["text/plain"]) || res || null;
+          (res &&
+            res.data &&
+            (res.data["application/json"] || res.data["text/plain"])) ||
+          res ||
+          null;
 
+        // Si es string: intentar parsear
         if (typeof payload === "string") {
+          const raw = payload.trim();
+
+          // Primero intento JSON directo
+          let parsed = null;
           try {
-            payload = JSON.parse(payload);
-          } catch (e) {
-            console.warn(
-              "[urdf_viewer_main] No se pudo parsear JSON parcial:",
-              e
-            );
-            payload = null;
+            parsed = JSON.parse(raw);
+          } catch (_e) {
+            // Si viene como dict de Python: comillas simples, True/False/None
+            try {
+              const fixed = raw
+                .replace(/'/g, '"')
+                .replace(/\bTrue\b/g, "true")
+                .replace(/\bFalse\b/g, "false")
+                .replace(/\bNone\b/g, "null");
+              parsed = JSON.parse(fixed);
+            } catch (e2) {
+              console.warn(
+                "[urdf_viewer_main] No se pudo parsear JSON parcial:",
+                e2
+              );
+            }
           }
+          payload = parsed || null;
         }
 
         if (payload && typeof payload === "object") {
@@ -390,30 +391,8 @@ export function render(opts = {}) {
     console.log("[urdf_viewer_main] Análisis por mini-lotes finalizado.");
   }
 
-  // =========================
-  // Auto-resize opcional
-  // =========================
-  if (autoResize) {
-    const onResize = () => {
-      try {
-        const w =
-          window.innerWidth || container.clientWidth || renderer.domElement.width;
-        const h =
-          (window.visualViewport?.height ||
-            window.innerHeight ||
-            container.clientHeight ||
-            renderer.domElement.height) || 600;
-        resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
-      } catch (e) {
-        console.warn("[urdf_viewer_main] Error en resize:", e);
-      }
-    };
-    window.addEventListener("resize", onResize);
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", onResize);
-    }
-    setTimeout(onResize, 0);
-  }
+  // Nada de autoResize custom: ViewerCore ya engancha onResize.
+  // Solo devolvemos app para debug/uso externo.
 
   return app;
 }
