@@ -1,7 +1,7 @@
 // urdf_viewer_main.js
-// Entrypoint que compone ViewerCore + AssetDB + Interaction + UI (Tools & Components)
-// - Genera thumbnails offscreen para el panel de componentes
-// - Envía thumbnails en base64 a Colab; allí se comprimen a ~5KB antes de la API
+// Entrypoint que compone ViewerCore + AssetDB + Interaction + UI.
+// - Thumbnails offscreen para ComponentsPanel.
+// - Envía thumbnails a Colab; ahí se comprimen antes de la API.
 
 import { THEME } from "./Theme.js";
 import { createViewer } from "./core/ViewerCore.js";
@@ -37,7 +37,6 @@ export function render(opts = {}) {
 
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // Offscreen renderer para thumbnails
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
   const inter = attachInteraction({
@@ -212,38 +211,71 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
 
 function extractDescMap(result) {
   if (!result) return {};
-  const d = result.data || result;
 
+  let d = result;
+
+  // Colab suele devolver { data: { ... } }
+  if (d.data && typeof d.data === "object") {
+    d = d.data;
+  }
+
+  // Caso: dict plano con claves -> descripciones
+  if (
+    typeof d === "object" &&
+    !Array.isArray(d) &&
+    !("text/plain" in d) &&
+    !("application/json" in d)
+  ) {
+    return d;
+  }
+
+  // application/json
   if (d["application/json"] && typeof d["application/json"] === "object") {
     return d["application/json"];
   }
 
-  if (Array.isArray(d) && d.length && typeof d[0] === "object") {
-    return d[0];
+  // Array con objetos dentro
+  if (Array.isArray(d)) {
+    for (const item of d) {
+      if (item && typeof item === "object") {
+        const sub = extractDescMap(item);
+        if (Object.keys(sub).length) return sub;
+      }
+    }
   }
 
+  // text/plain con JSON o dict Python
   const tp = d["text/plain"];
   if (typeof tp === "string") {
     const t = tp.trim();
 
-    if ((t.startsWith("{") || t.startsWith("[")) && t.includes('"')) {
-      try {
-        const parsed = JSON.parse(t);
-        if (parsed && typeof parsed === "object") return parsed;
-      } catch (e) {}
+    let candidate = t;
+    const s0 = t.indexOf("{");
+    const s1 = t.lastIndexOf("}");
+    if (s0 !== -1 && s1 !== -1 && s1 > s0) {
+      candidate = t.slice(s0, s1 + 1);
     }
 
+    // 1) JSON directo
     try {
-      if (t.startsWith("{") && t.endsWith("}")) {
-        const obj = Function('"use strict"; return (' + t + ");")();
-        if (obj && typeof obj === "object") return obj;
-      }
-    } catch (e) {
-      console.warn("[Components] No se pudo parsear text/plain como dict:", e);
-    }
-  }
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (e) {}
 
-  if (typeof d === "object" && !Array.isArray(d)) return d;
+    // 2) JSON reemplazando comillas simples
+    try {
+      const fixed = candidate.replace(/'/g, '"');
+      const parsed = JSON.parse(fixed);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (e) {}
+
+    // 3) Eval estilo dict Python (local, último recurso)
+    try {
+      // eslint-disable-next-line no-new-func
+      const parsed = Function('"use strict"; return (' + candidate + ");")();
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (e) {}
+  }
 
   return {};
 }
@@ -306,7 +338,7 @@ function frameMeshes(core, meshes) {
     tmp.setFromObject(m);
     if (!has) {
       box.copy(tmp);
-      has = true;          // <- AQUÍ estaba el bug (antes decía True)
+      has = true;
     } else {
       box.union(tmp);
     }
@@ -456,7 +488,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       tmp.setFromObject(m);
       if (!has) {
         box.copy(tmp);
-        has = true; // aquí aseguramos boolean JS correcto
+        has = true;
       } else {
         box.union(tmp);
       }
