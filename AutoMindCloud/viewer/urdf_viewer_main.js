@@ -18,6 +18,7 @@ export function render(opts = {}) {
 
   const core = createViewer({ container, background });
 
+  // assetKey -> meshes[]
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map();
 
@@ -32,6 +33,8 @@ export function render(opts = {}) {
   });
 
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
+
+  // offscreen thumbnails cacheado
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
   const inter = attachInteraction({
@@ -63,18 +66,21 @@ export function render(opts = {}) {
       tools.set(!!open);
     },
 
-    // se llenará al recibir respuesta de Colab
+    // Se llena luego de llamar a Colab
     componentDescriptions: {},
 
     getComponentDescription(assetKey, index) {
-      const src = app.componentDescriptions || {};
+      const src = app.componentDescriptions;
+      if (!src) return "";
 
-      if (src && typeof src === "object" && !Array.isArray(src)) {
+      // Mapa: assetKey o basename
+      if (!Array.isArray(src) && typeof src === "object") {
         if (src[assetKey]) return src[assetKey];
         const base = (assetKey || "").split("/").pop().split(".")[0];
         if (src[base]) return src[base];
       }
 
+      // Array (fallback)
       if (Array.isArray(src) && typeof index === "number") {
         return src[index] || "";
       }
@@ -92,31 +98,21 @@ export function render(opts = {}) {
     } catch (_) {}
   }
 
-  // 🔹 Capturar componentes y pedir descripciones APENAS INICIA
+  // 🔹 Llama a Colab al inicio para obtener descripciones
   bootstrapComponentDescriptions(app, assetToMeshes, off);
 
   const destroy = () => {
-    try {
-      comps.destroy();
-    } catch (_) {}
-    try {
-      tools.destroy();
-    } catch (_) {}
-    try {
-      inter.destroy();
-    } catch (_) {}
-    try {
-      off?.destroy();
-    } catch (_) {}
-    try {
-      core.destroy();
-    } catch (_) {}
+    try { comps.destroy(); } catch (_) {}
+    try { tools.destroy(); } catch (_) {}
+    try { inter.destroy(); } catch (_) {}
+    try { off?.destroy(); } catch (_) {}
+    try { core.destroy(); } catch (_) {}
   };
 
   return { ...app, destroy };
 }
 
-/* ---------------- Bootstrap: JS ↔ Colab ---------------- */
+/* ---------------- Bootstrap JS <-> Colab ---------------- */
 
 function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   const hasColab =
@@ -127,15 +123,13 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     typeof window.google.colab.kernel.invokeFunction === "function";
 
   if (!hasColab) {
-    console.debug(
-      "[Components] Colab bridge no disponible; no se solicitarán descripciones."
-    );
+    console.debug("[Components] Colab bridge no disponible; sin descripciones.");
     return;
   }
 
   const items = listAssets(assetToMeshes);
   if (!items.length) {
-    console.debug("[Components] Sin assets para describir.");
+    console.debug("[Components] No hay assets para describir.");
     return;
   }
 
@@ -151,18 +145,13 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
         const b64 = parts[1];
         entries.push({ key: ent.assetKey, image_b64: b64 });
       } catch (e) {
-        console.warn(
-          "[Components] Error generando thumbnail para",
-          ent.assetKey,
-          e
-        );
+        console.warn("[Components] Error generando thumbnail para", ent.assetKey, e);
       }
     }
 
     console.debug(
       `[Components] Enviando ${entries.length} capturas a Colab para descripción.`
     );
-
     if (!entries.length) return;
 
     try {
@@ -177,57 +166,13 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
         result
       );
 
-      let descMap = {};
-
-      // Formatos posibles:
-      // 1) result.data["application/json"] = { ... }
-      // 2) result.data["text/plain"] = "{'key': 'desc', ...}"
-      // 3) result.data[0] = { ... } (caso lista)
-      if (result && result.data) {
-        const d = result.data;
-
-        if (d["application/json"] && typeof d["application/json"] === "object") {
-          descMap = d["application/json"];
-        } else if (Array.isArray(d) && d.length && typeof d[0] === "object") {
-          descMap = d[0];
-        } else if (d["text/plain"]) {
-          const t = d["text/plain"];
-          if (typeof t === "string") {
-            try {
-              // dict de Python -> comillas simples => las pasamos a dobles
-              const fixed = t.replace(/'/g, '"');
-              const parsed = JSON.parse(fixed);
-              if (parsed && typeof parsed === "object") {
-                descMap = parsed;
-              }
-            } catch (e) {
-              console.warn(
-                "[Components] No se pudo parsear text/plain como JSON:",
-                e,
-                t
-              );
-            }
-          }
-        }
-      }
-
-      // Fallback ultra defensivo: si el propio result parece mapa
-      if (
-        (!descMap || !Object.keys(descMap).length) &&
-        result &&
-        typeof result === "object" &&
-        !Array.isArray(result) &&
-        result.data == null
-      ) {
-        descMap = result;
-      }
-
+      const descMap = extractDescMap(result);
       console.debug("[Components] Mapa de descripciones final:", descMap);
 
       if (descMap && typeof descMap === "object") {
         app.componentDescriptions = descMap;
         if (typeof window !== "undefined") {
-          window.COMPONENT_DESCRIPTIONS = descMap; // para inspeccionar en consola
+          window.COMPONENT_DESCRIPTIONS = descMap; // debug global
         }
       } else {
         console.warn(
@@ -241,6 +186,44 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
       );
     }
   })();
+}
+
+function extractDescMap(result) {
+  if (!result) return {};
+
+  // Colab suele empaquetar en result.data
+  const d = result.data || result;
+
+  // 1) application/json directo
+  if (d["application/json"] && typeof d["application/json"] === "object") {
+    return d["application/json"];
+  }
+
+  // 2) lista con objeto dentro
+  if (Array.isArray(d) && d.length && typeof d[0] === "object") {
+    return d[0];
+  }
+
+  // 3) text/plain con repr de dict Python
+  if (d["text/plain"] && typeof d["text/plain"] === "string") {
+    const t = d["text/plain"].trim();
+    try {
+      // dict python -> JSON: comillas simples a dobles
+      const jsonLike = t
+        .replace(/^dict\(/, "{")
+        .replace(/\)$/, "}")
+        .replace(/'/g, '"');
+      const parsed = JSON.parse(jsonLike);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (e) {
+      console.warn("[Components] No se pudo parsear text/plain:", e, t);
+    }
+  }
+
+  // 4) si todo falla y d ya parece mapa
+  if (typeof d === "object" && !Array.isArray(d)) return d;
+
+  return {};
 }
 
 /* ---------------- Helpers viewer ---------------- */
@@ -443,9 +426,7 @@ function installClickSound(dataURL) {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-    try {
-      src.start();
-    } catch (_) {}
+    try { src.start(); } catch (_) {}
   }
 
   window.__urdf_click__ = play;
