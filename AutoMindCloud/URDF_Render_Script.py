@@ -1,22 +1,15 @@
 # URDF_Render_Script.py
-# URDF Viewer + Bridge Colab <-> JS para descripciones de componentes.
+# Puente Colab <-> JS para descripciones de piezas del URDF.
 #
 # Uso en Colab:
 #   from URDF_Render_Script import URDF_Render
 #   URDF_Render("Model")
 #
-# Flujo:
-#   1) JS genera thumbnails base64 de cada componente al inicio.
-#   2) JS llama a google.colab.kernel.invokeFunction(
-#        "describe_component_images",
-#        [entries],
-#        {}
-#      )
-#      donde entries = [{ "key": assetKey, "image_b64": "<base64>" }, ...]
-#   3) Aquí se llama a la API externa por cada imagen.
-#   4) Se devuelve { assetKey: descripcion } al JS.
-#   5) JS guarda eso en app.componentDescriptions.
-#   6) Al hacer click en un componente, ComponentsPanel muestra la descripción.
+# JS:
+#   - Genera thumbnails base64 de cada componente al inicio.
+#   - Llama a google.colab.kernel.invokeFunction("describe_component_images", [entries], {}).
+#   - Recibe { assetKey: descripcion }.
+#   - Al hacer click en un componente, muestra la descripción en el frame del panel.
 
 import base64
 import re
@@ -71,7 +64,7 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120):
     """
     Registra el callback 'describe_component_images' una sola vez.
-    JS lo invoca vía google.colab.kernel.invokeFunction.
+    Recibe imágenes base64 desde JS y devuelve { assetKey: descripcion }.
     """
     global _COLAB_CALLBACK_REGISTERED
     if _COLAB_CALLBACK_REGISTERED:
@@ -85,9 +78,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
 
         def _describe_component_images(entries):
             """
-            entries: lista de dicts:
-              { "key": assetKey, "image_b64": "<base64_sin_prefix>" }
-            Devuelve: { assetKey: descripcion }
+            entries: [{ "key": assetKey, "image_b64": "<base64_sin_prefijo>" }, ...]
             """
             try:
                 n = len(entries)
@@ -148,7 +139,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
             )
             return results
 
-        # Registro correcto (no decorador)
         output.register_callback("describe_component_images", _describe_component_images)
         _COLAB_CALLBACK_REGISTERED = True
         print("[Colab] Callback 'describe_component_images' registrado correctamente.")
@@ -169,17 +159,16 @@ def URDF_Render(
     api_base: str = API_DEFAULT_BASE,
 ):
     """
-    Renderiza el URDF Viewer y habilita:
+    Renderiza el URDF Viewer.
 
-    - Captura de componentes en JS al inicio.
-    - Envío de imágenes a Colab.
-    - Descripciones vía API.
-    - Mapa {assetKey: descripcion} disponible en el JS.
-    - Click en componente muestra frame con esa descripción.
+    - JS captura imágenes de componentes al inicio.
+    - JS manda base64 a Colab.
+    - Colab llama a la API y responde con descripciones.
+    - JS guarda el mapa y el ComponentsPanel lo usa al hacer click.
     """
     _register_colab_callback(api_base=api_base)
 
-    # 1) Buscar /urdf y /meshes
+    # Buscar urdf/meshes
     def find_dirs(root):
         u = os.path.join(root, "urdf")
         m = os.path.join(root, "meshes")
@@ -200,7 +189,7 @@ def URDF_Render(
             f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>"
         )
 
-    # 2) Leer URDF principal
+    # URDF principal
     urdf_files = [
         os.path.join(urdf_dir, f)
         for f in os.listdir(urdf_dir)
@@ -212,7 +201,7 @@ def URDF_Render(
     )
 
     urdf_raw = ""
-    mesh_refs = []
+    mesh_refs: list[str] = []
 
     for upath in urdf_files:
         try:
@@ -232,7 +221,7 @@ def URDF_Render(
         with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
             urdf_raw = f.read().lstrip("\ufeff")
 
-    # 3) Construir meshDB (key -> base64)
+    # Construir meshDB
     disk_files = []
     for root, _, files in os.walk(meshes_dir):
         for name in files:
@@ -252,8 +241,8 @@ def URDF_Render(
         by_rel[rel] = path
         by_base[os.path.basename(path).lower()] = path
 
-    _cache = {}
-    mesh_db = {}
+    _cache: dict[str, str] = {}
+    mesh_db: dict[str, str] = {}
 
     def b64(path: str) -> str:
         if path not in _cache:
@@ -296,7 +285,7 @@ def URDF_Render(
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
 
-    # 4) HTML que carga urdf_viewer_main.js remoto
+    # HTML que carga el viewer modularizado
     html = f"""<!doctype html>
 <html lang="en">
 <head>
