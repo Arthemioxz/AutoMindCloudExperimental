@@ -1,64 +1,7 @@
 # ==========================================================
 # URDF_Render_Script.py  (versión optimizada con batch IA + logs)
 # ==========================================================
-# Puente Colab <-> JS para descripciones de piezas del URDF.
-#
-# Uso en Colab:
-#   from URDF_Render_Script import URDF_Render
-#   URDF_Render("Model")
-# ==========================================================
-
-import base64
-import re
-import os
-import json
-import shutil
-import zipfile
-import requests
-from IPython.display import HTML
-
-API_DEFAULT_BASE = "https://gpt-proxy-github-619255898589.us-central1.run.app"
-API_INFER_PATH = "/infer"
-
-_COLAB_CALLBACK_REGISTERED = False
-
-
-def Download_URDF(Drive_Link, Output_Name="Model"):
-    root_dir = "/content"
-    file_id = Drive_Link.split("/d/")[1].split("/")[0]
-    url = f"https://drive.google.com/uc?id={file_id}"
-    zip_path = os.path.join(root_dir, Output_Name + ".zip")
-    tmp_extract = os.path.join(root_dir, f"__tmp_extract_{Output_Name}")
-    final_dir = os.path.join(root_dir, Output_Name)
-
-    if os.path.exists(tmp_extract):
-        shutil.rmtree(tmp_extract)
-    os.makedirs(tmp_extract, exist_ok=True)
-    if os.path.exists(final_dir):
-        shutil.rmtree(final_dir)
-
-    import gdown
-    gdown.download(url, zip_path, quiet=True)
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(tmp_extract)
-
-    def junk(n: str) -> bool:
-        return n.startswith(".") or n == "__MACOSX"
-
-    top = [n for n in os.listdir(tmp_extract) if not junk(n)]
-    if len(top) == 1 and os.path.isdir(os.path.join(tmp_extract, top[0])):
-        shutil.move(os.path.join(tmp_extract, top[0]), final_dir)
-    else:
-        os.makedirs(final_dir, exist_ok=True)
-        for n in top:
-            shutil.move(os.path.join(tmp_extract, n), os.path.join(final_dir, n))
-
-    shutil.rmtree(tmp_extract, ignore_errors=True)
-    return final_dir
-
-
-# ==========================================================
+# Pue=============
 # Callback batch: recibe TODAS o mini-lotes de imágenes
 # ==========================================================
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90):
