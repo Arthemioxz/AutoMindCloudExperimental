@@ -1,10 +1,12 @@
 # ==========================================================
-# URDF_Render_Script.py  (Fullscreen + batch IA + compresión ~5KB)
+# URDF_Render_Script.py
+# Fullscreen + thumbnails + batch IA con compresión ~5KB
 # ==========================================================
-# - Full-screen viewer (Colab/Jupyter/VSCode)
-# - Descripciones de componentes vía callback Colab -> API externa
-# - SOLO las imágenes enviadas a la API se comprimen a ~5KB
-# - Thumbnails del panel usan la imagen que genera el viewer (no se tocan aquí)
+# - Viewer fullscreen (Colab/Jupyter/VSCode).
+# - JS genera thumbnails por componente.
+# - Se mandan a Colab via kernel.invokeFunction("describe_component_images").
+# - Aquí se COMPRIMEN a ~5KB SOLO para la API (thumbnails visuales no se tocan).
+# - Respuesta de la API se parsea robustamente a { pieza: descripcion }.
 # ==========================================================
 
 import base64
@@ -60,7 +62,7 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 
 # ==========================================================
-# Helper: comprimir base64 a ~target_kb (solo copia para API)
+# Helper: comprimir base64 a ~target_kb (solo copia API)
 # ==========================================================
 def _shrink_to_approx_kb(img_b64: str, target_kb: int = 5) -> str:
     try:
@@ -96,6 +98,58 @@ def _shrink_to_approx_kb(img_b64: str, target_kb: int = 5) -> str:
         return base64.b64encode(buf.getvalue()).decode("ascii")
     except Exception:
         return img_b64
+
+
+# ==========================================================
+# Parser robusto para salida de la API -> dict
+# ==========================================================
+def _coerce_to_desc_map(parsed, keys_hint=None):
+    """
+    Normaliza diferentes formatos a:
+      { pieza: descripcion }
+    keys_hint: lista de nombres esperados (assetKey) enviada a la API.
+    """
+    if isinstance(parsed, dict):
+        # Aceptamos tal cual si tiene al menos 1 valor string
+        out = {}
+        for k, v in parsed.items():
+            if isinstance(v, (str, int, float)):
+                out[str(k)] = str(v)
+        if out:
+            return out
+
+    # Lista de objetos tipo {key, description} o {name, text}
+    if isinstance(parsed, list):
+        out = {}
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            k = item.get("key") or item.get("id") or item.get("name")
+            v = (
+                item.get("description")
+                or item.get("desc")
+                or item.get("text")
+                or item.get("value")
+            )
+            if k and v:
+                out[str(k)] = str(v)
+        if out:
+            return out
+
+    # Si tenemos keys_hint y un string plano, intentar heurísticas rápidas
+    if isinstance(parsed, str) and keys_hint:
+        text = parsed
+        out = {}
+        for k in keys_hint:
+            # Busca líneas como "k: algo"
+            pattern = re.compile(rf"{re.escape(k)}\s*[:\-]\s*(.+)")
+            m = pattern.search(text)
+            if m:
+                out[k] = m.group(1).strip()
+        if out:
+            return out
+
+    return None
 
 
 # ==========================================================
@@ -136,11 +190,11 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
 
                 mime = item.get("mime") or "image/png"
 
-                # Solo comprimimos la COPIA que va a la API
+                # Solo comprimimos la copia que va a la API
                 small_b64 = _shrink_to_approx_kb(img_b64, target_kb=5)
                 mime_out = "image/jpeg" if small_b64 != img_b64 else mime
 
-                keys.append(key)
+                keys.append(str(key))
                 imgs.append({"image_b64": small_b64, "mime": mime_out})
 
             if not imgs:
@@ -149,16 +203,21 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
 
             print(f"[Colab] 🚀 Enviando {len(imgs)} imágenes comprimidas al modelo...")
 
-            text = (
-                "Describe con certeza y tono técnico cada componente mostrado en las imágenes del robot URDF. "
-                "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre de la pieza (de la lista 'keys') "
-                "y cada valor una descripción breve en español (máx. 5 frases) indicando directamente su función mecánica, "
-                "posición aproximada en el robot y tipo de unión o movimiento, SIN usar expresiones como "
-                "'la imagen muestra', 'parece ser', 'probablemente' ni 'la pieza muestra'. "
-                + json.dumps({"keys": keys}, ensure_ascii=False)
+            prompt = (
+                "Eres un sistema de documentación técnica de robots URDF. "
+                "Para cada imagen devuelta, responde EXCLUSIVAMENTE un JSON plano. "
+                "Formato: {\"nombre_pieza\": \"descripcion\"}. "
+                "Cada descripcion: máx 5 frases, tono técnico, directo, "
+                "sin frases como 'la imagen muestra', 'parece ser', "
+                "'probablemente', 'la pieza muestra'. "
+                "Incluye función mecánica, ubicación aproximada en el robot y tipo de unión/movimiento. "
+                "Usa exactamente como claves los nombres de pieza entregados en 'keys'."
             )
 
-            payload = {"text": text, "images": imgs}
+            payload = {
+                "text": prompt + "\nkeys=" + json.dumps(keys, ensure_ascii=False),
+                "images": imgs,
+            }
 
             try:
                 r = requests.post(infer_url, json=payload, timeout=timeout)
@@ -175,9 +234,10 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                 print("[Colab] ⚠️ Respuesta vacía del modelo.")
                 return {}
 
-            def parse_json(s: str):
-                # intenta JSON directo o el primer bloque {...}
+            # ---- Intento 1: JSON directo / bloque principal ----
+            def parse_json_block(s: str):
                 s = s.strip()
+                # intenta bloque más grande {...}
                 s0, s1 = s.find("{"), s.rfind("}")
                 if s0 != -1 and s1 != -1 and s1 > s0:
                     candidate = s[s0 : s1 + 1]
@@ -186,19 +246,50 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                 try:
                     return json.loads(candidate)
                 except Exception:
-                    # intenta reemplazando comillas simples estilo dict Python
+                    # intenta con comillas simples a dobles
                     try:
                         fixed = candidate.replace("'", '"')
                         return json.loads(fixed)
                     except Exception:
                         return None
 
-            parsed = parse_json(raw)
-            if isinstance(parsed, dict):
-                print(f"[Colab] ✅ JSON parseado correctamente ({len(parsed)} claves).")
-                return parsed
+            parsed = None
+            # si viene JSON puro
+            parsed = parse_json_block(raw)
 
-            print(f"[Colab] ⚠️ No se pudo interpretar JSON, preview:\n{raw[:400]}")
+            # ---- Intento 2: si no salió, quizá viene como dict Python en text/plain ----
+            if parsed is None and raw.startswith("{") and raw.endswith("}"):
+                try:
+                    # eval controlado (sólo para dict literal)
+                    parsed = eval(raw, {"__builtins__": {}})
+                except Exception:
+                    parsed = None
+
+            # ---- Intento 3: si API devolvió algo YAML-ish o líneas ----
+            if parsed is None and any(k in raw for k in keys):
+                # construir dict simple key: resto de línea
+                tmp = {}
+                for line in raw.splitlines():
+                    line = line.strip()
+                    if not line or ":" not in line:
+                        continue
+                    k, v = line.split(":", 1)
+                    k = k.strip().strip('"').strip("'")
+                    v = v.strip()
+                    if k in keys and v:
+                        tmp[k] = v
+                if tmp:
+                    parsed = tmp
+
+            # Normalizar a {pieza: desc}
+            desc_map = _coerce_to_desc_map(parsed, keys_hint=keys) if parsed is not None else {}
+
+            if isinstance(desc_map, dict) and desc_map:
+                print(f"[Colab] ✅ Mapa de descripciones generado ({len(desc_map)} claves).")
+                return desc_map
+
+            print("[Colab] ⚠️ No se pudo interpretar respuesta del modelo como JSON utilizable.")
+            print(raw[:400])
             return {}
 
         output.register_callback("describe_component_images", _describe_component_images)
