@@ -1,575 +1,268 @@
-# ==========================================================
-# URDF_Render_Script.py
-# Puente Colab <-> JS para descripciones de piezas del URDF.
-# Versión: batch con fallback seguro
-# ==========================================================
-#
-# Uso en Colab:
-#   from URDF_Render_Script import URDF_Render
-#   URDF_Render("URDFModel2")
-#
-# JS (desde AutoMindCloudExperimental):
-#   - Genera thumbnails base64 de cada componente al inicio.
-#   - Llama:
-#       google.colab.kernel.invokeFunction(
-#           "describe_component_images",
-#           [entries],
-#           {}
-#       )
-#     donde entries = [{ "key": assetKey, "image_b64": "<b64_sin_prefijo>" }, ...]
-#   - Recibe { assetKey: descripcion }.
-#   - ComponentsPanel muestra la descripción al hacer click.
-
-import base64
-import re
+# /URDF_Render_Script.py
+# Render URDF + integrar viewer modular + callback describe_component_images (3 mecanismos)
 import os
+import re
 import json
-import shutil
-import zipfile
+import base64
+import mimetypes
+import textwrap
+from pathlib import Path
+
 import requests
-from IPython.display import HTML
+from IPython.display import HTML, display
+from google.colab import output
 
-API_DEFAULT_BASE = "https://gpt-proxy-github-619255898589.us-central1.run.app"
-API_INFER_PATH = "/infer"
+# ==========================
+# Config
+# ==========================
 
-_COLAB_CALLBACK_REGISTERED = False
+# Endpoints:
+# - Puedes sobreescribir con AUTOCLOUD_API_BASE o pasando api_base a register/render.
+DEFAULT_API_BASE = os.environ.get(
+    "AUTOMINDCLOUD_API_BASE",
+    "https://gpt-proxy-github-619255898589.us-central1.run.app"
+).rstrip("/")
 
+# ==========================
+# Helper: llamada HTTP
+# ==========================
 
-# ==========================================================
-# Download_URDF (tu implementación original)
-# ==========================================================
-def Download_URDF(Drive_Link, Output_Name="Model"):
-    root_dir = "/content"
-    file_id = Drive_Link.split("/d/")[1].split("/")[0]
-    url = f"https://drive.google.com/uc?id={file_id}"
-    zip_path = os.path.join(root_dir, Output_Name + ".zip")
-    tmp_extract = os.path.join(root_dir, f"__tmp_extract_{Output_Name}")
-    final_dir = os.path.join(root_dir, Output_Name)
+def _call_api(api_base, text, images, timeout=90):
+    """
+    Llama a /infer de tu API.
+    images: lista de {image_b64, mime}
+    Devuelve texto (lo que responda el modelo).
+    """
+    url = f"{api_base}/infer"
+    payload = {"text": text}
+    if images:
+        payload["images"] = images
 
-    if os.path.exists(tmp_extract):
-        shutil.rmtree(tmp_extract)
-    os.makedirs(tmp_extract, exist_ok=True)
-    if os.path.exists(final_dir):
-        shutil.rmtree(final_dir)
+    r = requests.post(url, json=payload, timeout=timeout)
+    r.raise_for_status()
+    return r.text.strip()
 
-    import gdown
+# ==========================
+# Callback Colab (3 mecanismos)
+# ==========================
 
-    gdown.download(url, zip_path, quiet=True)
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(tmp_extract)
+def _register_describe_callback(api_base=None):
+    api_base = (api_base or DEFAULT_API_BASE).rstrip("/")
 
-    def junk(n: str) -> bool:
-        return n.startswith(".") or n == "__MACOSX"
+    def _describe_component_images(entries):
+        """
+        entries: lista de { "key": str, "image_b64": str }
+        Devuelve JSON (str) con { key: "descripcion" }.
 
-    top = [n for n in os.listdir(tmp_extract) if not junk(n)]
-    if len(top) == 1 and os.path.isdir(os.path.join(tmp_extract, top[0])):
-        shutil.move(os.path.join(tmp_extract, top[0]), final_dir)
-    else:
-        os.makedirs(final_dir, exist_ok=True)
-        for n in top:
-            shutil.move(os.path.join(tmp_extract, n), os.path.join(final_dir, n))
+        M1: batch único
+        M2: mini-batches (incremental)
+        M3: fallback 1x1
+        """
+        if not entries:
+            return "{}"
 
-    shutil.rmtree(tmp_extract, ignore_errors=True)
-    return final_dir
+        # Normaliza entradas
+        keys = []
+        imgs = []
+        for e in entries:
+            k = str(e.get("key", "")).strip()
+            b64 = str(e.get("image_b64", "")).strip()
+            if not k or not b64:
+                continue
+            keys.append(k)
+            imgs.append({"image_b64": b64, "mime": "image/png"})
 
+        if not keys:
+            return "{}"
 
-# ==========================================================
-# Callback describe_component_images
-#   - Intenta batch (todas las imágenes en 1 request)
-#   - Si falla o no hay JSON utilizable → fallback 1x1
-# ==========================================================
-def _register_colab_callback(
-    api_base: str = API_DEFAULT_BASE,
-    timeout: int = 90,
-):
-    global _COLAB_CALLBACK_REGISTERED
-    if _COLAB_CALLBACK_REGISTERED:
-        return
+        total = len(keys)
+        results = {}
+        timeout = 90
+
+        # ---------- M1: batch único ----------
+        try:
+            print(f"[AC] M1: batch único con {total} imágenes…")
+            text = (
+                "Eres un ingeniero mecánico. Describe brevemente cada componente del robot "
+                "que aparece en las imágenes. Devuelve SOLO un JSON (objeto) donde cada clave "
+                "sea exactamente el 'key' recibido y el valor sea una descripción corta en español "
+                "(1 a 2 frases, sin saltos de línea)."
+            )
+            raw = _call_api(api_base, text, imgs, timeout)
+            maybe = json.loads(raw)
+            if isinstance(maybe, dict):
+                ok = 0
+                for k in keys:
+                    v = maybe.get(k)
+                    if isinstance(v, str) and v.strip():
+                        results[k] = v.strip()
+                        ok += 1
+                if ok:
+                    print(f"[AC] ✅ M1 OK ({ok}/{total})")
+                    return json.dumps(results, ensure_ascii=False)
+            print("[AC] ⚠️ M1 sin JSON usable completo, paso a M2.")
+        except Exception as e:
+            print(f"[AC] ⚠️ M1 falló: {e}")
+
+        # ---------- M2: mini-batches ----------
+        BATCH = 8
+        for i in range(0, total, BATCH):
+            sub_keys = keys[i:i + BATCH]
+            sub_imgs = imgs[i:i + BATCH]
+            batch_id = i // BATCH + 1
+            try:
+                print(f"[AC] M2: batch {batch_id} ({len(sub_keys)} imágenes)…")
+                text = (
+                    "Describe brevemente cada componente del robot. Devuelve SOLO un JSON "
+                    "objeto key→descripcion (en español, 1–2 frases)."
+                )
+                raw = _call_api(api_base, text, sub_imgs, timeout)
+                maybe = json.loads(raw)
+                if isinstance(maybe, dict):
+                    got = 0
+                    for k in sub_keys:
+                        if k not in results:
+                            v = maybe.get(k)
+                            if isinstance(v, str) and v.strip():
+                                results[k] = v.strip()
+                                got += 1
+                    print(f"[AC] ✅ M2 batch {batch_id} OK ({got}/{len(sub_keys)})")
+                else:
+                    print(f"[AC] ⚠️ M2 batch {batch_id}: respuesta no es JSON objeto.")
+            except Exception as e:
+                print(f"[AC] ⚠️ M2 batch {batch_id} falló: {e}")
+
+        # ---------- M3: fallback 1x1 ----------
+        missing = [k for k in keys if k not in results]
+        if missing:
+            print(f"[AC] M3: fallback 1x1 para {len(missing)} piezas…")
+
+        for idx, k in enumerate(keys):
+            if k in results:
+                continue
+            img = imgs[idx]
+            try:
+                text = (
+                    "Describe brevemente la pieza del robot que se ve en esta imagen. "
+                    "Devuelve una frase corta en español."
+                )
+                raw = _call_api(api_base, text, [img], timeout)
+                desc = ""
+                # Puede responder texto plano o JSON
+                try:
+                    maybe = json.loads(raw)
+                    if isinstance(maybe, str):
+                        desc = maybe
+                    elif isinstance(maybe, dict) and maybe:
+                        # toma el primer valor string
+                        for v in maybe.values():
+                            if isinstance(v, str) and v.strip():
+                                desc = v
+                                break
+                    else:
+                        desc = str(raw)
+                except Exception:
+                    desc = str(raw)
+                results[k] = (desc or "").strip()
+                print(f"[AC] ✅ M3 {k}: OK")
+            except Exception as e:
+                print(f"[AC] ❌ M3 {k}: {e}")
+                results[k] = ""
+
+        print(f"[AC] ✅ Callback completado ({len(results)}/{total})")
+        return json.dumps(results, ensure_ascii=False)
 
     try:
-        from google.colab import output  # type: ignore
-
-        api_base = api_base.rstrip("/")
-        infer_url = api_base + API_INFER_PATH
-
-        def _parse_json_flexible(raw: str):
-            """Intenta parsear un JSON {..} desde el texto."""
-            if not raw:
-                return None
-            raw = raw.strip()
-            # Intento directo
-            try:
-                val = json.loads(raw)
-                if isinstance(val, dict):
-                    return val
-            except Exception:
-                pass
-            # Buscar bloque {...}
-            s0 = raw.find("{")
-            s1 = raw.rfind("}")
-            if s0 != -1 and s1 != -1 and s1 > s0:
-                try:
-                    val = json.loads(raw[s0 : s1 + 1])
-                    if isinstance(val, dict):
-                        return val
-                except Exception:
-                    pass
-            return None
-
-        def _call_api(text: str, images, timeout: int):
-            """Llama a /infer con el payload dado, devuelve texto o levanta."""
-            r = requests.post(
-                infer_url,
-                json={"text": text, "images": images},
-                timeout=timeout,
-            )
-            if r.status_code != 200:
-                raise RuntimeError(
-                    f"HTTP {r.status_code}: {(r.text or '')[:200].replace(chr(10), ' ')}"
-                )
-            return (r.text or "").strip()
-
-        def _describe_component_images(entries):
-            """
-            Callback invocado desde JS.
-
-            entries: [{ "key": assetKey, "image_b64": "<b64_sin_prefijo>" }, ...]
-            Debe devolver: { assetKey: descripcion }
-            """
-            try:
-                n = len(entries)
-            except TypeError:
-                n = 0
-            print(f"[Colab] describe_component_images: recibido {n} entradas.")
-
-            if not isinstance(entries, (list, tuple)) or n == 0:
-                print("[Colab] ❌ entries vacío o no es lista.")
-                return {}
-
-            # Normalizar/filtrar
-            keys = []
-            imgs = []
-            for i, item in enumerate(entries):
-                if not isinstance(item, dict):
-                    print(f"[Colab] ⚠️ item {i} no dict: {item}")
-                    continue
-                key = item.get("key")
-                img_b64 = item.get("image_b64")
-                if not key or not isinstance(img_b64, str) or not img_b64.strip():
-                    print(f"[Colab] ⚠️ item {i} sin key o image_b64 válido.")
-                    continue
-                keys.append(str(key))
-                imgs.append({"image_b64": img_b64.strip(), "mime": "image/png"})
-
-            if not keys:
-                print("[Colab] ❌ No hay imágenes válidas tras filtrar.")
-                return {}
-
-            # =====================================================
-            # 1) Intento BATCH: todas las imágenes en una sola call
-            # =====================================================
-            print(f"[Colab] 🚀 Intentando batch con {len(keys)} imágenes...")
-
-            batch_instructions = {
-                "keys": keys,
-                "rules": [
-                    "Responde EXCLUSIVAMENTE con un JSON válido (sin texto extra).",
-                    "Cada clave del JSON debe ser exactamente uno de los valores de 'keys'.",
-                    "Cada valor: máximo 2 frases en español.",
-                    "Describe función mecánica, ubicación aproximada en el robot y tipo de unión/movimiento.",
-                ],
-            }
-
-            batch_text = (
-                "Eres un generador de JSON estricto.\n"
-                "Para las imágenes de componentes de robot que se adjuntan, sigue estas reglas:\n"
-                + json.dumps(batch_instructions, ensure_ascii=False)
-            )
-
-            results: dict[str, str] = {}
-
-            try:
-                raw = _call_api(batch_text, imgs, timeout)
-                print(
-                    f"[Colab] Batch respuesta len={len(raw)}. Intentando parsear JSON..."
-                )
-                parsed = _parse_json_flexible(raw)
-                if isinstance(parsed, dict):
-                    # Filtrar solo las keys que conocemos
-                    for k, v in parsed.items():
-                        if k in keys:
-                            if isinstance(v, (dict, list)):
-                                v = json.dumps(v, ensure_ascii=False)
-                            results[k] = (str(v).strip() if v is not None else "")
-                    if results:
-                        print(
-                            f"[Colab] ✅ Batch OK: {len(results)} descripciones mapeadas."
-                        )
-                        return results
-                    else:
-                        print(
-                            "[Colab] ⚠️ Batch JSON parseado pero sin claves válidas."
-                        )
-                else:
-                    print("[Colab] ⚠️ Batch no devolvió JSON interpretable.")
-            except Exception as e:
-                print(f"[Colab] ⚠️ Batch falló: {e}")
-
-            # =====================================================
-            # 2) Fallback: modo 1x1 (compatible con tu versión previa)
-            # =====================================================
-            print(
-                "[Colab] ↩️ Usando fallback 1x1 (una request por imagen, más lento pero seguro)."
-            )
-            for key, img in zip(keys, imgs):
-                single_text = (
-                    "Describe brevemente qué pieza de robot se ve en esta imagen. "
-                    "Indica su función mecánica, la zona aproximada del robot "
-                    "y el tipo de unión o movimiento que sugiere. Español, máximo 2 frases."
-                )
-                try:
-                    raw = _call_api(single_text, [img], timeout)
-                except Exception as e:
-                    print(f"[Colab] ❌ Error API para {key}: {e}")
-                    results[key] = ""
-                    continue
-
-                # raw aquí es texto libre → lo usamos directo
-                desc = (raw or "").strip()
-                # si por error vino JSON, lo aplastamos a string corto
-                try:
-                    maybe = json.loads(desc)
-                    if isinstance(maybe, (dict, list)):
-                        desc = json.dumps(maybe, ensure_ascii=False)
-                except Exception:
-                    pass
-                results[key] = desc
-
-            print(
-                f"[Colab] ✅ Fallback completado: {len(results)} descripciones generadas."
-            )
-            return results
-
         output.register_callback("describe_component_images", _describe_component_images)
-        _COLAB_CALLBACK_REGISTERED = True
-        print("[Colab] ✅ Callback 'describe_component_images' registrado (batch+fallback).")
-
+        print("[AC] Callback 'describe_component_images' registrado (3 mecanismos).")
     except Exception as e:
-        print(
-            f"[Colab] ❌ No se pudo registrar callback describe_component_images: {e}"
-        )
+        print(f"[AC] ⚠️ No se pudo registrar callback: {e}")
+
+# ==========================
+# Helper: construir HTML viewer
+# ==========================
+
+def _b64_file(path: Path) -> str:
+    return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-# ==========================================================
-# URDF_Render
-#   - Igual que tu versión (viewer completo)
-#   - Solo añade registro del callback al inicio
-# ==========================================================
+def _collect_mesh_db(mesh_root: Path):
+    mesh_db = {}
+    if not mesh_root or not mesh_root.exists():
+        return mesh_db
+    for p in mesh_root.rglob("*"):
+        if not p.is_file():
+            continue
+        ext = p.suffix.lower().lstrip(".")
+        if not ext:
+            continue
+        mime, _ = mimetypes.guess_type(p.name)
+        if not mime:
+            mime = "application/octet-stream"
+        b64 = _b64_file(p)
+        mesh_db[p.as_posix()] = b64
+    return mesh_db
+
+
 def URDF_Render(
-    folder_path: str = "Model",
-    select_mode: str = "link",
-    background: int | None = 0xFFFFFF,
-    repo: str = "Arthemioxz/AutoMindCloudExperimental",
-    branch: str = "main",
-    compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
-    api_base: str = API_DEFAULT_BASE,
+    urdf_path: str,
+    mesh_dir: str,
+    api_base: str = None,
+    width: str = "100%",
+    height: str = "520px",
 ):
-    _register_colab_callback(api_base=api_base)
+    """
+    Renderiza un URDF con el viewer modularizado + integra el sistema de descripciones.
+    - urdf_path: ruta al .urdf
+    - mesh_dir: carpeta con meshes/texturas
+    """
+    api_base = (api_base or DEFAULT_API_BASE).rstrip("/")
 
-    # --------- localizar /urdf y /meshes ---------
-    def find_dirs(root):
-        u = os.path.join(root, "urdf")
-        m = os.path.join(root, "meshes")
-        if os.path.isdir(u) and os.path.isdir(m):
-            return u, m
-        if os.path.isdir(root):
-            for name in os.listdir(root):
-                cand = os.path.join(root, name)
-                uu = os.path.join(cand, "urdf")
-                mm = os.path.join(cand, "meshes")
-                if os.path.isdir(uu) and os.path.isdir(mm):
-                    return uu, mm
-        return None, None
+    urdf_path = Path(urdf_path)
+    mesh_root = Path(mesh_dir)
 
-    urdf_dir, meshes_dir = find_dirs(folder_path)
-    if not urdf_dir or not meshes_dir:
-        return HTML(
-            f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>"
-        )
+    if not urdf_path.exists():
+        raise FileNotFoundError(f"URDF no encontrado: {urdf_path}")
+    if not mesh_root.exists():
+        raise FileNotFoundError(f"Carpeta meshes no encontrada: {mesh_root}")
 
-    # --------- URDF principal ---------
-    urdf_files = [
-        os.path.join(urdf_dir, f)
-        for f in os.listdir(urdf_dir)
-        if f.lower().endswith(".urdf")
-    ]
-    urdf_files.sort(
-        key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
-        reverse=True,
-    )
+    urdf_text = urdf_path.read_text(encoding="utf-8")
+    mesh_db = _collect_mesh_db(mesh_root)
 
-    urdf_raw = ""
-    mesh_refs: list[str] = []
+    # Registra callback (3 mecanismos)
+    _register_describe_callback(api_base)
 
-    for upath in urdf_files:
-        try:
-            with open(upath, "r", encoding="utf-8", errors="ignore") as f:
-                txt = f.read().lstrip("\ufeff")
-            refs = re.findall(
-                r'filename="([^"]+\.(?:stl|dae))"', txt, re.IGNORECASE
-            )
-            if refs:
-                urdf_raw = txt
-                mesh_refs = list(dict.fromkeys(refs))
-                break
-        except Exception:
-            pass
+    # HTML con viewer modular
+    # Importa /viewer/urdf_viewer_main.js desde tu repo (ESM) y llama a render(opts)
+    mesh_db_json = json.dumps(mesh_db)
+    urdf_json = json.dumps(urdf_text)
 
-    if not urdf_raw and urdf_files:
-        with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
-            urdf_raw = f.read().lstrip("\ufeff")
+    html = f"""
+    <div id="urdf-viewer-root" style="width:{width};height:{height};border-radius:16px;overflow:hidden;border:1px solid #d7e7e7;"></div>
+    <script type="module">
+      import * as mod from "https://cdn.jsdelivr.net/gh/ArtemioA/AutoMindCloudExperimental/viewer/urdf_viewer_main.js";
 
-    # --------- Construir meshDB ---------
-    disk_files = []
-    for root, _, files in os.walk(meshes_dir):
-        for name in files:
-            if name.lower().endswith(
-                (".stl", ".dae", ".png", ".jpg", ".jpeg")
-            ):
-                disk_files.append(os.path.join(root, name))
+      const container = document.getElementById("urdf-viewer-root");
 
-    meshes_root_abs = os.path.abspath(meshes_dir)
-    by_rel, by_base = {}, {}
-    for path in disk_files:
-        rel = (
-            os.path.relpath(os.path.abspath(path), meshes_root_abs)
-            .replace("\\", "/")
-            .lower()
-        )
-        by_rel[rel] = path
-        by_base[os.path.basename(path).lower()] = path
+      const opts = {{
+        container,
+        urdfContent: {urdf_json},
+        meshDB: {mesh_db_json},
+        selectMode: "link",
+        background: 0xffffff,
+        pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+        autoResize: true
+      }};
 
-    _cache: dict[str, str] = {}
-    mesh_db: dict[str, str] = {}
-
-    def b64(path: str) -> str:
-        if path not in _cache:
-            with open(path, "rb") as f:
-                _cache[path] = base64.b64encode(f.read()).decode("ascii")
-        return _cache[path]
-
-    def add_entry(key: str, path: str):
-        k = key.replace("\\", "/").lower().lstrip("./")
-        if k.startswith("package://"):
-            k = k[len("package://") :]
-        if k not in mesh_db:
-            mesh_db[k] = b64(path)
-
-    for ref in mesh_refs:
-        raw = ref.replace("\\", "/").lower().lstrip("./")
-        pkg = raw[10:] if raw.startswith("package://") else raw
-        bn = os.path.basename(raw).lower()
-        cand = by_rel.get(raw) or by_rel.get(pkg) or by_base.get(bn)
-        if cand:
-            add_entry(raw, cand)
-            add_entry(pkg, cand)
-            add_entry(bn, cand)
-
-    for path in disk_files:
-        bn = os.path.basename(path).lower()
-        if bn.endswith((".png", ".jpg", ".jpeg")) and bn not in mesh_db:
-            add_entry(bn, path)
-
-    def esc(s: str) -> str:
-        return (
-            s.replace("\\", "\\\\")
-            .replace("`", "\\`")
-            .replace("$", "\\$")
-            .replace("</script>", "<\\/script>")
-        )
-
-    urdf_js = esc(urdf_raw)
-    mesh_js = json.dumps(mesh_db)
-    bg_js = "null" if background is None else str(int(background))
-    sel_js = json.dumps(select_mode)
-
-    # --------- HTML (igual enfoque original: fullscreen + jsdelivr) ---------
-    html = f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>
-<title>URDF Viewer</title>
-<style>
-  :root {{
-    --vh: 1vh;
-  }}
-  html, body {{
-    margin:0;
-    padding:0;
-    width:100%;
-    height:100dvh;
-    overflow:hidden;
-    background:#{int(background or 0xFFFFFF):06x};
-  }}
-  @supports not (height: 100dvh) {{
-    html, body {{ height: calc(var(--vh) * 100); }}
-  }}
-  body {{
-    padding-top: env(safe-area-inset-top);
-    padding-right: env(safe-area-inset-right);
-    padding-bottom: env(safe-area-inset-bottom);
-    padding-left: env(safe-area-inset-left);
-  }}
-  #app {{
-    position:fixed;
-    inset:0;
-    width:100vw;
-    height:100dvh;
-    touch-action:none;
-  }}
-  @supports not (height: 100dvh) {{
-    #app {{ height: calc(var(--vh) * 100); }}
-  }}
-  .badge {{
-    position:fixed;
-    right:14px;
-    bottom:12px;
-    z-index:10;
-    user-select:none;
-    pointer-events:none;
-  }}
-  .badge img {{
-    max-height:40px;
-    display:block;
-  }}
-</style>
-</head>
-<body>
-<div id="app"></div>
-<div class="badge">
-  <img src="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png" alt="AutoMind"/>
-</div>
-
-<script>
-  function applyVHVar() {{
-    const vh = (window.visualViewport?.height || window.innerHeight || 600) * 0.01;
-    document.documentElement.style.setProperty('--vh', vh + 'px');
-  }}
-  applyVHVar();
-  function setColabFrameHeight() {{
-    const h = Math.ceil(
-      (window.visualViewport?.height ||
-       window.innerHeight ||
-       document.documentElement.clientHeight || 600)
-    );
-    try {{
-      if (window.google?.colab?.output?.setIframeHeight) {{
-        window.google.colab.output.setIframeHeight(h, true);
-      }}
-    }} catch(e) {{}}
-  }}
-  const ro = new ResizeObserver(() => {{
-    applyVHVar();
-    setColabFrameHeight();
-  }});
-  ro.observe(document.body);
-  window.addEventListener('resize', () => {{
-    applyVHVar();
-    setColabFrameHeight();
-  }});
-  if (window.visualViewport) {{
-    window.visualViewport.addEventListener('resize', () => {{
-      applyVHVar();
-      setColabFrameHeight();
-    }});
-  }}
-  setTimeout(setColabFrameHeight, 50);
-</script>
-
-<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
-
-<script type="module">
-  const repo = {json.dumps(repo)};
-  const branch = {json.dumps(branch)};
-  const compFile = {json.dumps(compFile)};
-
-  async function latest() {{
-    try {{
-      const api = 'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
-      const r = await fetch(api, {{
-        headers: {{ 'Accept': 'application/vnd.github+json' }},
-        cache: 'no-store'
-      }});
-      if (!r.ok) throw 0;
-      const j = await r.json();
-      return (j.sha || '').slice(0, 7) || branch;
-    }} catch (_e) {{
-      return branch;
-    }}
-  }}
-
-  const SELECT_MODE = {sel_js};
-  const BACKGROUND = {bg_js};
-
-  const opts = {{
-    container: document.getElementById('app'),
-    urdfContent: `{urdf_js}`,
-    meshDB: {mesh_js},
-    selectMode: SELECT_MODE,
-    background: BACKGROUND,
-    pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
-    autoResize: true,
-  }};
-
-  let mod = null;
-  try {{
-    const ver = await latest();
-    const base = 'https://cdn.jsdelivr.net/gh/' + repo + '@' + ver + '/';
-    mod = await import(base + compFile + '?v=' + Date.now());
-    console.debug('[URDF] Cargado viewer desde commit', ver);
-  }} catch (_e) {{
-    console.debug('[URDF] Fallback a branch', branch);
-    mod = await import(
-      'https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now()
-    );
-  }}
-
-  if (!mod || typeof mod.render !== 'function') {{
-    console.error('[URDF] No se pudo cargar el módulo de entrada o no expone render()');
-  }} else {{
-    const app = mod.render(opts);
-    window.URDF_APP = app;
-
-    function onResize() {{
       try {{
-        if (app && typeof app.resize === 'function') {{
-          const w = window.innerWidth || document.documentElement.clientWidth;
-          const h = (
-            window.visualViewport?.height ||
-            window.innerHeight ||
-            document.documentElement.clientHeight
-          );
-          app.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
+        if (!mod || typeof mod.render !== "function") {{
+          console.error("[URDF] urdf_viewer_main.js debe exportar function render(opts).");
+        }} else {{
+          mod.render(opts);
         }}
-      }} catch(e) {{
-        console.warn('[URDF] Error en resize:', e);
+      }} catch (e) {{
+        console.error("[URDF] Error al inicializar viewer:", e);
       }}
-    }}
-
-    window.addEventListener('resize', onResize);
-    if (window.visualViewport) {{
-      window.visualViewport.addEventListener('resize', onResize);
-    }}
-    setTimeout(onResize, 0);
-  }}
-</script>
-</body>
-</html>
-"""
-    return HTML(html)
+    </script>
+    """
+    display(HTML(textwrap.dedent(html)))
