@@ -1,5 +1,5 @@
-// ComponentsPanel.js
-// Panel lateral con la lista de componentes y detalle con descripción.
+// AutoMindCloud/viewer/ui/ComponentsPanel.js
+// Panel lateral con lista de componentes y descripciones.
 
 import { THEME } from "../Theme.js";
 
@@ -118,15 +118,18 @@ export function createComponentsPanel(app, theme = THEME) {
       detailsText.textContent = "";
       return;
     }
+
     const title =
       ent.base ||
       ent.assetKey ||
       ent.key ||
       (typeof ent === "string" ? ent : "");
+
     detailsTitle.textContent = title || "";
 
     const key = ent.assetKey || ent.key || title;
     const desc = getComponentDescription(key);
+
     detailsText.textContent =
       desc && desc.trim()
         ? desc.trim()
@@ -231,7 +234,7 @@ export function createComponentsPanel(app, theme = THEME) {
     }
   }
 
-  // 💡 NUEVO: actualizar descripciones incrementalmente (mini-lotes)
+  // Actualiza descripciones en caliente (mini-lotes)
   function updateDescriptions(partial) {
     if (!partial || typeof partial !== "object") return;
     if (!app.componentDescriptions) app.componentDescriptions = {};
@@ -241,7 +244,7 @@ export function createComponentsPanel(app, theme = THEME) {
       app.componentDescriptions[k] = (v || "").toString();
     }
 
-    // Si hay un componente seleccionado, refrescamos su detalle
+    // refrescar detalle si alguno está visible
     const currentTitle = detailsTitle.textContent || "";
     if (!currentTitle) return;
 
@@ -268,6 +271,6 @@ export function createComponentsPanel(app, theme = THEME) {
     set,
     refresh,
     destroy,
-    updateDescriptions, // 👈 importante para mini-lotes
+    updateDescriptions,
   };
 }
