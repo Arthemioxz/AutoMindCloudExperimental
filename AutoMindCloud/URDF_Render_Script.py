@@ -1,5 +1,5 @@
-# ========================================================== 
-# URDF_Render_Script.py  (versión optimizada con batch IA)
+# ==========================================================
+# URDF_Render_Script.py  (versión optimizada con batch IA + compresión ~5KB)
 # ==========================================================
 # Puente Colab <-> JS para descripciones de piezas del URDF.
 #
@@ -64,6 +64,51 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 
 # ==========================================================
+# 🔹 Helper: comprimir base64 a ~target_kb (best-effort)
+# ==========================================================
+def _shrink_to_approx_kb(img_b64: str, target_kb: int = 5) -> str:
+    """
+    Intenta dejar la imagen alrededor de target_kb KB.
+    Si no hay PIL o algo falla, devuelve el original.
+    """
+    try:
+        from io import BytesIO
+        from PIL import Image
+    except Exception:
+        return img_b64
+
+    try:
+        raw = base64.b64decode(img_b64)
+        max_bytes = target_kb * 1024
+        if len(raw) <= max_bytes:
+            return img_b64
+
+        im = Image.open(BytesIO(raw))
+        im = im.convert("RGB")
+
+        # Escala aproximada según tamaño actual
+        scale = (max_bytes / float(len(raw))) ** 0.5
+        scale = max(0.12, min(1.0, scale))
+        new_w = max(16, int(im.width * scale))
+        new_h = max(16, int(im.height * scale))
+        im = im.resize((new_w, new_h))
+
+        buf = BytesIO()
+        quality = 80
+        for _ in range(7):
+            buf.seek(0)
+            buf.truncate(0)
+            im.save(buf, format="JPEG", quality=quality, optimize=True)
+            if buf.tell() <= max_bytes or quality <= 25:
+                break
+            quality -= 10
+
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return img_b64
+
+
+# ==========================================================
 # 🔹 Nuevo Callback Optimizado (envía todas las imágenes juntas)
 # ==========================================================
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90):
@@ -79,7 +124,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
         infer_url = api_base + API_INFER_PATH
 
         def _describe_component_images(entries):
-            """Recibe [{key, image_b64}, ...] y devuelve {key: descripcion}"""
+            """Recibe [{key, image_b64, mime?}, ...] y devuelve {key: descripcion}"""
             try:
                 n = len(entries)
             except TypeError:
@@ -97,9 +142,23 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                     continue
                 key = item.get("key")
                 img_b64 = item.get("image_b64")
-                if key and img_b64:
-                    keys.append(key)
-                    imgs.append({"image_b64": img_b64, "mime": "image/png"})
+                if not (key and img_b64):
+                    continue
+
+                # MIME desde JS si viene, sino png por defecto
+                mime = item.get("mime") or "image/png"
+
+                # 🔹 Asegurar tamaño ~5KB antes de llamar a la API
+                small_b64 = _shrink_to_approx_kb(img_b64, target_kb=5)
+
+                # Si se recomprime, asumimos JPEG; si no, dejamos mime original
+                if small_b64 != img_b64:
+                    mime_out = "image/jpeg"
+                else:
+                    mime_out = mime
+
+                keys.append(key)
+                imgs.append({"image_b64": small_b64, "mime": mime_out})
 
             if not imgs:
                 print("[Colab] ⚠️ No hay imágenes válidas para enviar.")
@@ -107,24 +166,14 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
 
             print(f"[Colab] 🚀 Enviando {len(imgs)} imágenes en batch al modelo...")
 
-            # Prompt estructurado
-            #text = (
-            #    "Analiza las imágenes de componentes de un robot URDF.\n"
-            #    "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre de la pieza (de la lista 'keys') "
-            #    "y cada valor una descripción breve en español (máx. 2 frases) explicando su función mecánica, "
-            #    "ubicación en el robot y tipo de unión o movimiento que sugiere.\n"
-            #    + json.dumps({"keys": keys}, ensure_ascii=False)
-            #)
-            
             text = (
-                 "Describe con certeza y tono técnico cada componente mostrado en las imágenes del robot URDF.\n"
-                  "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre de la pieza (de la lista 'keys') "
-                  "y cada valor una descripción breve en español (máx. 5 frases) que indique directamente su función mecánica, "
-                  "posición aproximada en el robot y tipo de unión o movimiento, SIN usar expresiones como 'la imagen muestra', "
-                  "'parece ser' o 'probablemente', 'la pieza muestra'. Usa afirmaciones directas"
-                  + json.dumps({"keys": keys}, ensure_ascii=False)
-              )
-
+                "Describe con certeza y tono técnico cada componente mostrado en las imágenes del robot URDF.\n"
+                "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre de la pieza (de la lista 'keys') "
+                "y cada valor una descripción breve en español (máx. 5 frases) que indique directamente su función mecánica, "
+                "posición aproximada en el robot y tipo de unión o movimiento, SIN usar expresiones como 'la imagen muestra', "
+                "'parece ser' o 'probablemente', 'la pieza muestra'. Usa afirmaciones directas"
+                + json.dumps({"keys": keys}, ensure_ascii=False)
+            )
 
             payload = {"text": text, "images": imgs}
 
@@ -151,7 +200,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                     s0, s1 = s.find("{"), s.rfind("}")
                     if s0 != -1 and s1 != -1:
                         try:
-                            return json.loads(s[s0:s1+1])
+                            return json.loads(s[s0 : s1 + 1])
                         except Exception:
                             pass
                     return None
@@ -173,7 +222,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
 
 
 # ==========================================================
-# 🔹 Render principal (idéntico al original)
+# 🔹 Render principal
 # ==========================================================
 def URDF_Render(
     folder_path: str = "Model",
@@ -187,7 +236,7 @@ def URDF_Render(
     """
     Renderiza el URDF Viewer.
     - JS captura imágenes base64 al inicio.
-    - JS manda base64 a Colab.
+    - JS manda base64 a Colab (ya comprimidas para la API).
     - Colab llama a la API en batch y responde con descripciones.
     - JS muestra descripción en frame al hacer click.
     """
@@ -218,7 +267,10 @@ def URDF_Render(
         for f in os.listdir(urdf_dir)
         if f.lower().endswith(".urdf")
     ]
-    urdf_files.sort(key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0, reverse=True)
+    urdf_files.sort(
+        key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
+        reverse=True,
+    )
 
     urdf_raw = ""
     mesh_refs: list[str] = []
@@ -227,7 +279,9 @@ def URDF_Render(
         try:
             with open(upath, "r", encoding="utf-8", errors="ignore") as f:
                 txt = f.read().lstrip("\ufeff")
-            refs = re.findall(r'filename="([^"]+\.(?:stl|dae))"', txt, re.IGNORECASE)
+            refs = re.findall(
+                r'filename="([^"]+\.(?:stl|dae))"', txt, re.IGNORECASE
+            )
             if refs:
                 urdf_raw = txt
                 mesh_refs = list(dict.fromkeys(refs))
@@ -236,7 +290,9 @@ def URDF_Render(
             pass
 
     if not urdf_raw and urdf_files:
-        with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
+        with open(
+            urdf_files[0], "r", encoding="utf-8", errors="ignore"
+        ) as f:
             urdf_raw = f.read().lstrip("\ufeff")
 
     # Crear meshDB
@@ -301,7 +357,6 @@ def URDF_Render(
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
 
-    # HTML del viewer (sin cambios)
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -348,3 +403,4 @@ def URDF_Render(
 </body>
 </html>"""
     return HTML(html)
+
