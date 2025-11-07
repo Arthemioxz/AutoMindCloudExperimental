@@ -1,7 +1,8 @@
 // urdf_viewer_main.js
-// Entrypoint que compone ViewerCore + AssetDB + Interaction + UI.
-// - Thumbnails offscreen para ComponentsPanel.
-// - Envía thumbnails a Colab; ahí se comprimen antes de la API.
+// Entrypoint: ViewerCore + AssetDB + Interaction + Tools + Components.
+// - Genera thumbnails offscreen (alta calidad para UI).
+// - Envía thumbnails (base64) a Colab -> allí se comprimen y se llama a la API.
+// - Recibe mapa { pieza: descripcion } y lo muestra en ComponentsPanel.
 
 import { THEME } from "./Theme.js";
 import { createViewer } from "./core/ViewerCore.js";
@@ -214,37 +215,37 @@ function extractDescMap(result) {
 
   let d = result;
 
-  // Colab suele devolver { data: { ... } }
   if (d.data && typeof d.data === "object") {
     d = d.data;
   }
 
-  // Caso: dict plano con claves -> descripciones
-  if (
-    typeof d === "object" &&
-    !Array.isArray(d) &&
-    !("text/plain" in d) &&
-    !("application/json" in d)
-  ) {
-    return d;
-  }
-
-  // application/json
+  // application/json directo
   if (d["application/json"] && typeof d["application/json"] === "object") {
     return d["application/json"];
   }
 
-  // Array con objetos dentro
-  if (Array.isArray(d)) {
-    for (const item of d) {
-      if (item && typeof item === "object") {
-        const sub = extractDescMap(item);
-        if (Object.keys(sub).length) return sub;
-      }
+  // dict plano
+  if (typeof d === "object" && !Array.isArray(d)) {
+    // si tiene keys de texto, lo tomamos tal cual
+    const keys = Object.keys(d);
+    if (
+      keys.length &&
+      !("text/plain" in d) &&
+      !("application/json" in d)
+    ) {
+      return d;
     }
   }
 
-  // text/plain con JSON o dict Python
+  // array de posibles wrappers
+  if (Array.isArray(d)) {
+    for (const item of d) {
+      const sub = extractDescMap(item);
+      if (sub && Object.keys(sub).length) return sub;
+    }
+  }
+
+  // text/plain con dict/JSON
   const tp = d["text/plain"];
   if (typeof tp === "string") {
     const t = tp.trim();
@@ -256,21 +257,19 @@ function extractDescMap(result) {
       candidate = t.slice(s0, s1 + 1);
     }
 
-    // 1) JSON directo
     try {
       const parsed = JSON.parse(candidate);
       if (parsed && typeof parsed === "object") return parsed;
     } catch (e) {}
 
-    // 2) JSON reemplazando comillas simples
     try {
       const fixed = candidate.replace(/'/g, '"');
       const parsed = JSON.parse(fixed);
       if (parsed && typeof parsed === "object") return parsed;
     } catch (e) {}
 
-    // 3) Eval estilo dict Python (local, último recurso)
     try {
+      // Último recurso: dict Python literal
       // eslint-disable-next-line no-new-func
       const parsed = Function('"use strict"; return (' + candidate + ");")();
       if (parsed && typeof parsed === "object") return parsed;
