@@ -1,5 +1,4 @@
 // AutoMindCloud/viewer/urdf_viewer_main.js
-// Entrypoint principal del URDF Viewer + descripciones en mini-lotes.
 
 import { THEME } from "./Theme.js";
 import { createViewer } from "./core/ViewerCore.js";
@@ -40,7 +39,7 @@ export function render(opts = {}) {
     setSceneToggles,
     setBackground,
     setPixelRatio,
-    onResize, // manejado internamente
+    onResize,
   } = viewer;
 
   const app = {
@@ -138,9 +137,7 @@ export function render(opts = {}) {
   };
 
   // =========================
-  // Thumbnails por componente:
-  //  - thumbDataUrl: buena calidad para la lista.
-  //  - image_b64: baja resolución para API.
+  // Thumbnails + imágenes reducidas para API
   // =========================
   async function snapshotComponents() {
     if (!robot || !window.THREE) return [];
@@ -185,8 +182,8 @@ export function render(opts = {}) {
     const tmpBox = new THREE.Box3();
     const tmpV = new THREE.Vector3();
 
-    const MAX_THUMB = 512;
-    const LOW_MAX = 320;
+    const MAX_THUMB = 512; // buena calidad para UI
+    const LOW_MAX = 320; // más bajo para API
 
     for (const key of keys) {
       const meshes = assetMeshes.get(key) || [];
@@ -218,7 +215,7 @@ export function render(opts = {}) {
         controls.update();
       }
 
-      // Hi-res para UI
+      // Hi-res para lista
       const baseW = orig.size.x || renderer.domElement.width || 640;
       const baseH = orig.size.y || renderer.domElement.height || 480;
       const scaleHi = Math.min(1, MAX_THUMB / Math.max(baseW, baseH));
@@ -231,7 +228,7 @@ export function render(opts = {}) {
 
       const hiDataUrl = renderer.domElement.toDataURL("image/png");
 
-      // Low-res SOLO para API
+      // Low-res solo para API
       let lowB64;
       {
         const canvas = document.createElement("canvas");
@@ -271,7 +268,7 @@ export function render(opts = {}) {
   }
 
   // =========================
-  // Configurar assets + analizar en mini-lotes
+  // Configurar assets + análisis incremental
   // =========================
   (async () => {
     try {
@@ -306,7 +303,7 @@ export function render(opts = {}) {
   })();
 
   // =========================
-  // Mini-lotes → usa callback (M1/M2/M3)
+  // Mini-lotes -> callback (M1/M2/M3 dentro de Colab)
   // =========================
   async function analyzeInMiniBatches(entries, batchSize = 8) {
     const kernel = window.google?.colab?.kernel;
@@ -325,16 +322,16 @@ export function render(opts = {}) {
         image_b64: e.image_b64,
       }));
 
-      try:
+      try {
         const res = await kernel.invokeFunction(
           "describe_component_images",
           [batch],
           {}
         );
 
-        // Colab → normalmente dict serializado a JSON automático.
         let payload = res;
 
+        // Formato típico de Colab: { data: { "application/json": {...} } } o "text/plain"
         if (res && typeof res === "object" && res.data) {
           payload =
             res.data["application/json"] ||
@@ -342,13 +339,12 @@ export function render(opts = {}) {
             payload;
         }
 
-        // Si ya es objeto (dict Python → JSON), usar directo.
+        // Caso ideal: ya viene como objeto (dict serializado bien)
         if (payload && typeof payload === "object" && !Array.isArray(payload)) {
           app.componentDescriptions = {
             ...(app.componentDescriptions || {}),
             ...payload,
           };
-
           if (
             window._componentsPanel &&
             typeof window._componentsPanel.updateDescriptions === "function"
@@ -356,7 +352,7 @@ export function render(opts = {}) {
             window._componentsPanel.updateDescriptions(payload);
           }
         } else if (typeof payload === "string") {
-          // Fallback defensivo: intentar rescatar JSON desde string.
+          // Fallback: intentar rescatar JSON o dict-like
           const raw = payload.trim();
           let parsed = null;
 
@@ -417,7 +413,7 @@ export function render(opts = {}) {
     console.log("[urdf_viewer_main] Análisis por mini-lotes finalizado.");
   }
 
-  // ViewerCore ya maneja onResize; no duplicamos lógica aquí.
+  // ViewerCore maneja onResize
 
   return app;
 }
