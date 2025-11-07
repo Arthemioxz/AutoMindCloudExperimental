@@ -1,347 +1,336 @@
-// ComponentsPanel.js
-// Panel de componentes: lista + thumbnails + frame con descripción al hacer click.
+// /viewer/ui/ComponentsPanel.js
+// Panel de componentes: lista + thumbnails + descripción incremental.
+/* global document */
 
 export function createComponentsPanel(app, theme) {
-  if (!app || !app.assets || !app.isolate || !app.showAll) {
-    throw new Error("[ComponentsPanel] Missing required app APIs");
-  }
+  if (!app) throw new Error('[ComponentsPanel] Missing app');
 
+  // Normaliza theme
+  theme = theme || {};
+  const stroke = theme.stroke || (theme.colors && theme.colors.stroke) || '#d7e7e7';
+  const teal = (theme.colors && theme.colors.teal) || '#0ea5a6';
+  const tealSoft = (theme.colors && theme.colors.tealSoft) || teal;
+  const tealFaint = (theme.colors && theme.colors.tealFaint) || 'rgba(14,165,166,0.06)';
+  const text = (theme.colors && theme.colors.text) || '#0b3b3c';
+  const textMuted = (theme.colors && theme.colors.textMuted) || '#577e7f';
+  const shadow = (theme.shadows && (theme.shadows.md || theme.shadows.sm)) || '0 8px 24px rgba(0,0,0,0.12)';
+  const fontUI = (theme.fonts && theme.fonts.ui) || "Inter, system-ui, -apple-system, sans-serif";
+
+  // ---------- DOM ----------
   const ui = {
-    root: document.createElement("div"),
-    btn: document.createElement("button"),
-    panel: document.createElement("div"),
-    header: document.createElement("div"),
-    title: document.createElement("div"),
-    showAllBtn: document.createElement("button"),
-    details: document.createElement("div"),
-    detailsTitle: document.createElement("div"),
-    detailsBody: document.createElement("div"),
-    list: document.createElement("div"),
+    root: document.createElement('div'),
+    btn: document.createElement('button'),
+    panel: document.createElement('div'),
+    header: document.createElement('div'),
+    title: document.createElement('div'),
+    close: document.createElement('button'),
+    listWrap: document.createElement('div'),
+    list: document.createElement('div'),
+    details: document.createElement('div'),
+    detailsTitle: document.createElement('div'),
+    detailsBody: document.createElement('div')
   };
 
-  const css = {
-    root: {
-      position: "absolute",
-      left: "0",
-      top: "0",
-      width: "100%",
-      height: "100%",
-      pointerEvents: "none",
-      zIndex: "9999",
-      fontFamily:
-        "Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-    },
-    btn: {
-      position: "absolute",
-      left: "14px",
-      bottom: "14px",
-      padding: "8px 12px",
-      borderRadius: "12px",
-      border: `1px solid ${theme.stroke}`,
-      background: theme.bgPanel,
-      color: theme.text,
-      fontWeight: "700",
-      cursor: "pointer",
-      boxShadow: theme.shadow,
-      pointerEvents: "auto",
-      transition: "all .12s ease",
-    },
-    panel: {
-      position: "absolute",
-      right: "14px",
-      bottom: "14px",
-      width: "440px",
-      maxHeight: "72%",
-      background: theme.bgPanel,
-      border: `1px solid ${theme.stroke}`,
-      boxShadow: theme.shadow,
-      borderRadius: "18px",
-      overflow: "hidden",
-      display: "block",
-      pointerEvents: "auto",
-      willChange: "transform, opacity",
-      transition:
-        "transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease",
-      transform: "translateX(520px)",
-      opacity: "0",
-    },
-    header: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: "8px",
-      padding: "10px 12px",
-      borderBottom: `1px solid ${theme.stroke}`,
-      background: theme.tealFaint,
-    },
-    title: {
-      fontWeight: "800",
-      color: theme.text,
-      fontSize: "14px",
-    },
-    showAllBtn: {
-      padding: "6px 10px",
-      borderRadius: "10px",
-      border: `1px solid ${theme.stroke}`,
-      background: theme.bgPanel,
-      fontWeight: "700",
-      cursor: "pointer",
-      fontSize: "11px",
-      transition: "all .12s ease",
-    },
-    details: {
-      display: "none",
-      padding: "10px 12px",
-      borderBottom: `1px solid ${theme.stroke}`,
-      background: "#ffffff",
-    },
-    detailsTitle: {
-      fontWeight: "800",
-      fontSize: "13px",
-      marginBottom: "4px",
-      color: theme.text,
-    },
-    detailsBody: {
-      fontSize: "12px",
-      lineHeight: "1.5",
-      color: theme.textMuted,
-      whiteSpace: "pre-wrap",
-    },
-    list: {
-      overflowY: "auto",
-      maxHeight: "calc(72vh - 52px)",
-      padding: "10px",
-    },
-  };
+  // root
+  Object.assign(ui.root.style, {
+    position: 'fixed',
+    right: '16px',
+    top: '16px',
+    zIndex: 10010,
+    fontFamily: fontUI,
+    pointerEvents: 'none'
+  });
 
-  applyStyles(ui.root, css.root);
-  applyStyles(ui.btn, css.btn);
-  applyStyles(ui.panel, css.panel);
-  applyStyles(ui.header, css.header);
-  applyStyles(ui.title, css.title);
-  applyStyles(ui.showAllBtn, css.showAllBtn);
-  applyStyles(ui.details, css.details);
-  applyStyles(ui.detailsTitle, css.detailsTitle);
-  applyStyles(ui.detailsBody, css.detailsBody);
-  applyStyles(ui.list, css.list);
+  // toggle button
+  ui.btn.textContent = 'Components';
+  Object.assign(ui.btn.style, {
+    padding: '8px 14px',
+    borderRadius: '999px',
+    border: `1px solid ${stroke}`,
+    background: '#ffffff',
+    color: text,
+    boxShadow: shadow,
+    cursor: 'pointer',
+    fontSize: '13px',
+    fontWeight: 600,
+    pointerEvents: 'auto',
+    marginBottom: '8px',
+    transition: 'all 0.14s ease'
+  });
+  ui.btn.addEventListener('mouseenter', () => {
+    ui.btn.style.transform = 'translateY(-1px)';
+    ui.btn.style.background = tealFaint;
+    ui.btn.style.borderColor = tealSoft;
+  });
+  ui.btn.addEventListener('mouseleave', () => {
+    ui.btn.style.transform = 'none';
+    ui.btn.style.background = '#ffffff';
+    ui.btn.style.borderColor = stroke;
+  });
 
-  ui.btn.textContent = "Components";
-  ui.title.textContent = "Components";
-  ui.showAllBtn.textContent = "Show all";
+  // panel
+  Object.assign(ui.panel.style, {
+    width: '360px',
+    maxHeight: '75vh',
+    background: '#ffffff',
+    borderRadius: '18px',
+    border: `1px solid ${stroke}`,
+    boxShadow: shadow,
+    padding: '14px',
+    display: 'none',
+    flexDirection: 'column',
+    gap: '8px',
+    pointerEvents: 'auto',
+  });
 
-  ui.header.appendChild(ui.title);
-  ui.header.appendChild(ui.showAllBtn);
+  // header
+  Object.assign(ui.header.style, {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '8px',
+    marginBottom: '4px'
+  });
+  ui.title.textContent = 'Componentes';
+  Object.assign(ui.title.style, {
+    fontSize: '14px',
+    fontWeight: 700,
+    color: text
+  });
+  ui.close.textContent = '×';
+  Object.assign(ui.close.style, {
+    border: 'none',
+    background: 'transparent',
+    cursor: 'pointer',
+    fontSize: '18px',
+    lineHeight: '18px',
+    color: textMuted
+  });
+
+  // list
+  Object.assign(ui.listWrap.style, {
+    overflowY: 'auto',
+    flex: '1 1 auto',
+    paddingRight: '4px'
+  });
+  Object.assign(ui.list.style, {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px'
+  });
+
+  // details
+  Object.assign(ui.details.style, {
+    marginTop: '6px',
+    padding: '8px',
+    borderRadius: '12px',
+    border: `1px solid ${stroke}`,
+    background: '#f7fbfb',
+    display: 'none'
+  });
+  Object.assign(ui.detailsTitle.style, {
+    fontSize: '13px',
+    fontWeight: 600,
+    marginBottom: '4px',
+    color: text
+  });
+  Object.assign(ui.detailsBody.style, {
+    fontSize: '12px',
+    color: textMuted,
+    whiteSpace: 'pre-wrap'
+  });
+
   ui.details.appendChild(ui.detailsTitle);
   ui.details.appendChild(ui.detailsBody);
+
+  ui.header.appendChild(ui.title);
+  ui.header.appendChild(ui.close);
+  ui.listWrap.appendChild(ui.list);
   ui.panel.appendChild(ui.header);
+  ui.panel.appendChild(ui.listWrap);
   ui.panel.appendChild(ui.details);
-  ui.panel.appendChild(ui.list);
-  ui.root.appendChild(ui.panel);
   ui.root.appendChild(ui.btn);
+  ui.root.appendChild(ui.panel);
 
-  const host =
-    (app.renderer && app.renderer.domElement
-      ? app.renderer.domElement.parentElement
-      : null) || document.body;
-  host.appendChild(ui.root);
+  document.body.appendChild(ui.root);
 
-  // --- Hover botón principal ---
-  ui.btn.addEventListener("mouseenter", () => {
-    ui.btn.style.transform = "translateY(-1px) scale(1.02)";
-    ui.btn.style.background = theme.tealFaint;
-    ui.btn.style.borderColor = theme.tealSoft ?? theme.teal;
-  });
-  ui.btn.addEventListener("mouseleave", () => {
-    ui.btn.style.transform = "none";
-    ui.btn.style.background = theme.bgPanel;
-    ui.btn.style.borderColor = theme.stroke;
-  });
-
-  // --- Hover Show all ---
-  ui.showAllBtn.addEventListener("mouseenter", () => {
-    ui.showAllBtn.style.transform = "translateY(-1px) scale(1.02)";
-    ui.showAllBtn.style.background = theme.tealFaint;
-    ui.showAllBtn.style.borderColor = theme.tealSoft ?? theme.teal;
-  });
-  ui.showAllBtn.addEventListener("mouseleave", () => {
-    ui.showAllBtn.style.transform = "none";
-    ui.showAllBtn.style.background = theme.bgPanel;
-    ui.showAllBtn.style.borderColor = theme.stroke;
-  });
-
-  ui.showAllBtn.addEventListener("click", () => {
-    try {
-      app.showAll();
-    } catch (_) {}
-    hideDetails();
-  });
-
+  // ---------- Estado ----------
   let open = false;
-  let building = false;
+  let built = false;
   let disposed = false;
-  const CLOSED_TX = 520;
+  let lastShown = null;
 
-  function set(isOpen) {
-    open = !!isOpen;
-    if (open) {
-      ui.panel.style.opacity = "1";
-      ui.panel.style.transform = "translateX(0)";
-      ui.panel.style.pointerEvents = "auto";
-    } else {
-      ui.panel.style.opacity = "0";
-      ui.panel.style.transform = `translateX(${CLOSED_TX}px)`;
-      ui.panel.style.pointerEvents = "none";
-    }
+  function set(v) {
+    open = !!v;
+    ui.panel.style.display = open ? 'flex' : 'none';
   }
+  function openPanel() { set(true); }
+  function closePanel() { set(false); }
 
-  function openPanel() {
-    set(true);
-    maybeBuild();
-  }
-
-  function closePanel() {
-    set(false);
-  }
-
-  ui.btn.addEventListener("click", () => {
+  ui.btn.addEventListener('click', () => {
     set(!open);
     if (open) maybeBuild();
   });
+  ui.close.addEventListener('click', () => set(false));
 
-  async function maybeBuild() {
-    if (building || disposed) return;
-    building = true;
-    try {
-      await renderList();
-    } finally {
-      building = false;
-    }
-  }
-
+  // ---------- Render list ----------
   async function renderList() {
-    clearElement(ui.list);
+    if (disposed) return;
+    ui.list.innerHTML = '';
 
-    let items = [];
-    try {
-      const res = app.assets.list?.();
-      items = Array.isArray(res) ? res : await res;
-    } catch {
-      items = [];
-    }
-
-    if (!items.length) {
-      const empty = document.createElement("div");
-      empty.textContent = "No components with visual geometry found.";
-      empty.style.color = theme.textMuted;
-      empty.style.fontWeight = "600";
-      empty.style.padding = "8px 2px";
-      ui.list.appendChild(empty);
+    const assetsApi = app.assets;
+    if (!assetsApi || typeof assetsApi.list !== 'function') {
+      const p = document.createElement('div');
+      p.textContent = 'No hay datos de componentes.';
+      p.style.fontSize = '12px';
+      p.style.color = textMuted;
+      ui.list.appendChild(p);
       return;
     }
 
-    items.forEach((ent, index) => {
-      const row = document.createElement("div");
-      applyStyles(row, rowStyles(theme));
+    const entries = await assetsApi.list();
+    if (!entries || !entries.length) {
+      const p = document.createElement('div');
+      p.textContent = 'No se detectaron componentes aún.';
+      p.style.fontSize = '12px';
+      p.style.color = textMuted;
+      ui.list.appendChild(p);
+      return;
+    }
 
-      const img = document.createElement("img");
-      applyStyles(img, thumbStyles(theme));
-      img.alt = ent.base;
-      img.loading = "lazy";
+    entries.forEach((ent, index) => {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        display: 'grid',
+        gridTemplateColumns: '112px 1fr',
+        gap: '10px',
+        alignItems: 'center',
+        padding: '8px',
+        borderRadius: '12px',
+        border: `1px solid ${stroke}`,
+        background: '#ffffff',
+        cursor: 'pointer',
+        transition: 'transform .08s ease, box-shadow .12s ease, background-color .12s ease, border-color .12s ease'
+      });
 
-      const meta = document.createElement("div");
+      const thumbWrap = document.createElement('div');
+      Object.assign(thumbWrap.style, {
+        width: '112px',
+        height: '84px',
+        borderRadius: '10px',
+        background: '#f7fbfb',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
+        border: `1px solid ${stroke}`
+      });
 
-      const title = document.createElement("div");
-      title.textContent = ent.base;
-      title.style.fontWeight = "700";
-      title.style.fontSize = "14px";
-      title.style.color = theme.text;
+      const img = document.createElement('img');
+      Object.assign(img.style, {
+        width: '100%',
+        height: '100%',
+        objectFit: 'contain',
+      });
 
-      const small = document.createElement("div");
-      small.textContent = `.${ent.ext || "asset"} • ${ent.count} instance${
-        ent.count > 1 ? "s" : ""
-      }`;
-      small.style.color = theme.textMuted;
-      small.style.fontSize = "12px";
-      small.style.marginTop = "2px";
+      (async () => {
+        try {
+          const url = assetsApi.thumbnail
+            ? await assetsApi.thumbnail(ent.assetKey)
+            : null;
+          if (url) img.src = url;
+          else {
+            img.style.display = 'none';
+            thumbWrap.textContent = 'Sin vista previa';
+            thumbWrap.style.fontSize = '10px';
+            thumbWrap.style.color = textMuted;
+          }
+        } catch {
+          img.style.display = 'none';
+          thumbWrap.textContent = 'Sin vista previa';
+          thumbWrap.style.fontSize = '10px';
+          thumbWrap.style.color = textMuted;
+        }
+      })();
+
+      thumbWrap.appendChild(img);
+
+      const meta = document.createElement('div');
+      const title = document.createElement('div');
+      title.textContent = ent.base || ent.assetKey || 'Componente';
+      Object.assign(title.style, {
+        fontSize: '13px',
+        fontWeight: 600,
+        color: text,
+        marginBottom: '2px'
+      });
+
+      const small = document.createElement('div');
+      small.textContent = `${ent.count || 1} mesh • ${ent.ext || ''}`.trim();
+      Object.assign(small.style, {
+        fontSize: '10px',
+        color: textMuted
+      });
 
       meta.appendChild(title);
       meta.appendChild(small);
-      row.appendChild(img);
+
+      row.appendChild(thumbWrap);
       row.appendChild(meta);
       ui.list.appendChild(row);
 
-      // Hover fila
-      row.addEventListener("mouseenter", () => {
-        row.style.transform = "translateY(-1px) scale(1.02)";
-        row.style.background = theme.tealFaint;
-        row.style.borderColor = theme.tealSoft ?? theme.teal;
+      row.addEventListener('mouseenter', () => {
+        row.style.transform = 'translateY(-1px) scale(1.02)';
+        row.style.background = tealFaint;
+        row.style.borderColor = tealSoft;
       });
-      row.addEventListener("mouseleave", () => {
-        row.style.transform = "none";
-        row.style.background = "#fff";
-        row.style.borderColor = theme.stroke;
+      row.addEventListener('mouseleave', () => {
+        row.style.transform = 'none';
+        row.style.background = '#ffffff';
+        row.style.borderColor = stroke;
       });
 
-      // Click: aisla + muestra frame con descripción
-      row.addEventListener("click", () => {
-        console.debug("[ComponentsPanel] Click en", ent.assetKey);
-        try {
-          app.isolate.asset(ent.assetKey);
-        } catch (_) {}
+      row.addEventListener('click', () => {
+        try { app.isolate && app.isolate.asset && app.isolate.asset(ent.assetKey); } catch (_) {}
         showDetails(ent, index);
         set(true);
       });
-
-      // Thumbnail (usa cache; no recalcula al click)
-      (async () => {
-        try {
-          const url = await app.assets.thumbnail?.(ent.assetKey);
-          if (url) img.src = url;
-          else img.replaceWith(makeThumbFallback(ent.base, theme));
-        } catch {
-          img.replaceWith(makeThumbFallback(ent.base, theme));
-        }
-      })();
     });
   }
 
-  function showDetails(ent, index) {
-    if (disposed) return;
+  async function maybeBuild() {
+    if (disposed || built) return;
+    built = true;
+    await renderList();
+  }
 
-    let text = "";
+  function showDetails(ent, _index) {
+    lastShown = ent;
+    const getDesc = app.getComponentDescription;
+    let textContent = '';
 
-    try {
-      if (typeof app.getComponentDescription === "function") {
-        text = app.getComponentDescription(ent.assetKey, index) || "";
-      }
-    } catch (_) {
-      text = "";
+    if (typeof getDesc === 'function') {
+      textContent = getDesc(ent.assetKey) || '';
     }
 
-    if (!text) {
-      if (!app.descriptionsReady) {
-        text = "Generando descripción de esta pieza...";
+    if (!textContent) {
+      if (app.descriptionsReady) {
+        textContent = 'Sin descripción generada.';
       } else {
-        text = "Sin descripción generada para esta pieza.";
+        textContent = 'Generando descripción…';
       }
     }
 
-    ui.detailsTitle.textContent = ent.base;
-    ui.detailsBody.textContent = text;
-    ui.details.style.display = "block";
-
-    console.debug(
-      "[ComponentsPanel] showDetails:",
-      ent.assetKey,
-      "=>",
-      text.slice(0, 80)
-    );
+    ui.detailsTitle.textContent = ent.base || ent.assetKey;
+    ui.detailsBody.textContent = textContent;
+    ui.details.style.display = 'block';
   }
 
   function hideDetails() {
-    ui.details.style.display = "none";
-    ui.detailsTitle.textContent = "";
-    ui.detailsBody.textContent = "";
+    lastShown = null;
+    ui.details.style.display = 'none';
+    ui.detailsTitle.textContent = '';
+    ui.detailsBody.textContent = '';
   }
 
   async function refresh() {
@@ -350,93 +339,35 @@ export function createComponentsPanel(app, theme) {
   }
 
   function destroy() {
-    disposed = true;
-    try {
-      document.removeEventListener("keydown", onHotkeyC, true);
-    } catch (_) {}
-    try {
-      ui.btn.remove();
-    } catch (_) {}
-    try {
-      ui.panel.remove();
-    } catch (_) {}
-    try {
-      ui.root.remove();
-    } catch (_) {}
+    disposed = True;
   }
 
-  // Hotkey 'c' para abrir/cerrar
+  // incremental descriptions desde JS
+  function updateDescriptions(partial) {
+    if (!partial || typeof partial !== 'object') return;
+    if (!lastShown) return;
+    const txt = partial[lastShown.assetKey];
+    if (typeof txt === 'string' && txt.trim()) {
+      ui.detailsBody.textContent = txt.trim();
+    }
+  }
+
+  // Hotkey 'c'
   function onHotkeyC(e) {
-    const tag = (e.target && e.target.tagName) || "";
+    const tag = (e.target && e.target.tagName) || '';
     const t = tag.toLowerCase();
-    if (t === "input" || t === "textarea" || t === "select" || e.isComposing)
-      return;
-    if (e.key === "c" || e.key === "C" || e.code === "KeyC") {
+    if (t === 'input' || t === 'textarea' || t === 'select' || e.isComposing) return;
+    if (e.key === 'c' || e.key === 'C' || e.code === 'KeyC') {
       e.preventDefault();
       set(!open);
       if (open) maybeBuild();
     }
   }
-
-  document.addEventListener("keydown", onHotkeyC, true);
+  document.addEventListener('keydown', onHotkeyC, true);
 
   // Inicial
   set(false);
   maybeBuild();
 
-  return { open: openPanel, close: closePanel, set, refresh, destroy };
-}
-
-/* ---------- Helpers ---------- */
-
-function applyStyles(el, styles) {
-  Object.assign(el.style, styles);
-}
-
-function clearElement(el) {
-  while (el.firstChild) el.removeChild(el.firstChild);
-}
-
-function rowStyles(theme) {
-  return {
-    display: "grid",
-    gridTemplateColumns: "128px 1fr",
-    gap: "12px",
-    alignItems: "center",
-    padding: "10px",
-    borderRadius: "12px",
-    border: `1px solid ${theme.stroke}`,
-    marginBottom: "10px",
-    background: "#fff",
-    cursor: "pointer",
-    transition: "transform .08s ease, box-shadow .12s ease",
-  };
-}
-
-function thumbStyles(theme) {
-  return {
-    width: "128px",
-    height: "96px",
-    objectFit: "contain",
-    background: "#f7fbfb",
-    borderRadius: "10px",
-    border: `1px solid ${theme.stroke}`,
-  };
-}
-
-function makeThumbFallback(label, theme) {
-  const wrap = document.createElement("div");
-  wrap.style.width = "128px";
-  wrap.style.height = "96px";
-  wrap.style.display = "flex";
-  wrap.style.alignItems = "center";
-  wrap.style.justifyContent = "center";
-  wrap.style.background = "#f7fbfb";
-  wrap.style.border = `1px solid ${theme.stroke}`;
-  wrap.style.borderRadius = "10px";
-  wrap.style.fontSize = "11px";
-  wrap.style.color = theme.textMuted;
-  wrap.style.textAlign = "center";
-  wrap.textContent = label || "—";
-  return wrap;
+  return { open: openPanel, close: closePanel, set, refresh, destroy, updateDescriptions };
 }
