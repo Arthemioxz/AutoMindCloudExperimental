@@ -1,4 +1,4 @@
-import IPython
+import IPython 
 
 from IPython.display import Image
 
