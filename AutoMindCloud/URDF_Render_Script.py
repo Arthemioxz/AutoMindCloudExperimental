@@ -1,23 +1,4 @@
 # URDF_Render_Script.py
-# URDF Viewer + Bridge Colab <-> JS para descripciones de componentes.
-#
-# Uso en Colab:
-#   from URDF_Render_Script import URDF_Render
-#   URDF_Render("Model")
-#
-# El flujo:
-#  - JS (urdf_viewer_main.js) genera thumbnails base64 de cada componente al iniciar.
-#  - JS llama a google.colab.kernel.invokeFunction(
-#        "describe_component_images",
-#        [entries],
-#        {}
-#    )
-#    donde entries = [{ "key": assetKey, "image_b64": "<base64>" }, ...]
-#  - Aquí: describimos cada imagen con la API externa y devolvemos { assetKey: descripcion }.
-#  - JS guarda eso en app.componentDescriptions y ComponentsPanel lo muestra al click.
-#
-# No pongas lógica suelta fuera de este archivo.
-
 import base64
 import re
 import os
@@ -47,7 +28,7 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
     if os.path.exists(final_dir):
         shutil.rmtree(final_dir)
 
-    import gdown  # import lazy
+    import gdown
 
     gdown.download(url, zip_path, quiet=True)
     with zipfile.ZipFile(zip_path, "r") as zf:
@@ -69,12 +50,6 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120):
-    """
-    Registra el callback 'describe_component_images' UNA SOLA VEZ.
-    Usamos la forma correcta:
-        output.register_callback("name", callback)
-    compatible con tu error.
-    """
     global _COLAB_CALLBACK_REGISTERED
     if _COLAB_CALLBACK_REGISTERED:
         return
@@ -86,11 +61,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         infer_url = api_base + API_INFER_PATH
 
         def _describe_component_images(entries):
-            """
-            entries: lista de dicts
-              { "key": assetKey, "image_b64": "<solo base64>" }
-            Devuelve: { assetKey: descripcion }
-            """
             try:
                 n = len(entries)
             except TypeError:
@@ -98,7 +68,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
             print(f"[Colab] describe_component_images: recibido payload con {n} imágenes.")
 
             results = {}
-
             if not isinstance(entries, (list, tuple)):
                 print("[Colab] Payload inválido (no lista).")
                 return results
@@ -137,7 +106,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                     continue
 
                 txt = r.text.strip()
-                # Si viene como string JSON (entre comillas)
                 try:
                     if txt.startswith('"') and txt.endswith('"'):
                         txt = json.loads(txt)
@@ -151,13 +119,11 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
             )
             return results
 
-        # ✅ Registro correcto (sin decorador)
         output.register_callback("describe_component_images", _describe_component_images)
         _COLAB_CALLBACK_REGISTERED = True
         print("[Colab] Callback 'describe_component_images' registrado correctamente.")
 
     except Exception as e:
-        # Si no estamos en Colab o falla algo, no rompemos el viewer.
         print(
             f"[Colab] No se pudo registrar callback describe_component_images (no Colab o error): {e}"
         )
@@ -172,25 +138,8 @@ def URDF_Render(
     compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
 ):
-    """
-    Renderiza el URDF Viewer y habilita el flujo:
-
-      JS (urdf_viewer_main.js):
-        - genera capturas base64 de componentes al inicio (buildOffscreenForThumbnails)
-        - llama a google.colab.kernel.invokeFunction("describe_component_images", [entries], {})
-      Python (este archivo):
-        - describe_component_images llama a la API externa por cada imagen
-        - devuelve { assetKey: descripcion }
-      JS:
-        - guarda ese mapa y ComponentsPanel muestra la descripción al seleccionar.
-
-    No requiere código adicional suelto en el notebook.
-    """
-
-    # Registrar el callback si estamos en Colab (si no, solo se loguea).
     _register_colab_callback(api_base=api_base)
 
-    # ---------- Encontrar /urdf y /meshes ----------
     def find_dirs(root):
         u = os.path.join(root, "urdf")
         m = os.path.join(root, "meshes")
@@ -211,7 +160,7 @@ def URDF_Render(
             f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>"
         )
 
-    # ---------- Leer URDF principal ----------
+    # URDF principal
     urdf_files = [
         os.path.join(urdf_dir, f)
         for f in os.listdir(urdf_dir)
@@ -222,7 +171,7 @@ def URDF_Render(
     )
 
     urdf_raw = ""
-    mesh_refs: list[str] = []
+    mesh_refs = []
 
     for upath in urdf_files:
         try:
@@ -242,7 +191,7 @@ def URDF_Render(
         with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
             urdf_raw = f.read().lstrip("\ufeff")
 
-    # ---------- Construir meshDB ----------
+    # meshDB
     disk_files = []
     for root, _, files in os.walk(meshes_dir):
         for name in files:
@@ -262,8 +211,8 @@ def URDF_Render(
         by_rel[rel] = path
         by_base[os.path.basename(path).lower()] = path
 
-    _cache: dict[str, str] = {}
-    mesh_db: dict[str, str] = {}
+    _cache = {}
+    mesh_db = {}
 
     def b64(path: str) -> str:
         if path not in _cache:
@@ -288,13 +237,11 @@ def URDF_Render(
             add_entry(pkg, cand)
             add_entry(bn, cand)
 
-    # incluir texturas/imágenes no mapeadas
     for path in disk_files:
         bn = os.path.basename(path).lower()
         if bn.endswith((".png", ".jpg", ".jpeg")) and bn not in mesh_db:
             add_entry(bn, path)
 
-    # ---------- Helpers de escape ----------
     def esc(s: str) -> str:
         return (
             s.replace("\\", "\\\\")
@@ -308,7 +255,6 @@ def URDF_Render(
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
 
-    # ---------- HTML ----------
     html = f"""<!doctype html>
 <html lang="en">
 <head>
