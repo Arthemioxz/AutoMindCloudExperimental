@@ -436,7 +436,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   });
 
   const ready = (async () => {
-    await sleep(100);
+    await sleep(10);
     await new Promise((r) =>
       requestAnimationFrame(() =>
         requestAnimationFrame(r)
@@ -508,7 +508,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     thumbnail: async (assetKey) => {
       try {
         await ready;
-        await sleep(15);
+        await sleep(1.5);
         return snapshotAsset(assetKey);
       } catch (e) {
         console.warn("[Thumbnails] error:", e);
