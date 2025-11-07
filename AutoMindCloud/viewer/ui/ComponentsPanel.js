@@ -1,5 +1,4 @@
 // AutoMindCloud/viewer/ui/ComponentsPanel.js
-// Panel lateral con lista de componentes y descripciones.
 
 import { THEME } from "../Theme.js";
 
@@ -107,7 +106,7 @@ export function createComponentsPanel(app, theme = THEME) {
     while (list.firstChild) list.removeChild(list.firstChild);
   }
 
-  function getComponentDescription(assetKey) {
+  function getDescription(assetKey) {
     if (!app || !app.componentDescriptions) return "";
     return app.componentDescriptions[assetKey] || "";
   }
@@ -118,18 +117,11 @@ export function createComponentsPanel(app, theme = THEME) {
       detailsText.textContent = "";
       return;
     }
+    const key = ent.assetKey || ent.key || ent.base;
+    const title = ent.base || key || "(sin nombre)";
+    const desc = getDescription(key);
 
-    const title =
-      ent.base ||
-      ent.assetKey ||
-      ent.key ||
-      (typeof ent === "string" ? ent : "");
-
-    detailsTitle.textContent = title || "";
-
-    const key = ent.assetKey || ent.key || title;
-    const desc = getComponentDescription(key);
-
+    detailsTitle.textContent = title;
     detailsText.textContent =
       desc && desc.trim()
         ? desc.trim()
@@ -137,10 +129,11 @@ export function createComponentsPanel(app, theme = THEME) {
   }
 
   function buildRow(ent) {
+    const key = ent.assetKey || ent.key || ent.base;
     const row = document.createElement("div");
     row.style.display = "flex";
-    row.style.alignItems = "center";
-    row.style.gap = "6px";
+    row.style.flexDirection = "column";
+    row.style.gap = "1px";
     row.style.padding = "4px";
     row.style.borderRadius = "6px";
     row.style.cursor = "pointer";
@@ -155,6 +148,11 @@ export function createComponentsPanel(app, theme = THEME) {
       row.style.transform = "translateX(0)";
     };
 
+    const top = document.createElement("div");
+    top.style.display = "flex";
+    top.style.alignItems = "center";
+    top.style.gap = "6px";
+
     const thumb = document.createElement("div");
     thumb.style.width = "34px";
     thumb.style.height = "24px";
@@ -164,8 +162,7 @@ export function createComponentsPanel(app, theme = THEME) {
     thumb.style.overflow = "hidden";
 
     if (app && app.assets && typeof app.assets.thumbnail === "function") {
-      const url =
-        app.assets.thumbnail(ent.assetKey || ent.key || ent.base) || null;
+      const url = app.assets.thumbnail(key);
       if (url) {
         const img = document.createElement("img");
         img.src = url;
@@ -176,22 +173,36 @@ export function createComponentsPanel(app, theme = THEME) {
       }
     }
 
-    const label = document.createElement("div");
-    label.style.flex = "1";
-    label.style.fontSize = "11px";
-    label.style.whiteSpace = "nowrap";
-    label.style.overflow = "hidden";
-    label.style.textOverflow = "ellipsis";
-    label.textContent =
-      ent.base || ent.assetKey || ent.key || "(sin nombre)";
+    const name = document.createElement("div");
+    name.style.flex = "1";
+    name.style.fontSize = "11px";
+    name.style.whiteSpace = "nowrap";
+    name.style.overflow = "hidden";
+    name.style.textOverflow = "ellipsis";
+    name.textContent = ent.base || key || "(sin nombre)";
 
-    row.appendChild(thumb);
-    row.appendChild(label);
+    top.appendChild(thumb);
+    top.appendChild(name);
+
+    const descLine = document.createElement("div");
+    descLine.style.fontSize = "9px";
+    descLine.style.opacity = "0.8";
+    descLine.style.whiteSpace = "nowrap";
+    descLine.style.overflow = "hidden";
+    descLine.style.textOverflow = "ellipsis";
+
+    const desc = getDescription(key);
+    descLine.textContent = desc
+      ? desc.replace(/\s+/g, " ").slice(0, 80)
+      : "Descripción en generación…";
+
+    row.appendChild(top);
+    row.appendChild(descLine);
 
     row.onclick = () => {
       showDetails(ent);
       if (app && typeof app.focusComponent === "function") {
-        app.focusComponent(ent.assetKey || ent.key || ent.base);
+        app.focusComponent(key);
       }
     };
 
@@ -234,17 +245,17 @@ export function createComponentsPanel(app, theme = THEME) {
     }
   }
 
-  // Actualiza descripciones en caliente (mini-lotes)
   function updateDescriptions(partial) {
     if (!partial || typeof partial !== "object") return;
     if (!app.componentDescriptions) app.componentDescriptions = {};
-
     for (const k of Object.keys(partial)) {
       const v = partial[k];
       app.componentDescriptions[k] = (v || "").toString();
     }
+    // Refrescar lista mientras está abierta → visualmente incremental
+    if (state.isOpen) refresh();
 
-    // refrescar detalle si alguno está visible
+    // Actualizar detalle si el seleccionado coincide
     const currentTitle = detailsTitle.textContent || "";
     if (!currentTitle) return;
 
@@ -256,9 +267,9 @@ export function createComponentsPanel(app, theme = THEME) {
     const current =
       items.find(
         (ent) =>
+          ent.base === currentTitle ||
           ent.assetKey === currentTitle ||
-          ent.key === currentTitle ||
-          ent.base === currentTitle
+          ent.key === currentTitle
       ) || null;
 
     if (current) showDetails(current);
