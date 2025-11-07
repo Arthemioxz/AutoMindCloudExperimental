@@ -104,8 +104,9 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 payload = {
                     "text": (
                         "Describe brevemente qué pieza de robot se ve en esta imagen. "
-                        "Indica su función mecánica, la zona aproximada del robot donde va "
-                        "y el tipo de unión o movimiento que sugiere. Español, máximo 2 frases."
+                        "Se formal, directo y robotico, no digas cosas como En esta imagen se muestra o la pieza es"
+                        "Indica precisamente su función mecánica, la zona aproximada del robot donde va "
+                        "y el tipo de unión o movimiento que sugiere. Español, 8 frases."
                     ),
                     "images": [{"image_b64": img_b64, "mime": "image/png"}],
                 }
