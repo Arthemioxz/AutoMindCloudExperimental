@@ -23,7 +23,7 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
  */
 
 /**
- * Punto de entrada público.
+ * Punto de entrada público principal.
  */
 export async function renderUrdfViewer(options) {
   const {
@@ -133,7 +133,7 @@ export async function renderUrdfViewer(options) {
     thumbMap
   });
 
-  // Exponer API mínima (por si la usas afuera)
+  // API pública
   const api = {
     root,
     viewer,
@@ -145,12 +145,20 @@ export async function renderUrdfViewer(options) {
     descMap
   };
 
-  // Compatibilidad global si lo llamas desde HTML inline
+  // Compat global
   if (typeof window !== 'undefined') {
     window.__URDF_VIEWER__ = api;
   }
 
   return api;
+}
+
+/**
+ * Alias para compatibilidad con el bootloader existente:
+ * muchos scripts esperan entry.render(...)
+ */
+export async function render(options) {
+  return renderUrdfViewer(options);
 }
 
 /* =========================================================
@@ -171,11 +179,9 @@ function resolveContainer(container) {
 
 /**
  * Devuelve lista de IDs/nombres de componentes a describir.
- * Ajusta esto si tu AssetDB usa otra estructura.
  */
 function getComponentIdList(assetDB) {
   if (!assetDB) return [];
-  // Intenta varias convenciones típicas:
   if (Array.isArray(assetDB.parts)) {
     return assetDB.parts.map(p => p.id || p.name).filter(Boolean);
   }
@@ -188,13 +194,11 @@ function getComponentIdList(assetDB) {
   if (assetDB.byName && typeof assetDB.byName === 'object') {
     return Object.keys(assetDB.byName);
   }
-  // Último recurso: nada.
   return [];
 }
 
 /**
  * Llama al endpoint de descripciones.
- * Se fuerza al modelo a responder SOLO JSON.
  */
 async function requestDescriptions({ endpoint, ids }) {
   const body = {
@@ -223,14 +227,7 @@ async function requestDescriptions({ endpoint, ids }) {
 }
 
 /**
- * EXTRA IMPORTANT:
- * Parser robusto que:
- * 1. Acepta JSON directo.
- * 2. Si viene envuelto en texto, extrae el bloque { ... }.
- * 3. Si no hay JSON, intenta formato tipo "pieza: desc".
- * 4. Solo devuelve objetos tipo { [id]: "desc" }.
- *
- * Si falla, loguea y devuelve {} SIN tirar error duro.
+ * Parser robusto para el mapa de descripciones.
  */
 function extractDescMap(raw, knownIds = []) {
   try {
@@ -239,7 +236,7 @@ function extractDescMap(raw, knownIds = []) {
       return {};
     }
 
-    // Si ya es objeto (por si tu backend devolvió JSON.parse en fetch)
+    // Si ya es objeto
     if (typeof raw === 'object') {
       if (!Array.isArray(raw)) {
         return sanitizeDescObject(raw);
@@ -248,7 +245,7 @@ function extractDescMap(raw, knownIds = []) {
       return {};
     }
 
-    // Si es string, intentar parsear como JSON directo
+    // Si es string
     if (typeof raw === 'string') {
       const trimmed = raw.trim();
 
@@ -262,7 +259,7 @@ function extractDescMap(raw, knownIds = []) {
         }
       }
 
-      // Intento 2: buscar el primer "{" y el último "}" para extraer posible JSON embebido
+      // Intento 2: JSON embebido
       const first = trimmed.indexOf('{');
       const last = trimmed.lastIndexOf('}');
       if (first !== -1 && last !== -1 && last > first) {
@@ -275,7 +272,7 @@ function extractDescMap(raw, knownIds = []) {
         }
       }
 
-      // Intento 3 (fallback): parseo tipo "pieza: desc"
+      // Intento 3: formato "pieza: desc"
       const mapFromLines = parseKeyValueLines(trimmed, knownIds);
       if (Object.keys(mapFromLines).length > 0) {
         console.info('[Components] Usando parser tipo "pieza: desc".');
@@ -295,7 +292,7 @@ function extractDescMap(raw, knownIds = []) {
 }
 
 /**
- * Limpia objeto para asegurar que sea { key: string }.
+ * Asegura que sea { key: string }.
  */
 function sanitizeDescObject(obj) {
   const out = {};
@@ -310,10 +307,9 @@ function sanitizeDescObject(obj) {
 }
 
 /**
- * Intenta construir { key: desc } a partir de líneas tipo:
+ * Construye { key: desc } desde líneas tipo:
  *  "pieza_1: Esto es una base"
  *  "pieza_2 - Motor principal"
- * Si se pasan knownIds, se les da prioridad cuando matchean.
  */
 function parseKeyValueLines(text, knownIds = []) {
   const lines = text.split(/\r?\n/);
@@ -324,15 +320,13 @@ function parseKeyValueLines(text, knownIds = []) {
     const clean = line.trim();
     if (!clean) continue;
 
-    // patrones típicos "id: desc" o "id - desc"
-    let m = clean.match(/^([^:\-\–]+)\s*[:\-\–]\s*(.+)$/);
+    const m = clean.match(/^([^:\-\–]+)\s*[:\-\–]\s*(.+)$/);
     if (!m) continue;
 
     let key = m[1].trim();
     let desc = m[2].trim();
     if (!desc) continue;
 
-    // Si hay ids conocidos, tratamos de matchear exactamente (case-insensitive)
     if (idSet.size) {
       const match = knownIds.find(id => id.toLowerCase() === key.toLowerCase());
       if (match) key = match;
@@ -341,8 +335,6 @@ function parseKeyValueLines(text, knownIds = []) {
     map[key] = desc;
   }
 
-  // Extra fallback: si el texto menciona ids conocidos en frases largas,
-  // podrías mejorar acá. Por ahora lo dejamos simple.
   return map;
 }
 
@@ -351,8 +343,7 @@ function parseKeyValueLines(text, knownIds = []) {
  * =======================================================*/
 
 /**
- * Genera thumbnails por componente / link aislando cada uno.
- * Mantiene la lógica clásica de "thumbalist" sin romper nada nuevo.
+ * Genera thumbnails por componente.
  * Devuelve: { [id]: dataURL }
  */
 async function generateThumbalist({ viewer, assetDB, size = 256 }) {
@@ -367,24 +358,25 @@ async function generateThumbalist({ viewer, assetDB, size = 256 }) {
     return {};
   }
 
-  const renderer = viewer.renderer || viewer.getRenderer && viewer.getRenderer();
-  const camera = viewer.camera || viewer.getCamera && viewer.getCamera();
-  const scene = viewer.scene || viewer.getScene && viewer.getScene();
+  const renderer = viewer.renderer || (viewer.getRenderer && viewer.getRenderer());
+  const camera = viewer.camera || (viewer.getCamera && viewer.getCamera());
+  const scene = viewer.scene || (viewer.getScene && viewer.getScene());
 
   if (!renderer || !camera || !scene) {
     console.warn('[Thumbalist] Falta renderer/camera/scene para generar thumbnails.');
     return {};
   }
 
-  const originalSize = renderer.getSize ? renderer.getSize(new THREE.Vector2()) : { x: size, y: size };
+  const originalSize = renderer.getSize
+    ? renderer.getSize(new THREE.Vector2())
+    : { x: size, y: size };
+
   const map = {};
 
-  // Intentamos no romper nada si no existen helpers de aislamiento
   const isolate = (id) => {
     if (viewer.isolateComponent) return viewer.isolateComponent(id);
     if (viewer.isolateLink) return viewer.isolateLink(id);
     if (viewer.focusOnPart) return viewer.focusOnPart(id);
-    // Si no hay API específica, no hacemos nada destructivo.
   };
 
   const restore = () => {
@@ -396,7 +388,6 @@ async function generateThumbalist({ viewer, assetDB, size = 256 }) {
     try {
       isolate(id);
 
-      // Ajuste simple de cámara: si viewer trae helper, úsalo.
       if (viewer.fitToObject && typeof viewer.fitToObject === 'function') {
         viewer.fitToObject(id);
       } else if (viewer.fitToSelection && typeof viewer.fitToSelection === 'function') {
@@ -417,7 +408,6 @@ async function generateThumbalist({ viewer, assetDB, size = 256 }) {
     }
   }
 
-  // Restaurar tamaño original
   if (renderer.setSize && originalSize && originalSize.x && originalSize.y) {
     renderer.setSize(originalSize.x, originalSize.y, false);
   }
@@ -425,7 +415,15 @@ async function generateThumbalist({ viewer, assetDB, size = 256 }) {
   return map;
 }
 
-// Export global compatible si el HTML lo llama directamente.
-if (typeof window !== 'undefined' && !window.renderUrdfViewer) {
-  window.renderUrdfViewer = renderUrdfViewer;
+/* =========================================================
+ * Exposición global para compatibilidad legacy
+ * =======================================================*/
+
+if (typeof window !== 'undefined') {
+  if (!window.renderUrdfViewer) {
+    window.renderUrdfViewer = renderUrdfViewer;
+  }
+  if (!window.render) {
+    window.render = renderUrdfViewer;
+  }
 }
