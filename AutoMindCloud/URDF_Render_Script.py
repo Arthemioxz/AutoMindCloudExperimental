@@ -108,13 +108,25 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
             print(f"[Colab] 🚀 Enviando {len(imgs)} imágenes en batch al modelo...")
 
             # Prompt estructurado
+            #text = (
+            #    "Analiza las imágenes de componentes de un robot URDF.\n"
+            #    "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre de la pieza (de la lista 'keys') "
+            #    "y cada valor una descripción breve en español (máx. 2 frases) explicando su función mecánica, "
+            #    "ubicación en el robot y tipo de unión o movimiento que sugiere.\n"
+            #    + json.dumps({"keys": keys}, ensure_ascii=False)
+            #)
+            
             text = (
-                "Analiza las imágenes de componentes de un robot URDF.\n"
-                "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre de la pieza (de la lista 'keys') "
-                "y cada valor una descripción breve en español (máx. 2 frases) explicando su función mecánica, "
-                "ubicación en el robot y tipo de unión o movimiento que sugiere.\n"
-                + json.dumps({"keys": keys}, ensure_ascii=False)
-            )
+                 "Describe con certeza y tono técnico cada componente mostrado en las imágenes del robot URDF.\n"
+                  "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre de la pieza (de la lista 'keys') "
+                  "y cada valor una descripción breve en español (máx. 2 frases) que indique directamente su función mecánica, "
+                  "posición aproximada en el robot y tipo de unión o movimiento, SIN usar expresiones como 'la imagen muestra', "
+                  "'parece ser' o 'probablemente'. Usa afirmaciones directas, por ejemplo: "
+                  "'Soporte lateral derecho del chasis que conecta el motor con la base' o "
+                  "'Eje rotacional central que permite el giro del brazo principal'.\n"
+                  + json.dumps({"keys": keys}, ensure_ascii=False)
+              )
+
 
             payload = {"text": text, "images": imgs}
 
