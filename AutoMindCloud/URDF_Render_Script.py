@@ -1,13 +1,11 @@
 # URDF_Render_Script.py
-# URDF viewer + (opcional) descripciones de componentes vía API externa.
-# Uso básico en Colab:
+# URDF Viewer + Bridge Colab <-> JS para descripciones de componentes.
+#
+# Uso en Colab:
 #   from URDF_Render_Script import URDF_Render
-#   URDF_Render("Model")          # solo viewer
+#   URDF_Render("Model")   # listo, el JS hace capturas, llama al callback, recibe descripciones
 #
-# Uso con descripciones automáticas (tú pasas las imágenes base64 de cada pieza):
-#   URDF_Render("Model", component_images_b64=images)
-#
-# Todo el código de integración API está aquí; en el notebook solo importas y llamas.
+# No pongas lógica suelta en Colab: todo vive aquí.
 
 import base64
 import re
@@ -17,10 +15,11 @@ import shutil
 import zipfile
 import requests
 from IPython.display import HTML
-import gdown
 
 API_DEFAULT_BASE = "https://gpt-proxy-github-619255898589.us-central1.run.app"
 API_INFER_PATH = "/infer"
+
+_COLAB_CALLBACK_REGISTERED = False
 
 
 def Download_URDF(Drive_Link, Output_Name="Model"):
@@ -36,6 +35,8 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
     os.makedirs(tmp_extract, exist_ok=True)
     if os.path.exists(final_dir):
         shutil.rmtree(final_dir)
+
+    import gdown  # import aquí para evitar dependencia si no se usa
 
     gdown.download(url, zip_path, quiet=True)
     with zipfile.ZipFile(zip_path, "r") as zf:
@@ -56,108 +57,119 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
     return final_dir
 
 
-# ------------------- Helpers: API de descripciones -------------------
+def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120):
+    """
+    Registra el callback 'describe_component_images' una sola vez.
+    Este callback será invocado desde JS via google.colab.kernel.invokeFunction.
+    """
+    global _COLAB_CALLBACK_REGISTERED
+    if _COLAB_CALLBACK_REGISTERED:
+        return
 
-
-def _safe_health(base: str) -> None:
-    """Ping opcional a /health (no rompe si falla)."""
-    url = base.rstrip("/") + "/health"
     try:
-        requests.get(url, timeout=5)
-    except Exception:
-        pass
+        from google.colab import output  # type: ignore
 
+        api_base = api_base.rstrip("/")
+        infer_url = api_base + API_INFER_PATH
 
-def _describe_components_from_images(
-    images_b64,
-    api_base: str = API_DEFAULT_BASE,
-    timeout: int = 120,
-):
-    """
-    Recibe una lista de imágenes base64 (sin prefijo data:),
-    llama a la API y devuelve lista de textos (una descripción por imagen).
-    """
-    if not images_b64:
-        return []
+        @output.register_callback("describe_component_images")
+        def _describe_component_images(entries):
+            """
+            entries: lista de dicts:
+              { "key": assetKey, "image_b64": "<solo base64, sin data:>" }
+            Devuelve: { assetKey: descripcion }
+            """
+            print(
+                f"[Colab] describe_component_images: recibido payload con {len(entries)} imágenes."
+            )
 
-    api_base = api_base.rstrip("/")
-    infer_url = api_base + API_INFER_PATH
+            results = {}
 
-    _safe_health(api_base)
+            for item in entries:
+                try:
+                    key = item.get("key")
+                    img_b64 = item.get("image_b64")
+                except AttributeError:
+                    continue
 
-    # quitar duplicados preservando orden
-    unique = list(dict.fromkeys(images_b64))
+                if not key or not img_b64:
+                    continue
 
-    out = []
-    for b64 in unique:
-        if not b64:
-            out.append("Descripción no disponible.")
-            continue
+                payload = {
+                    "text": (
+                        "Describe brevemente qué pieza de robot se ve en esta imagen. "
+                        "Enfócate en función mecánica, posición aproximada en el robot y tipo de unión. "
+                        "Español, máximo 2 frases."
+                    ),
+                    "images": [{"image_b64": img_b64, "mime": "image/png"}],
+                }
 
-        payload = {
-            "text": (
-                "Describe brevemente qué pieza de robot se ve en esta imagen. "
-                "Enfócate en función mecánica, posición aproximada en el robot y tipo de unión. "
-                "Español, máximo 2 frases."
-            ),
-            "images": [{"image_b64": b64, "mime": "image/png"}],
-        }
+                try:
+                    r = requests.post(infer_url, json=payload, timeout=timeout)
+                except Exception as e:
+                    print(
+                        f"[Colab] Error de conexión API para {key}: {e}"
+                    )
+                    results[key] = ""
+                    continue
 
-        try:
-            r = requests.post(infer_url, json=payload, timeout=timeout)
-        except Exception as e:
-            out.append(f"Descripción no disponible (error de conexión: {e}).")
-            continue
+                if r.status_code != 200:
+                    print(
+                        f"[Colab] API respondió {r.status_code} para {key}: {r.text[:200]}"
+                    )
+                    results[key] = ""
+                    continue
 
-        if r.status_code != 200:
-            out.append(f"Descripción no disponible (HTTP {r.status_code}).")
-            continue
+                txt = r.text.strip()
+                # Si viene como string JSON con comillas
+                try:
+                    if txt.startswith('"') and txt.endswith('"'):
+                        txt = json.loads(txt)
+                except Exception:
+                    pass
 
-        txt = r.text.strip()
-        # Por si viene como string JSON con comillas
-        try:
-            if txt.startswith('"') and txt.endswith('"'):
-                txt = json.loads(txt)
-        except Exception:
-            pass
+                results[key] = txt or ""
 
-        if not txt:
-            txt = "Descripción no disponible."
-        out.append(txt)
+            print(
+                f"[Colab] describe_component_images: enviando {len(results)} descripciones de vuelta al JS."
+            )
+            return results
 
-    return out
+        _COLAB_CALLBACK_REGISTERED = True
+        print(
+            "[Colab] Callback 'describe_component_images' registrado correctamente."
+        )
 
-
-# --------------------------- URDF_Render ---------------------------
+    except Exception as e:
+        # Si no estamos en Colab, solo logueamos; el JS detectará que no hay puente
+        print(
+            f"[Colab] No se pudo registrar callback describe_component_images (no Colab o error): {e}"
+        )
 
 
 def URDF_Render(
     folder_path: str = "Model",
     select_mode: str = "link",
     background: int | None = 0xFFFFFF,
-    # dynamic loader (repo/branch/file)
-    repo: str = "Arthemioxz/AutoMindCloudExperimental",
+    repo: str = "ArtemioA/AutoMindCloudExperimental",
     branch: str = "main",
     compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
-    # 🔹 descripción automática de componentes
-    describe_components: bool = True,
-    component_images_b64=None,
     api_base: str = API_DEFAULT_BASE,
-    max_images: int = 64,
 ):
     """
-    Renderiza el viewer URDF de pantalla completa.
+    Renderiza el URDF Viewer de pantalla completa y registra el callback Colab→JS:
 
-    Si `describe_components=True` y `component_images_b64` es una lista de strings base64
-    (una imagen por componente), este script:
-      1) Llama a la API externa para cada imagen.
-      2) Inserta el array resultante en el HTML como COMPONENT_DESCRIPTIONS.
-      3) Pasa `componentDescriptions` a urdf_viewer_main.js, donde
-         ComponentsPanel mostrará la descripción al hacer click.
+    Flujo:
+      1. JS construye thumbnails de cada componente al inicio.
+      2. JS llama a google.colab.kernel.invokeFunction('describe_component_images', [entries], {}).
+      3. Este script llama a la API externa y devuelve { assetKey: descripción }.
+      4. JS guarda esas descripciones y ComponentsPanel las muestra al hacer click.
     """
 
-    # ---- Encontrar /urdf y /meshes ----
+    # Registrar callback (si estamos en Colab)
+    _register_colab_callback(api_base=api_base)
 
+    # ---------- Encontrar directorios urdf / meshes ----------
     def find_dirs(root):
         u = os.path.join(root, "urdf")
         m = os.path.join(root, "meshes")
@@ -178,24 +190,25 @@ def URDF_Render(
             f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>"
         )
 
-    # ---- Leer URDF principal ----
+    # ---------- Leer URDF principal ----------
     urdf_files = [
         os.path.join(urdf_dir, f)
         for f in os.listdir(urdf_dir)
         if f.lower().endswith(".urdf")
     ]
     urdf_files.sort(
-        key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0, reverse=True
+        key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
+        reverse=True,
     )
 
     urdf_raw = ""
-    mesh_refs = []
+    mesh_refs: list[str] = []
 
     for upath in urdf_files:
         try:
             with open(
                 upath, "r", encoding="utf-8", errors="ignore"
-            ) as f:  # lectura robusta
+            ) as f:
                 txt = f.read().lstrip("\ufeff")
             refs = re.findall(
                 r'filename="([^"]+\.(?:stl|dae))"', txt, re.IGNORECASE
@@ -213,7 +226,7 @@ def URDF_Render(
         ) as f:
             urdf_raw = f.read().lstrip("\ufeff")
 
-    # ---- Construir meshDB (keys normalizados -> base64) ----
+    # ---------- Construir meshDB ----------
     disk_files = []
     for root, _, files in os.walk(meshes_dir):
         for name in files:
@@ -233,7 +246,7 @@ def URDF_Render(
         by_rel[rel] = path
         by_base[os.path.basename(path).lower()] = path
 
-    _cache = {}
+    _cache: dict[str, str] = {}
     mesh_db: dict[str, str] = {}
 
     def b64(path: str) -> str:
@@ -249,7 +262,6 @@ def URDF_Render(
         if k not in mesh_db:
             mesh_db[k] = b64(path)
 
-    # Mapear referencias declaradas en el URDF a archivos reales
     for ref in mesh_refs:
         raw = ref.replace("\\", "/").lower().lstrip("./")
         pkg = raw[10:] if raw.startswith("package://") else raw
@@ -260,29 +272,13 @@ def URDF_Render(
             add_entry(pkg, cand)
             add_entry(bn, cand)
 
-    # Incluir texturas / imágenes sueltas que no se hayan mapeado aún
+    # incluir texturas/imágenes no mapeadas
     for path in disk_files:
         bn = os.path.basename(path).lower()
         if bn.endswith((".png", ".jpg", ".jpeg")) and bn not in mesh_db:
             add_entry(bn, path)
 
-    # ---- Opcional: descripciones de componentes con API ----
-    component_descriptions = None
-    if describe_components and component_images_b64:
-        try:
-            # limitado para no spamear la API
-            images = list(dict.fromkeys(component_images_b64))[:max_images]
-            if images:
-                component_descriptions = _describe_components_from_images(
-                    images_b64=images,
-                    api_base=api_base,
-                )
-        except Exception as e:
-            # No romper el viewer si la API falla
-            component_descriptions = [f"Descripción no disponible (error: {e})."]
-
-    # ---- Preparar payload JS ----
-
+    # ---------- Helpers de escape ----------
     def esc(s: str) -> str:
         return (
             s.replace("\\", "\\\\")
@@ -296,12 +292,7 @@ def URDF_Render(
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
 
-    if isinstance(component_descriptions, list) and component_descriptions:
-        comp_desc_js = json.dumps(component_descriptions, ensure_ascii=False)
-    else:
-        comp_desc_js = "null"
-
-    # ---- HTML completo ----
+    # ---------- HTML ----------
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -360,7 +351,6 @@ def URDF_Render(
   <img src="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png" alt="badge"/>
 </div>
 
-<!-- UMD deps -->
 <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
@@ -368,7 +358,6 @@ def URDF_Render(
 <script defer src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
 
 <script type="module">
-  // Helpers de viewport / Colab
   function applyVHVar() {{
     const vh = (window.visualViewport?.height || window.innerHeight || 600) * 0.01;
     document.documentElement.style.setProperty('--vh', `${{vh}}px`);
@@ -403,7 +392,6 @@ def URDF_Render(
   }}
   setTimeout(setColabFrameHeight, 50);
 
-  // Loader dinámico desde GitHub/jsDelivr
   const repo = {json.dumps(repo)};
   const branch = {json.dumps(branch)};
   const compFile = {json.dumps(compFile)};
@@ -423,11 +411,10 @@ def URDF_Render(
     }}
   }}
 
-  await new Promise(r => setTimeout(r, 50)); // esperar UMDs
+  await new Promise(r => setTimeout(r, 50));
 
   const SELECT_MODE = {sel_js};
   const BACKGROUND  = {bg_js};
-  const COMPONENT_DESCRIPTIONS = {comp_desc_js};
 
   const opts = {{
     container: document.getElementById('app'),
@@ -436,8 +423,7 @@ def URDF_Render(
     selectMode: SELECT_MODE,
     background: BACKGROUND,
     pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
-    autoResize: true,
-    componentDescriptions: COMPONENT_DESCRIPTIONS
+    autoResize: true
   }};
 
   let mod = null;
@@ -445,7 +431,9 @@ def URDF_Render(
     const ver = await latest();
     const base = 'https://cdn.jsdelivr.net/gh/' + repo + '@' + ver + '/';
     mod = await import(base + compFile + '?v=' + Date.now());
+    console.debug('[URDF] Cargado módulo viewer desde commit', ver);
   }} catch (_e) {{
+    console.debug('[URDF] Fallback a branch', branch);
     mod = await import(
       'https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now()
     );
