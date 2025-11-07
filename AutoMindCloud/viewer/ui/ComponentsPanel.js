@@ -1,5 +1,5 @@
-// /viewer/ui/ComponentsPanel.js
-// Panel de componentes + thumbnails + frame de descripción por componente.
+// ComponentsPanel.js
+// Panel de componentes con thumbnails y frame de descripción.
 
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll) {
@@ -145,7 +145,7 @@ export function createComponentsPanel(app, theme) {
       : null) || document.body;
   host.appendChild(ui.root);
 
-  // Hovers botón principal
+  // Hover botón
   ui.btn.addEventListener("mouseenter", () => {
     ui.btn.style.transform = "translateY(-1px) scale(1.02)";
     ui.btn.style.background = theme.tealFaint;
@@ -157,7 +157,7 @@ export function createComponentsPanel(app, theme) {
     ui.btn.style.borderColor = theme.stroke;
   });
 
-  // Hovers Show all
+  // Hover show all
   ui.showAllBtn.addEventListener("mouseenter", () => {
     ui.showAllBtn.style.transform = "translateY(-1px) scale(1.02)";
     ui.showAllBtn.style.background = theme.tealFaint;
@@ -240,21 +240,7 @@ export function createComponentsPanel(app, theme) {
       return;
     }
 
-    const normalized = items
-      .map((it) => ({
-        assetKey: it.assetKey || it.key || "",
-        base: it.base || basenameNoExt(it.assetKey || ""),
-        ext: it.ext || extOf(it.assetKey || ""),
-        count: it.count || 1,
-      }))
-      .sort((a, b) =>
-        a.base.localeCompare(b.base, undefined, {
-          numeric: true,
-          sensitivity: "base",
-        })
-      );
-
-    normalized.forEach((ent, index) => {
+    items.forEach((ent, index) => {
       const row = document.createElement("div");
       applyStyles(row, rowStyles(theme));
 
@@ -286,7 +272,7 @@ export function createComponentsPanel(app, theme) {
       row.appendChild(meta);
       ui.list.appendChild(row);
 
-      // Hover fila
+      // hover row
       row.addEventListener("mouseenter", () => {
         row.style.transform = "translateY(-1px) scale(1.02)";
         row.style.background = theme.tealFaint;
@@ -298,7 +284,7 @@ export function createComponentsPanel(app, theme) {
         row.style.borderColor = theme.stroke;
       });
 
-      // Click: aislar e inyectar descripción
+      // click row: aislar + mostrar descripción
       row.addEventListener("click", () => {
         try {
           app.isolate.asset(ent.assetKey);
@@ -307,7 +293,7 @@ export function createComponentsPanel(app, theme) {
         set(true);
       });
 
-      // Thumbnail async
+      // thumbnail (usa cache del offscreen, no recaptura caro)
       (async () => {
         try {
           const url = await app.assets.thumbnail?.(ent.assetKey);
@@ -327,8 +313,7 @@ export function createComponentsPanel(app, theme) {
     try {
       if (typeof app.getComponentDescription === "function") {
         text =
-          app.getComponentDescription(ent.assetKey, index) ||
-          "";
+          app.getComponentDescription(ent.assetKey, index) || "";
       }
     } catch (_) {
       text = "";
@@ -336,18 +321,22 @@ export function createComponentsPanel(app, theme) {
 
     if (!text && app.componentDescriptions) {
       const src = app.componentDescriptions;
-      if (Array.isArray(src)) {
-        text = src[index] || "";
-      } else if (typeof src === "object") {
-        text =
-          src[ent.assetKey] ||
-          src[basenameNoExt(ent.assetKey)] ||
-          "";
+      if (src[ent.assetKey]) text = src[ent.assetKey];
+      else {
+        const base = basenameNoExt(ent.assetKey);
+        if (src[base]) text = src[base];
       }
     }
 
     if (!text) {
-      text = "Sin descripción generada para esta pieza.";
+      console.debug(
+        "[ComponentsPanel] Sin descripción (aún) para",
+        ent.assetKey
+      );
+      ui.details.style.display = "none";
+      ui.detailsTitle.textContent = "";
+      ui.detailsBody.textContent = "";
+      return;
     }
 
     ui.detailsTitle.textContent = ent.base;
@@ -382,7 +371,7 @@ export function createComponentsPanel(app, theme) {
     } catch (_) {}
   }
 
-  // Hotkey 'c' para abrir/cerrar
+  // hotkey 'c'
   function onHotkeyC(e) {
     const tag = (e.target && e.target.tagName) || "";
     const t = tag.toLowerCase();
@@ -397,14 +386,14 @@ export function createComponentsPanel(app, theme) {
 
   document.addEventListener("keydown", onHotkeyC, true);
 
-  // Estado inicial
+  // inicial
   set(false);
   maybeBuild();
 
   return { open: openPanel, close: closePanel, set, refresh, destroy };
 }
 
-/* ---------------------- Helpers internos ---------------------- */
+/* ----------------- Helpers ----------------- */
 
 function applyStyles(el, styles) {
   Object.assign(el.style, styles);
@@ -418,12 +407,6 @@ function basenameNoExt(p) {
   const q = String(p || "").split("/").pop().split("?")[0].split("#")[0];
   const dot = q.lastIndexOf(".");
   return dot >= 0 ? q.slice(0, dot) : q;
-}
-
-function extOf(p) {
-  const q = String(p || "").split("?")[0].split("#")[0];
-  const dot = q.lastIndexOf(".");
-  return dot >= 0 ? q.slice(dot + 1).toLowerCase() : "";
 }
 
 function rowStyles(theme) {
