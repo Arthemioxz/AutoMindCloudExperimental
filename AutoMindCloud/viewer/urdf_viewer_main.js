@@ -1,6 +1,4 @@
 // urdf_viewer_main.js
-// Entrypoint: crea viewer, paneles y puente con Colab para descripciones.
-
 import { THEME } from "./Theme.js";
 import { createViewer } from "./core/ViewerCore.js";
 import { buildAssetDB, createLoadMeshCb } from "./core/AssetDB.js";
@@ -18,10 +16,8 @@ export function render(opts = {}) {
     clickAudioDataURL = null,
   } = opts;
 
-  // Core
   const core = createViewer({ container, background });
 
-  // Asset DB + registro de meshes por assetKey
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map();
 
@@ -36,11 +32,8 @@ export function render(opts = {}) {
   });
 
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
-
-  // Offscreen thumbnails con cache
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
-  // Interacción
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -50,7 +43,6 @@ export function render(opts = {}) {
     selectMode,
   });
 
-  // App facade
   const app = {
     ...core,
     robot,
@@ -71,40 +63,38 @@ export function render(opts = {}) {
       tools.set(!!open);
     },
 
-    // Se llena cuando llega la respuesta de Colab
+    // se llenará al recibir respuesta de Colab
     componentDescriptions: {},
 
     getComponentDescription(assetKey, index) {
-      const map = app.componentDescriptions || {};
-      if (map[assetKey]) return map[assetKey];
+      const src = app.componentDescriptions || {};
 
-      const base = (assetKey || "").split("/").pop().split(".")[0];
-      if (map[base]) return map[base];
+      if (src && typeof src === "object" && !Array.isArray(src)) {
+        if (src[assetKey]) return src[assetKey];
+        const base = (assetKey || "").split("/").pop().split(".")[0];
+        if (src[base]) return src[base];
+      }
 
-      // Si viene como array (no es nuestro caso principal, pero soportado)
-      if (Array.isArray(map) && typeof index === "number") {
-        return map[index] || "";
+      if (Array.isArray(src) && typeof index === "number") {
+        return src[index] || "";
       }
 
       return "";
     },
   };
 
-  // UI
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // Click SFX opcional
   if (clickAudioDataURL) {
     try {
       installClickSound(clickAudioDataURL);
     } catch (_) {}
   }
 
-  // Bootstrap: capturar componentes y pedir descripciones AL INICIO
+  // 🔹 Capturar componentes y pedir descripciones APENAS INICIA
   bootstrapComponentDescriptions(app, assetToMeshes, off);
 
-  // Destroy
   const destroy = () => {
     try {
       comps.destroy();
@@ -126,10 +116,9 @@ export function render(opts = {}) {
   return { ...app, destroy };
 }
 
-/* ------------------------ Bootstrap Colab Bridge ------------------------ */
+/* ---------------- Bootstrap: JS ↔ Colab ---------------- */
 
 function bootstrapComponentDescriptions(app, assetToMeshes, off) {
-  // Verificar puente de Colab
   const hasColab =
     typeof window !== "undefined" &&
     window.google &&
@@ -139,7 +128,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
 
   if (!hasColab) {
     console.debug(
-      "[Components] Colab bridge no disponible; se omite petición de descripciones."
+      "[Components] Colab bridge no disponible; no se solicitarán descripciones."
     );
     return;
   }
@@ -182,15 +171,68 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
         [entries],
         {}
       );
-      const descMap =
-        (result && result.data && result.data[0]) || {};
+
       console.debug(
-        "[Components] Descripciones recibidas desde Colab:",
-        descMap
+        "[Components] Respuesta raw de describe_component_images:",
+        result
       );
-      app.componentDescriptions = descMap;
-      if (typeof window !== "undefined") {
-        window.COMPONENT_DESCRIPTIONS = descMap;
+
+      let descMap = {};
+
+      // Formatos posibles:
+      // 1) result.data["application/json"] = { ... }
+      // 2) result.data["text/plain"] = "{'key': 'desc', ...}"
+      // 3) result.data[0] = { ... } (caso lista)
+      if (result && result.data) {
+        const d = result.data;
+
+        if (d["application/json"] && typeof d["application/json"] === "object") {
+          descMap = d["application/json"];
+        } else if (Array.isArray(d) && d.length && typeof d[0] === "object") {
+          descMap = d[0];
+        } else if (d["text/plain"]) {
+          const t = d["text/plain"];
+          if (typeof t === "string") {
+            try {
+              // dict de Python -> comillas simples => las pasamos a dobles
+              const fixed = t.replace(/'/g, '"');
+              const parsed = JSON.parse(fixed);
+              if (parsed && typeof parsed === "object") {
+                descMap = parsed;
+              }
+            } catch (e) {
+              console.warn(
+                "[Components] No se pudo parsear text/plain como JSON:",
+                e,
+                t
+              );
+            }
+          }
+        }
+      }
+
+      // Fallback ultra defensivo: si el propio result parece mapa
+      if (
+        (!descMap || !Object.keys(descMap).length) &&
+        result &&
+        typeof result === "object" &&
+        !Array.isArray(result) &&
+        result.data == null
+      ) {
+        descMap = result;
+      }
+
+      console.debug("[Components] Mapa de descripciones final:", descMap);
+
+      if (descMap && typeof descMap === "object") {
+        app.componentDescriptions = descMap;
+        if (typeof window !== "undefined") {
+          window.COMPONENT_DESCRIPTIONS = descMap; // para inspeccionar en consola
+        }
+      } else {
+        console.warn(
+          "[Components] No se obtuvo un mapa de descripciones válido."
+        );
       }
     } catch (err) {
       console.error(
@@ -201,7 +243,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   })();
 }
 
-/* ---------------------------- Helpers ---------------------------- */
+/* ---------------- Helpers viewer ---------------- */
 
 function listAssets(assetToMeshes) {
   const items = [];
@@ -251,26 +293,22 @@ function showAll(core) {
 }
 
 function frameMeshes(core, meshes) {
-  if (!meshes || !meshes.length || !core.camera || !core.controls) return;
+  if (!meshes || !meshes.length || !core.camera) return;
+  const { camera, renderer, scene } = core;
 
-  const { camera, controls, renderer, scene } = core;
   const box = new THREE.Box3();
   const tmp = new THREE.Box3();
   let has = false;
   const vis = [];
 
-  for (const m of meshes) {
-    vis.push([m, m.visible]);
-  }
+  for (const m of meshes) vis.push([m, m.visible]);
 
   for (const m of meshes) {
     tmp.setFromObject(m);
     if (!has) {
       box.copy(tmp);
       has = true;
-    } else {
-      box.union(tmp);
-    }
+    } else box.union(tmp);
   }
 
   if (!has) {
@@ -294,11 +332,10 @@ function frameMeshes(core, meshes) {
     Math.sin(el),
     Math.cos(el) * Math.sin(az)
   ).multiplyScalar(dist);
-
   camera.position.copy(center.clone().add(dirV));
   camera.lookAt(center);
-  renderer.render(scene, camera);
 
+  renderer.render(scene, camera);
   vis.forEach(([o, v]) => (o.visible = v));
 }
 
@@ -311,11 +348,10 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     };
   }
 
-  const thumbCache = new Map();
+  const cache = new Map();
 
-  function snapshotAsset(assetKey) {
-    if (!assetKey) return null;
-    if (thumbCache.has(assetKey)) return thumbCache.get(assetKey);
+  function snapshot(assetKey) {
+    if (cache.has(assetKey)) return cache.get(assetKey);
 
     const meshes = assetToMeshes.get(assetKey) || [];
     if (!meshes.length) return null;
@@ -335,9 +371,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       if (!has) {
         box.copy(tmp);
         has = true;
-      } else {
-        box.union(tmp);
-      }
+      } else box.union(tmp);
     }
 
     if (!has) {
@@ -368,22 +402,20 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const url = renderer.domElement.toDataURL("image/png");
 
     vis.forEach(([o, v]) => (o.visible = v));
-    thumbCache.set(assetKey, url);
+    cache.set(assetKey, url);
     return url;
   }
 
   return {
     thumbnail: async (assetKey) => {
       try {
-        return snapshotAsset(assetKey);
+        return snapshot(assetKey);
       } catch (e) {
         console.warn("[Thumbnails] error:", e);
         return null;
       }
     },
-    destroy() {
-      // usamos renderer principal; no destruimos aquí
-    },
+    destroy() {},
   };
 }
 
