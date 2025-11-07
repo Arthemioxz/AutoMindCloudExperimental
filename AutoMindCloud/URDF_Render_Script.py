@@ -1,18 +1,10 @@
 # URDF_Render_Script.py
-# Puente Colab <-> JS para URDF Viewer + IA de descripciones por componente (MODO SECUENCIAL).
+# Puente Colab <-> JS para URDF Viewer + IA de descripciones por componente (secuencial).
 #
-# Uso en Colab:
+# Uso:
 #   from URDF_Render_Script import Download_URDF, URDF_Render
 #   Download_URDF("LINK_DE_DRIVE", "URDFModel")
 #   URDF_Render("URDFModel")
-#
-# Flujo:
-#   - JS (urdf_viewer_main.js) genera thumbnails (thumbalist) por assetKey (NO SE TOCA).
-#   - Para cada componente:
-#       JS llama a google.colab.kernel.invokeFunction("describe_component_image", [payload], {})
-#       payload = { "key": assetKey, "image_b64": "..." }
-#       Python llama a la API IA y devuelve { assetKey: "descripcion" }.
-#   - JS actualiza el panel Components de forma incremental.
 
 import os
 import re
@@ -39,7 +31,7 @@ _COLAB_CALLBACK_REGISTERED = False
 # ======================= UTILIDADES URDF =====================
 
 def Download_URDF(Drive_Link: str, Output_Name: str = "Model") -> str:
-    """Descarga un ZIP de Drive y deja carpeta con /urdf y /meshes."""
+    """Descarga ZIP de Drive y deja carpeta con /urdf y /meshes."""
     root_dir = "/content"
     file_id = Drive_Link.split("/d/")[1].split("/")[0]
     url = f"https://drive.google.com/uc?id={file_id}"
@@ -50,12 +42,13 @@ def Download_URDF(Drive_Link: str, Output_Name: str = "Model") -> str:
     if os.path.exists(tmp_extract):
         shutil.rmtree(tmp_extract)
     os.makedirs(tmp_extract, exist_ok=True)
+
     if os.path.exists(final_dir):
         shutil.rmtree(final_dir)
 
     import gdown  # type: ignore
-
     gdown.download(url, zip_path, quiet=True)
+
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(tmp_extract)
 
@@ -80,7 +73,7 @@ def _encode_file_b64(path: str) -> str:
 
 
 def _collect_mesh_db(meshes_dir: str) -> Dict[str, str]:
-    """Construye meshDB: key -> base64 respetando rutas relativas."""
+    """Construye meshDB: key -> base64 (meshes + texturas)."""
     exts_bin = {".stl", ".dae", ".step", ".stp"}
     exts_tex = {".png", ".jpg", ".jpeg"}
 
@@ -91,9 +84,11 @@ def _collect_mesh_db(meshes_dir: str) -> Dict[str, str]:
             ext = os.path.splitext(name)[1].lower()
             if ext not in (exts_bin | exts_tex):
                 continue
+
             full = os.path.join(root, name)
             rel = os.path.relpath(full, meshes_dir).replace(os.sep, "/")
             key = f"meshes/{rel}"
+
             try:
                 mesh_db[key] = _encode_file_b64(full)
             except Exception as e:
@@ -104,7 +99,7 @@ def _collect_mesh_db(meshes_dir: str) -> Dict[str, str]:
 
 
 def _find_urdf_and_meshes(root: str):
-    """Busca /urdf y /meshes en root o 1 nivel bajo."""
+    """Busca /urdf y /meshes en root o un nivel abajo."""
     u = os.path.join(root, "urdf")
     m = os.path.join(root, "meshes")
     if os.path.isdir(u) and os.path.isdir(m):
@@ -122,6 +117,7 @@ def _find_urdf_and_meshes(root: str):
 
 
 def _pick_main_urdf(urdf_dir: str) -> str:
+    """Elige el URDF principal (heurística: más grande con refs a meshes)."""
     urdf_files = [
         os.path.join(urdf_dir, f)
         for f in os.listdir(urdf_dir)
@@ -145,7 +141,7 @@ def _pick_main_urdf(urdf_dir: str) -> str:
                 re.IGNORECASE,
             )
             if refs:
-                print(f"[URDF] Usando URDF: {os.path.basename(upath)} ({len(refs)} meshes referenciados)")
+                print(f"[URDF] Usando URDF: {os.path.basename(upath)} con {len(refs)} meshes.")
                 return txt
         except Exception:
             pass
@@ -157,16 +153,13 @@ def _pick_main_urdf(urdf_dir: str) -> str:
         return ""
 
 
-# =============== CALLBACK COLAB: describe_component_image ===============
+# =================== CALLBACK COLAB SECUENCIAL ===================
 
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120) -> None:
     """
-    Registra describe_component_image una vez.
-
-    JS envía:
-      { "key": assetKey, "image_b64": "..." }
-    Devuelve:
-      { assetKey: "descripcion en español" }
+    Registra describe_component_image (1 imagen -> 1 descripción).
+    JS envía: { "key": assetKey, "image_b64": "..." }
+    Python responde: { assetKey: "descripcion" }
     """
     global _COLAB_CALLBACK_REGISTERED
     if _COLAB_CALLBACK_REGISTERED:
@@ -186,7 +179,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         if not raw:
             return {}
 
-        # 1) Intentar JSON directo
+        # JSON directo
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, dict):
@@ -203,7 +196,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         except Exception:
             pass
 
-        # 2) Dict estilo Python
+        # Dict estilo Python
         try:
             fixed = (
                 raw.replace("'", '"')
@@ -220,7 +213,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         except Exception:
             pass
 
-        # 3) Buscar fragmento {...}
+        # Fragmento {...}
         try:
             i = raw.find("{")
             j = raw.rfind("}")
@@ -241,7 +234,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
     def _describe_component_image(entry: Any) -> Dict[str, str]:
         print("[Colab] describe_component_image: payload recibido.")
 
-        # Soporta [ {..} ]
         if isinstance(entry, list):
             if not entry:
                 return {}
@@ -264,7 +256,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 "Devuélveme SOLO un JSON válido (sin texto extra). Formatos aceptados:\n"
                 f'- {{\"{key}\": \"descripcion breve en español\"}}\n'
                 '- o {\"description\": \"...\"}\n\n'
-                "La descripción (1-2 frases) debe indicar: función mecánica aproximada, "
+                "La descripción (1-2 frases) debe indicar función mecánica aproximada, "
                 "zona del robot donde va y tipo de unión o movimiento sugerido."
             ),
             "images": [
@@ -312,10 +304,10 @@ def URDF_Render(
     background: int = 0xffffff,
     repo: str = "Arthemioxz/AutoMindCloudExperimental",
     branch: str = "main",
-    compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
+    compFile: str = "viewer/urdf_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
 ):
-    """Renderiza el viewer dentro de la celda con todas las dependencias JS."""
+    """Renderiza el viewer con THREE + OrbitControls + URDFLoader + urdf_viewer_main.js."""
 
     _register_colab_callback(api_base=api_base)
 
@@ -334,10 +326,10 @@ def URDF_Render(
     urdf_b64 = base64.b64encode(urdf_text.encode("utf-8")).decode("ascii")
     mesh_db_json = json.dumps(mesh_db)
 
+    # Cache-buster simple
     import time
     cache_bust = str(int(time.time()))
 
-    # Cargamos THREE, OrbitControls y URDFLoader ANTES del módulo del viewer.
     html = f"""
 <div id="urdf-viewer" style="
   width: 100%;
@@ -354,15 +346,13 @@ def URDF_Render(
 <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/build/URDFLoader.min.js"></script>
 
-<!-- Entrypoint del viewer (tu archivo en GitHub) -->
 <script type="module">
-  import {{ render }} from "https://cdn.jsdelivr.net/gh/{repo}@{branch}/{compFile}?v={cache_bust}";
-
   const container = document.getElementById("urdf-viewer");
   const urdfContent = atob("{urdf_b64}");
   const meshDB = {mesh_db_json};
 
-  // Llamamos a tu render, que usa THREE/URDFLoader globales ya cargados.
+  import {{ render }} from "https://cdn.jsdelivr.net/gh/{repo}@{branch}/{compFile}?v={cache_bust}";
+
   render({{
     container,
     urdfContent,
