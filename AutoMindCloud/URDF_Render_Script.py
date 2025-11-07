@@ -153,7 +153,7 @@ def URDF_Render(
     folder_path: str = "Model",
     select_mode: str = "link",
     background: int | None = 0xFFFFFF,
-    repo: str = "ArtemioA/AutoMindCloudExperimental",
+    repo: str = "Arthemioxz/AutoMindCloudExperimental",
     branch: str = "main",
     compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
