@@ -1,5 +1,5 @@
-// /viewer/urdf_viewer_main.js
-// Entrypoint principal del URDF Viewer + sistema de descripciones por mini-lotes.
+// AutoMindCloud/viewer/urdf_viewer_main.js
+// Entrypoint principal del URDF Viewer + descripciones en mini-lotes.
 
 import { THEME } from "./Theme.js";
 import { createViewer } from "./core/ViewerCore.js";
@@ -22,7 +22,7 @@ export function render(opts = {}) {
   if (!urdfContent) throw new Error("[urdf_viewer_main] Falta 'urdfContent'.");
 
   // =========================
-  // Crear Viewer base
+  // Viewer base
   // =========================
   const viewer = createViewer({
     container,
@@ -40,15 +40,16 @@ export function render(opts = {}) {
     setSceneToggles,
     setBackground,
     setPixelRatio,
-    onResize, // manejado dentro de ViewerCore
+    onResize, // manejado internamente
   } = viewer;
 
   const app = {
     theme: THEME,
     scene,
     camera,
-    controls,
     renderer,
+    controls,
+    loadURDF,
     setProjection,
     setSceneToggles,
     setBackground,
@@ -57,7 +58,7 @@ export function render(opts = {}) {
   };
 
   // =========================
-  // AssetDB + carga URDF
+  // Carga URDF con AssetDB
   // =========================
   const assetDB = buildAssetDB(meshDB);
   const loadMeshCb = createLoadMeshCb(assetDB);
@@ -65,7 +66,7 @@ export function render(opts = {}) {
   app.robot = robot;
 
   // =========================
-  // Selección / interacción
+  // Interacción
   // =========================
   attachInteraction({
     scene,
@@ -78,14 +79,13 @@ export function render(opts = {}) {
   });
 
   // =========================
-  // Primero: ComponentsPanel
-  // (para que ToolsDock ya lo vea y dibuje el botón)
+  // Panel de Componentes (primero)
   // =========================
   const componentsPanel = createComponentsPanel(app, THEME);
   app.componentsPanel = componentsPanel;
 
   // =========================
-  // Luego: ToolsDock
+  // ToolsDock (después, para que vea el panel)
   // =========================
   const toolsDock = createToolsDock(app, THEME);
   app.toolsDock = toolsDock;
@@ -96,7 +96,7 @@ export function render(opts = {}) {
   }
 
   // =========================
-  // Focus helper para un assetKey
+  // Focus helper
   // =========================
   app.focusComponent = function (assetKey) {
     if (!robot || !assetKey || !window.THREE) return;
@@ -138,9 +138,9 @@ export function render(opts = {}) {
   };
 
   // =========================
-  // Thumbalist: snapshots por componente
-  //  - thumbDataUrl: buena resolución para la lista.
-  //  - image_b64: versión reducida SOLO para enviar a la API.
+  // Thumbnails por componente:
+  //  - thumbDataUrl: buena calidad para la lista.
+  //  - image_b64: baja resolución para API.
   // =========================
   async function snapshotComponents() {
     if (!robot || !window.THREE) return [];
@@ -185,8 +185,8 @@ export function render(opts = {}) {
     const tmpBox = new THREE.Box3();
     const tmpV = new THREE.Vector3();
 
-    const MAX_THUMB = 512; // buena calidad UI
-    const LOW_MAX = 320; // baja resol para API
+    const MAX_THUMB = 512;
+    const LOW_MAX = 320;
 
     for (const key of keys) {
       const meshes = assetMeshes.get(key) || [];
@@ -218,7 +218,7 @@ export function render(opts = {}) {
         controls.update();
       }
 
-      // Hi-res para UI (lista)
+      // Hi-res para UI
       const baseW = orig.size.x || renderer.domElement.width || 640;
       const baseH = orig.size.y || renderer.domElement.height || 480;
       const scaleHi = Math.min(1, MAX_THUMB / Math.max(baseW, baseH));
@@ -248,8 +248,8 @@ export function render(opts = {}) {
         key,
         assetKey: key,
         base: key.split("/").pop(),
-        thumbDataUrl: hiDataUrl, // 👍 buena resolución para la lista
-        image_b64: lowB64, // 👍 versión reducida solo para API
+        thumbDataUrl: hiDataUrl,
+        image_b64: lowB64,
       });
     }
 
@@ -271,7 +271,7 @@ export function render(opts = {}) {
   }
 
   // =========================
-  // Configurar assets + lanzar análisis en mini-lotes
+  // Configurar assets + analizar en mini-lotes
   // =========================
   (async () => {
     try {
@@ -306,7 +306,7 @@ export function render(opts = {}) {
   })();
 
   // =========================
-  // Mini-lotes: usa callback con 3 mecanismos
+  // Mini-lotes → usa callback (M1/M2/M3)
   // =========================
   async function analyzeInMiniBatches(entries, batchSize = 8) {
     const kernel = window.google?.colab?.kernel;
@@ -325,15 +325,14 @@ export function render(opts = {}) {
         image_b64: e.image_b64,
       }));
 
-      try {
+      try:
         const res = await kernel.invokeFunction(
           "describe_component_images",
           [batch],
           {}
         );
 
-        // Normalizar posible respuesta de Colab:
-        // { data: { "text/plain": "...json..." } } o similar
+        // Colab → normalmente dict serializado a JSON automático.
         let payload = res;
 
         if (res && typeof res === "object" && res.data) {
@@ -343,16 +342,27 @@ export function render(opts = {}) {
             payload;
         }
 
-        // Si es string, intentamos recuperar un objeto JSON robusto
-        if (typeof payload === "string") {
+        // Si ya es objeto (dict Python → JSON), usar directo.
+        if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+          app.componentDescriptions = {
+            ...(app.componentDescriptions || {}),
+            ...payload,
+          };
+
+          if (
+            window._componentsPanel &&
+            typeof window._componentsPanel.updateDescriptions === "function"
+          ) {
+            window._componentsPanel.updateDescriptions(payload);
+          }
+        } else if (typeof payload === "string") {
+          // Fallback defensivo: intentar rescatar JSON desde string.
           const raw = payload.trim();
           let parsed = null;
 
-          // 1) Intento directo
           try {
             parsed = JSON.parse(raw);
           } catch (_) {
-            // 2) Intento con substring { ... }
             try {
               const s0 = raw.indexOf("{");
               const s1 = raw.lastIndexOf("}");
@@ -360,7 +370,6 @@ export function render(opts = {}) {
                 parsed = JSON.parse(raw.slice(s0, s1 + 1));
               }
             } catch (_) {
-              // 3) Intento estilo dict Python
               try {
                 const fixed = raw
                   .replace(/'/g, '"')
@@ -381,20 +390,17 @@ export function render(opts = {}) {
             }
           }
 
-          payload = parsed || null;
-        }
-
-        if (payload && typeof payload === "object") {
-          app.componentDescriptions = {
-            ...(app.componentDescriptions || {}),
-            ...payload,
-          };
-
-          if (
-            window._componentsPanel &&
-            typeof window._componentsPanel.updateDescriptions === "function"
-          ) {
-            window._componentsPanel.updateDescriptions(payload);
+          if (parsed && typeof parsed === "object") {
+            app.componentDescriptions = {
+              ...(app.componentDescriptions || {}),
+              ...parsed,
+            };
+            if (
+              window._componentsPanel &&
+              typeof window._componentsPanel.updateDescriptions === "function"
+            ) {
+              window._componentsPanel.updateDescriptions(parsed);
+            }
           }
         }
 
@@ -411,7 +417,7 @@ export function render(opts = {}) {
     console.log("[urdf_viewer_main] Análisis por mini-lotes finalizado.");
   }
 
-  // ViewerCore ya maneja onResize; no agregamos otro resize aquí.
+  // ViewerCore ya maneja onResize; no duplicamos lógica aquí.
 
   return app;
 }
