@@ -51,6 +51,7 @@ export function render(opts = {}) {
 
     assets: {
       list: () => listAssets(assetToMeshes),
+      // ⬇️ Thumbnails para UI: se mantienen SIN cambios
       thumbnail: (assetKey) => off?.thumbnail(assetKey),
     },
 
@@ -154,10 +155,13 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
       try {
         const url = await off.thumbnail(ent.assetKey);
         if (!url || typeof url !== "string") continue;
-        const parts = url.split(",");
-        if (parts.length !== 2) continue;
-        const b64 = parts[1];
-        entries.push({ key: ent.assetKey, image_b64: b64 });
+
+        // ⬇️ SOLO para la versión que se envía a Colab:
+        // comprimimos la imagen a ~5KB antes de obtener el base64.
+        const b64_5kb = await to5KBBase64FromDataURL(url, 5 * 1024);
+        if (!b64_5kb) continue;
+
+        entries.push({ key: ent.assetKey, image_b64: b64_5kb });
       } catch (e) {
         console.warn("[Components] Error thumbnail", ent.assetKey, e);
       }
@@ -170,7 +174,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     }
 
     console.debug(
-      `[Components] Enviando ${entries.length} capturas a Colab para descripción.`
+      `[Components] Enviando ${entries.length} capturas (≈5KB) a Colab para descripción.`
     );
 
     try {
@@ -205,6 +209,66 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
       app.descriptionsReady = true;
     }
   })();
+}
+
+/**
+ * Comprime un dataURL a ~targetBytes y devuelve SOLO el base64.
+ * No afecta las imágenes mostradas en la UI: se usa SOLO antes de mandar a Colab.
+ */
+async function to5KBBase64FromDataURL(dataURL, targetBytes = 5 * 1024) {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+          // Exportamos como JPEG para poder ajustar calidad.
+          let quality = 0.85;
+          let dataUrl = canvas.toDataURL("image/jpeg", quality);
+
+          const estimateBytes = (du) => {
+            const comma = du.indexOf(",");
+            const b64 = comma >= 0 ? du.slice(comma + 1) : du;
+            return Math.ceil(b64.length * 0.75);
+          };
+
+          // Ajuste iterativo simple hasta acercarse a targetBytes.
+          let bytes = estimateBytes(dataUrl);
+          while (bytes > targetBytes && quality > 0.1) {
+            quality -= 0.1;
+            dataUrl = canvas.toDataURL("image/jpeg", quality);
+            bytes = estimateBytes(dataUrl);
+          }
+
+          const parts = dataUrl.split(",");
+          if (parts.length === 2 && parts[1]) {
+            resolve(parts[1]);
+          } else {
+            const origParts = dataURL.split(",");
+            resolve(origParts[1] || "");
+          }
+        } catch (e) {
+          console.warn("[Components] Error al comprimir a 5KB:", e);
+          const parts = dataURL.split(",");
+          resolve(parts[1] || "");
+        }
+      };
+      img.onerror = () => {
+        const parts = dataURL.split(",");
+        resolve(parts[1] || "");
+      };
+      img.src = dataURL;
+    } catch (e) {
+      console.warn("[Components] Error to5KBBase64FromDataURL:", e);
+      const parts = dataURL.split(",");
+      resolve(parts[1] || "");
+    }
+  });
 }
 
 function extractDescMap(result) {
@@ -436,7 +500,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   });
 
   const ready = (async () => {
-    //await sleep(10);
     await new Promise((r) =>
       requestAnimationFrame(() =>
         requestAnimationFrame(r)
@@ -508,7 +571,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     thumbnail: async (assetKey) => {
       try {
         await ready;
-        //await sleep(1.5);
         return snapshotAsset(assetKey);
       } catch (e) {
         console.warn("[Thumbnails] error:", e);
