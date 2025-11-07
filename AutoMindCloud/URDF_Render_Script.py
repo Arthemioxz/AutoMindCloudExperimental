@@ -1,16 +1,18 @@
 # URDF_Render_Script.py
 # Puente Colab <-> JS para URDF Viewer + IA de descripciones por componente (MODO SECUENCIAL).
 #
-# Uso típico en Colab:
+# Uso en Colab:
 #   from URDF_Render_Script import Download_URDF, URDF_Render
 #   Download_URDF("LINK_DE_DRIVE", "URDFModel")
 #   URDF_Render("URDFModel")
 #
-# JS:
-#   - urdf_viewer_main.js genera thumbnails offscreen por assetKey (NO SE TOCA).
-#   - Llama a google.colab.kernel.invokeFunction("describe_component_image", [payload], {}).
-#   - Este callback procesa 1 imagen -> 1 descripción -> { assetKey: "descripcion" }.
-#   - JS va llamando una por una y actualiza el ComponentsPanel de forma incremental.
+# Flujo:
+#   - JS (urdf_viewer_main.js) genera thumbnails (thumbalist) por assetKey (NO SE TOCA).
+#   - Para cada componente:
+#       JS llama a google.colab.kernel.invokeFunction("describe_component_image", [payload], {})
+#       payload = { "key": assetKey, "image_b64": "..." }
+#       Python llama a la API IA y devuelve { assetKey: "descripcion" }.
+#   - JS actualiza el panel Components de forma incremental.
 
 import os
 import re
@@ -18,7 +20,7 @@ import json
 import base64
 import shutil
 import zipfile
-from typing import Dict, Any, List
+from typing import Dict, Any
 from IPython.display import HTML
 
 import requests
@@ -37,7 +39,7 @@ _COLAB_CALLBACK_REGISTERED = False
 # ======================= UTILIDADES URDF =====================
 
 def Download_URDF(Drive_Link: str, Output_Name: str = "Model") -> str:
-    """Descarga un ZIP de Drive y deja una carpeta con /urdf y /meshes."""
+    """Descarga un ZIP de Drive y deja carpeta con /urdf y /meshes."""
     root_dir = "/content"
     file_id = Drive_Link.split("/d/")[1].split("/")[0]
     url = f"https://drive.google.com/uc?id={file_id}"
@@ -78,10 +80,7 @@ def _encode_file_b64(path: str) -> str:
 
 
 def _collect_mesh_db(meshes_dir: str) -> Dict[str, str]:
-    """
-    Construye meshDB: key -> base64.
-    Respeta estructura relativa (meshes/...) para que AssetDB.js lo resuelva.
-    """
+    """Construye meshDB: key -> base64 respetando rutas relativas."""
     exts_bin = {".stl", ".dae", ".step", ".stp"}
     exts_tex = {".png", ".jpg", ".jpeg"}
 
@@ -90,9 +89,8 @@ def _collect_mesh_db(meshes_dir: str) -> Dict[str, str]:
     for root, _, files in os.walk(meshes_dir):
         for name in files:
             ext = os.path.splitext(name)[1].lower()
-            if ext not in exts_bin | exts_tex:
+            if ext not in (exts_bin | exts_tex):
                 continue
-
             full = os.path.join(root, name)
             rel = os.path.relpath(full, meshes_dir).replace(os.sep, "/")
             key = f"meshes/{rel}"
@@ -106,7 +104,7 @@ def _collect_mesh_db(meshes_dir: str) -> Dict[str, str]:
 
 
 def _find_urdf_and_meshes(root: str):
-    """Busca carpetas /urdf y /meshes dentro de root o un subnivel."""
+    """Busca /urdf y /meshes en root o 1 nivel bajo."""
     u = os.path.join(root, "urdf")
     m = os.path.join(root, "meshes")
     if os.path.isdir(u) and os.path.isdir(m):
@@ -132,11 +130,11 @@ def _pick_main_urdf(urdf_dir: str) -> str:
     if not urdf_files:
         return ""
 
-    # El más grande que tenga referencias a meshes (heurística)
     urdf_files.sort(
         key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
         reverse=True,
     )
+
     for upath in urdf_files:
         try:
             with open(upath, "r", encoding="utf-8", errors="ignore") as f:
@@ -147,12 +145,11 @@ def _pick_main_urdf(urdf_dir: str) -> str:
                 re.IGNORECASE,
             )
             if refs:
-                print(f"[URDF] Usando URDF: {os.path.basename(upath)} con {len(refs)} meshes.")
+                print(f"[URDF] Usando URDF: {os.path.basename(upath)} ({len(refs)} meshes referenciados)")
                 return txt
         except Exception:
             pass
 
-    # fallback: primero legible
     try:
         with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
             return f.read().lstrip("\ufeff")
@@ -160,19 +157,16 @@ def _pick_main_urdf(urdf_dir: str) -> str:
         return ""
 
 
-# =================== CALLBACK COLAB (IA SECUENCIAL) ===================
+# =============== CALLBACK COLAB: describe_component_image ===============
 
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120) -> None:
     """
-    Registra describe_component_image UNA sola vez.
+    Registra describe_component_image una vez.
 
-    JS envía por cada componente:
-      { "key": assetKey, "image_b64": "<...>" }
-
-    Debemos devolver:
+    JS envía:
+      { "key": assetKey, "image_b64": "..." }
+    Devuelve:
       { assetKey: "descripcion en español" }
-
-    El viewer llama a este callback imagen por imagen (secuencial).
     """
     global _COLAB_CALLBACK_REGISTERED
     if _COLAB_CALLBACK_REGISTERED:
@@ -180,7 +174,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
 
     try:
         from google.colab import output  # type: ignore
-    except Exception as e:  # fuera de Colab
+    except Exception as e:
         print(f"[Colab] No se pudo importar google.colab.output: {e}")
         return
 
@@ -196,14 +190,11 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, dict):
-                # a) { key: "desc" }
                 if key in parsed and isinstance(parsed[key], (str, int, float)):
                     return {key: str(parsed[key]).strip()}
-                # b) { "description": "..." }
                 if "description" in parsed and isinstance(parsed["description"], (str, int, float)):
                     return {key: str(parsed["description"]).strip()}
             if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-                # c) [ { key: "desc" } ]
                 d0 = parsed[0]
                 if key in d0 and isinstance(d0[key], (str, int, float)):
                     return {key: str(d0[key]).strip()}
@@ -212,7 +203,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         except Exception:
             pass
 
-        # 2) Intentar dict estilo Python -> lo normalizamos
+        # 2) Dict estilo Python
         try:
             fixed = (
                 raw.replace("'", '"')
@@ -229,12 +220,12 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         except Exception:
             pass
 
-        # 3) Último recurso: buscar algo tipo {"key": "..."}
+        # 3) Buscar fragmento {...}
         try:
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                frag = raw[start : end + 1]
+            i = raw.find("{")
+            j = raw.rfind("}")
+            if i != -1 and j != -1 and j > i:
+                frag = raw[i:j+1]
                 parsed3 = json.loads(frag)
                 if isinstance(parsed3, dict):
                     if key in parsed3 and isinstance(parsed3[key], (str, int, float)):
@@ -248,17 +239,9 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         return {}
 
     def _describe_component_image(entry: Any) -> Dict[str, str]:
-        """
-        Callback secuencial.
-
-        JS puede mandar:
-          { key, image_b64 }
-        o
-          [ { key, image_b64 } ]
-        """
         print("[Colab] describe_component_image: payload recibido.")
 
-        # Aceptar lista con un solo elemento
+        # Soporta [ {..} ]
         if isinstance(entry, list):
             if not entry:
                 return {}
@@ -274,26 +257,22 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
             print(f"[Colab] Sin image_b64 válida para {key}.")
             return {}
 
-        images_payload = [
-            {
-                "image_b64": img_b64,
-                "mime": "image/png",
-            }
-        ]
-
-        text = (
-            "Te envío una imagen de un componente de un robot.\n"
-            f"ID del componente: {json.dumps(key, ensure_ascii=False)}\n\n"
-            "Devuélveme SOLO un JSON válido (sin texto extra). Formatos aceptados:\n"
-            f'- {{"{key}": "descripcion breve en español"}}\n'
-            '- o {"description": "..."}\n\n'
-            "La descripción (1-2 frases) debe indicar función mecánica aproximada, "
-            "zona del robot donde va y tipo de unión o movimiento sugerido."
-        )
-
         payload = {
-            "text": text,
-            "images": images_payload,
+            "text": (
+                "Te envío una imagen de un componente de un robot.\n"
+                f"ID del componente: {json.dumps(key, ensure_ascii=False)}\n\n"
+                "Devuélveme SOLO un JSON válido (sin texto extra). Formatos aceptados:\n"
+                f'- {{\"{key}\": \"descripcion breve en español\"}}\n'
+                '- o {\"description\": \"...\"}\n\n'
+                "La descripción (1-2 frases) debe indicar: función mecánica aproximada, "
+                "zona del robot donde va y tipo de unión o movimiento sugerido."
+            ),
+            "images": [
+                {
+                    "image_b64": img_b64,
+                    "mime": "image/png",
+                }
+            ],
         }
 
         try:
@@ -307,7 +286,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
             return {}
 
         raw = (r.text or "").strip()
-        print("[Colab] Respuesta bruta IA (recortada a 400 chars):")
+        print("[Colab] Respuesta bruta IA (<=400 chars):")
         print(raw[:400])
 
         desc_map = _parse_model_response(raw, key)
@@ -336,7 +315,7 @@ def URDF_Render(
     compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
 ):
-    """Renderiza el viewer full-screen dentro de la celda (Colab / Jupyter)."""
+    """Renderiza el viewer dentro de la celda con todas las dependencias JS."""
 
     _register_colab_callback(api_base=api_base)
 
@@ -355,10 +334,10 @@ def URDF_Render(
     urdf_b64 = base64.b64encode(urdf_text.encode("utf-8")).decode("ascii")
     mesh_db_json = json.dumps(mesh_db)
 
-    # Evitamos __file__; usamos un cache-buster simple
     import time
     cache_bust = str(int(time.time()))
 
+    # Cargamos THREE, OrbitControls y URDFLoader ANTES del módulo del viewer.
     html = f"""
 <div id="urdf-viewer" style="
   width: 100%;
@@ -367,8 +346,15 @@ def URDF_Render(
   border: 1px solid #dde7e7;
   box-shadow: 0 8px 24px rgba(0,0,0,0.08);
   overflow: hidden;
+  position: relative;
 "></div>
 
+<!-- THREE + OrbitControls + URDFLoader (globales) -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/build/URDFLoader.min.js"></script>
+
+<!-- Entrypoint del viewer (tu archivo en GitHub) -->
 <script type="module">
   import {{ render }} from "https://cdn.jsdelivr.net/gh/{repo}@{branch}/{compFile}?v={cache_bust}";
 
@@ -376,6 +362,7 @@ def URDF_Render(
   const urdfContent = atob("{urdf_b64}");
   const meshDB = {mesh_db_json};
 
+  // Llamamos a tu render, que usa THREE/URDFLoader globales ya cargados.
   render({{
     container,
     urdfContent,
