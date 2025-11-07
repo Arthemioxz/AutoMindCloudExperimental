@@ -1,6 +1,5 @@
 // /viewer/core/AssetDB.js
-// Build a normalized in-memory asset DB and a URDFLoader-compatible loadMeshCb.
-// Three r132 + urdf-loader 0.12.6
+// Build a normalized in-memory asset DB + loadMeshCb + snapshots
 /* global THREE */
 
 const ALLOWED_MESH_EXTS = new Set(['dae', 'stl', 'step', 'stp']);
@@ -11,9 +10,9 @@ const MIME = {
   png: 'image/png',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
-  stl: 'model/stl',                    // informative; we parse from bytes
+  stl: 'model/stl',
   dae: 'model/vnd.collada+xml',
-  step:'model/step',
+  step: 'model/step',
   stp: 'model/step'
 };
 
@@ -25,26 +24,21 @@ function normKey(s) {
     .replace(/^\.\//, '')
     .toLowerCase();
 }
-
 function dropPackagePrefix(k) {
   return k.startsWith('package://') ? k.slice('package://'.length) : k;
 }
-
 function basenameNoQuery(p) {
   const q = String(p || '').split('?')[0].split('#')[0];
   return q.split('/').pop();
 }
-
 function extOf(p) {
   const q = String(p || '').split('?')[0].split('#')[0];
   const i = q.lastIndexOf('.');
   return i >= 0 ? q.slice(i + 1).toLowerCase() : '';
 }
-
 function approxBytesFromB64(b64) {
   return Math.floor(String(b64 || '').length * 3 / 4);
 }
-
 function variantsFor(path) {
   const out = new Set();
   const p = normKey(path);
@@ -55,14 +49,12 @@ function variantsFor(path) {
   out.add(pkg);
   out.add(base);
 
-  // también probamos sin el primer segmento (por si hay carpeta "meshes/")
   const parts = pkg.split('/');
   for (let i = 1; i < parts.length; i++) {
     out.add(parts.slice(i).join('/'));
   }
   return Array.from(out);
 }
-
 function dataURLFor(ext, b64) {
   const mime = MIME[ext] || 'application/octet-stream';
   return `data:${mime};base64,${b64}`;
@@ -70,7 +62,6 @@ function dataURLFor(ext, b64) {
 
 const textDecoder = new TextDecoder();
 function b64ToUint8(b64) {
-  // atob → bytes
   const bin = atob(String(b64 || ''));
   const len = bin.length;
   const out = new Uint8Array(len);
@@ -85,20 +76,12 @@ function b64ToText(b64) {
 
 /**
  * Normaliza claves y crea índices de búsqueda.
- * @param {Object.<string,string>} meshDB  — mapa key(base/path) → base64
- * @returns {{
- *   byKey: Object.<string,string>,
- *   byBase: Map<string, string[]>,
- *   has(key: string): boolean,
- *   get(key: string): string|undefined,
- *   keys(): string[]
- * }}
+ * @param {Object.<string,string>} meshDB
  */
 export function buildAssetDB(meshDB = {}) {
   const byKey = {};
   const byBase = new Map();
 
-  // 1) Normaliza y duplica entradas útiles (sin package://)
   Object.keys(meshDB).forEach((rawKey) => {
     const b64 = meshDB[rawKey];
     if (!b64) return;
@@ -107,15 +90,11 @@ export function buildAssetDB(meshDB = {}) {
     const kNoPkg = dropPackagePrefix(k);
     const base = basenameNoQuery(k);
 
-    // Registra k
     if (!byKey[k]) byKey[k] = b64;
-
-    // Registra variante sin package://
     if (kNoPkg !== k && !byKey[kNoPkg]) byKey[kNoPkg] = b64;
 
-    // También permite lookup por basename (no exclusivo; puede haber duplicados)
     const arr = byBase.get(base) || [];
-    arr.push(k);               // guardamos la key "completa" como referencia principal
+    arr.push(k);
     if (kNoPkg !== k) arr.push(kNoPkg);
     byBase.set(base, Array.from(new Set(arr)));
   });
@@ -132,7 +111,6 @@ export function buildAssetDB(meshDB = {}) {
       for (const k of ks) {
         if (byKey[k]) return byKey[k];
       }
-      // último recurso: basename
       const base = basenameNoQuery(key);
       const arr = byBase.get(base) || [];
       for (const k of arr) {
@@ -144,10 +122,9 @@ export function buildAssetDB(meshDB = {}) {
   };
 }
 
-/* ---------- internal: choose best asset among candidates ---------- */
+/* ---------- internal: best key ---------- */
 
 function pickBestKey(tryKeys, assetDB) {
-  // Agrupa por basename y elige por prioridad de extensión y tamaño aprox
   const groups = new Map();
   for (const kk of tryKeys) {
     const k = normKey(kk);
@@ -165,7 +142,6 @@ function pickBestKey(tryKeys, assetDB) {
     });
     groups.set(base, arr);
   }
-  // Devuelve el mejor del primer grupo con contenido
   for (const [, arr] of groups) {
     arr.sort((a, b) => (b.prio - a.prio) || (b.bytes - a.bytes));
     if (arr[0]) return arr[0].key;
@@ -176,13 +152,7 @@ function pickBestKey(tryKeys, assetDB) {
 /* ---------- public: createLoadMeshCb ---------- */
 
 /**
- * Crea un callback compatible con URDFLoader.loadMeshCb(path, manager, onComplete)
- * que renderiza STL/DAE desde base64 + resuelve subrecursos embebidos (texturas).
- *
- * @param {*} assetDB - resultado de buildAssetDB()
- * @param {Object} [hooks]
- * @param {(meshOrGroup:THREE.Object3D, assetKey:string)=>void} [hooks.onMeshTag] - se llama tras crear el objeto
- * @returns {(path:string, manager:THREE.LoadingManager, onComplete:(obj:THREE.Object3D)=>void)=>void}
+ * URDFLoader.loadMeshCb compatible
  */
 export function createLoadMeshCb(assetDB, hooks = {}) {
   const daeCache = new Map();
@@ -192,7 +162,6 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
     obj.traverse((o) => {
       if (o && o.isMesh && o.geometry) {
         o.userData.__assetKey = key;
-        // sombras quedan off por defecto (lo decide UI/Core)
         o.castShadow = true;
         o.receiveShadow = true;
       }
@@ -200,7 +169,7 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
   }
 
   function makeEmpty() {
-    return new THREE.Mesh(); // placeholder neutral
+    return new THREE.Mesh();
   }
 
   return function loadMeshCb(path, _manager, onComplete) {
@@ -219,13 +188,11 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         return;
       }
 
-      // STEP/STP no se soporta en Three sin parser extra — devolvemos placeholder
       if (ext === 'step' || ext === 'stp') {
         onComplete(makeEmpty());
         return;
       }
 
-      // STL binario
       if (ext === 'stl') {
         const bytes = b64ToUint8(b64);
         const loader = new THREE.STLLoader();
@@ -246,9 +213,7 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         return;
       }
 
-      // DAE texto + subrecursos
       if (ext === 'dae') {
-        // Cache por key para reusar escenas clonadas
         if (daeCache.has(bestKey)) {
           const obj = daeCache.get(bestKey).clone(true);
           tagAll(obj, bestKey);
@@ -259,7 +224,6 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
 
         const daeText = b64ToText(b64);
 
-        // Extrae unidad <unit meter="..."> para escalar correcto
         let scale = 1.0;
         const m = /<unit[^>]*meter\s*=\s*"([\d.eE+\-]+)"/i.exec(daeText);
         if (m) {
@@ -267,17 +231,16 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
           if (isFinite(meter) && meter > 0) scale = meter;
         }
 
-        // Manager que mapea URLs a data: desde assetDB (texturas, otras DAEs, etc.)
         const mgr = new THREE.LoadingManager();
         mgr.setURLModifier((url) => {
-          const v = variantsFor(url);             // prueba varias formas
+          const v = variantsFor(url);
           const k = v.find((x) => assetDB.byKey[x]);
           if (k) {
             const e = extOf(k);
             const b = assetDB.byKey[k];
             return dataURLFor(e, b);
           }
-          return url; // fallback: deja URL original (por si acaso)
+          return url;
         });
 
         const loader = new THREE.ColladaLoader(mgr);
@@ -285,7 +248,6 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         const obj = (collada && collada.scene) ? collada.scene : new THREE.Object3D();
         if (scale !== 1.0) obj.scale.setScalar(scale);
 
-        // Cachea el original y devuelve un clon para no compartir refs
         daeCache.set(bestKey, obj);
         const clone = obj.clone(true);
 
@@ -295,7 +257,6 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         return;
       }
 
-      // Ext desconocido (o no permitido): placeholder
       onComplete(makeEmpty());
     } catch (_e) {
       try { onComplete(makeEmpty()); } catch (_ee) {}
@@ -303,9 +264,118 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
   };
 }
 
-/* ---------- (opcional) export ALLOWED sets if UI wants them ---------- */
+/* ---------- optional ---------- */
 export const ALLOWED_EXTS = {
   mesh: ALLOWED_MESH_EXTS,
   tex: ALLOWED_TEX_EXTS
 };
 
+/* ---------- NEW: snapshotAllAssets (thumbnails low-res) ---------- */
+
+/**
+ * Genera thumbnails por __assetKey.
+ * - maxSize: tamaño máximo (ancho=alto) en px
+ * - Devuelve [{ key, image_b64 }]
+ */
+export async function snapshotAllAssets(viewer, { maxSize = 224 } = {}) {
+  if (!viewer || !viewer.renderer || !viewer.scene || !viewer.camera || !viewer.controls) {
+    console.warn('[AssetDB] snapshotAllAssets: viewer incompleto.');
+    return [];
+  }
+  const robot = viewer.robot;
+  if (!robot) {
+    console.warn('[AssetDB] snapshotAllAssets: robot no definido (aún).');
+    return [];
+  }
+
+  const renderer = viewer.renderer;
+  const camera = viewer.camera;
+  const controls = viewer.controls;
+  const scene = viewer.scene;
+
+  const origSize = renderer.getSize(new THREE.Vector2());
+  const origPixelRatio = renderer.getPixelRatio();
+  const origTarget = renderer.getRenderTarget();
+  const origCamPos = camera.position.clone();
+  const origCamTarget = controls.target.clone();
+
+  // Agrupa meshes por __assetKey
+  const groups = new Map();
+  robot.traverse((o) => {
+    const k = o.userData && o.userData.__assetKey;
+    if (k && o.isMesh && o.geometry) {
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(o);
+    }
+  });
+
+  const entries = [];
+  if (!groups.size) {
+    console.warn('[AssetDB] snapshotAllAssets: no hay __assetKey en meshes.');
+    return entries;
+  }
+
+  const rtSize = maxSize;
+  const rt = new THREE.WebGLRenderTarget(rtSize, rtSize, { samples: 0 });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = rtSize;
+  canvas.height = rtSize;
+  const ctx = canvas.getContext('2d');
+
+  const pad = 1.35;
+  const isoDir = new THREE.Vector3(1, 0.9, 1).normalize();
+  const tmpBox = new THREE.Box3();
+  const tmpCenter = new THREE.Vector3();
+  const tmpSize = new THREE.Vector3();
+
+  for (const [key, meshes] of groups.entries()) {
+    tmpBox.makeEmpty();
+    for (const m of meshes) tmpBox.expandByObject(m);
+    if (tmpBox.isEmpty()) continue;
+
+    tmpBox.getCenter(tmpCenter);
+    tmpBox.getSize(tmpSize);
+    const maxDim = Math.max(tmpSize.x, tmpSize.y, tmpSize.z) || 1;
+    const dist = maxDim * pad;
+
+    const pos = tmpCenter.clone().add(isoDir.clone().multiplyScalar(dist));
+    camera.position.copy(pos);
+    controls.target.copy(tmpCenter);
+    camera.lookAt(tmpCenter);
+    camera.updateProjectionMatrix();
+    controls.update();
+
+    renderer.setPixelRatio(1);
+    renderer.setSize(rtSize, rtSize, false);
+    renderer.setRenderTarget(rt);
+    renderer.render(scene, camera);
+
+    const buffer = new Uint8Array(rtSize * rtSize * 4);
+    renderer.readRenderTargetPixels(rt, 0, 0, rtSize, rtSize, buffer);
+
+    const imgData = ctx.createImageData(rtSize, rtSize);
+    for (let y = 0; y < rtSize; y++) {
+      const srcRow = (rtSize - 1 - y) * rtSize * 4;
+      const dstRow = y * rtSize * 4;
+      imgData.data.set(buffer.subarray(srcRow, srcRow + rtSize * 4), dstRow);
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    const b64 = canvas.toDataURL('image/png').split(',')[1] || '';
+    entries.push({ key, image_b64: b64 });
+  }
+
+  // Restore
+  renderer.setRenderTarget(origTarget);
+  renderer.setPixelRatio(origPixelRatio);
+  renderer.setSize(origSize.x, origSize.y, false);
+  camera.position.copy(origCamPos);
+  controls.target.copy(origCamTarget);
+  camera.lookAt(origCamTarget);
+  controls.update();
+  rt.dispose();
+
+  console.log(`[AssetDB] 📸 Thumbnails generados: ${entries.length} (maxSize=${maxSize})`);
+  return entries;
+}
