@@ -40,7 +40,7 @@ export function render(opts = {}) {
     setSceneToggles,
     setBackground,
     setPixelRatio,
-    onResize, // viene de ViewerCore
+    onResize, // manejado dentro de ViewerCore
   } = viewer;
 
   const app = {
@@ -78,13 +78,17 @@ export function render(opts = {}) {
   });
 
   // =========================
-  // UI: ToolsDock + ComponentsPanel
+  // Primero: ComponentsPanel
+  // (para que ToolsDock ya lo vea y dibuje el botón)
+  // =========================
+  const componentsPanel = createComponentsPanel(app, THEME);
+  app.componentsPanel = componentsPanel;
+
+  // =========================
+  // Luego: ToolsDock
   // =========================
   const toolsDock = createToolsDock(app, THEME);
-  const componentsPanel = createComponentsPanel(app, THEME);
-
   app.toolsDock = toolsDock;
-  app.componentsPanel = componentsPanel;
 
   if (typeof window !== "undefined") {
     window._URDF_APP = app;
@@ -135,7 +139,7 @@ export function render(opts = {}) {
 
   // =========================
   // Thumbalist: snapshots por componente
-  //  - thumbDataUrl: alta/buena resolución para la lista.
+  //  - thumbDataUrl: buena resolución para la lista.
   //  - image_b64: versión reducida SOLO para enviar a la API.
   // =========================
   async function snapshotComponents() {
@@ -214,7 +218,7 @@ export function render(opts = {}) {
         controls.update();
       }
 
-      // Hi-res para UI
+      // Hi-res para UI (lista)
       const baseW = orig.size.x || renderer.domElement.width || 640;
       const baseH = orig.size.y || renderer.domElement.height || 480;
       const scaleHi = Math.min(1, MAX_THUMB / Math.max(baseW, baseH));
@@ -244,8 +248,8 @@ export function render(opts = {}) {
         key,
         assetKey: key,
         base: key.split("/").pop(),
-        thumbDataUrl: hiDataUrl, // buena para lista
-        image_b64: lowB64, // low-res para API
+        thumbDataUrl: hiDataUrl, // 👍 buena resolución para la lista
+        image_b64: lowB64, // 👍 versión reducida solo para API
       });
     }
 
@@ -302,7 +306,7 @@ export function render(opts = {}) {
   })();
 
   // =========================
-  // Mini-lotes: usa 3 mecanismos del callback
+  // Mini-lotes: usa callback con 3 mecanismos
   // =========================
   async function analyzeInMiniBatches(entries, batchSize = 8) {
     const kernel = window.google?.colab?.kernel;
@@ -328,39 +332,55 @@ export function render(opts = {}) {
           {}
         );
 
-        // Colab suele devolver algo como:
-        // { data: { "text/plain": "{...json...}" } }
-        let payload =
-          (res &&
-            res.data &&
-            (res.data["application/json"] || res.data["text/plain"])) ||
-          res ||
-          null;
+        // Normalizar posible respuesta de Colab:
+        // { data: { "text/plain": "...json..." } } o similar
+        let payload = res;
 
-        // Si es string: intentar parsear
+        if (res && typeof res === "object" && res.data) {
+          payload =
+            res.data["application/json"] ||
+            res.data["text/plain"] ||
+            payload;
+        }
+
+        // Si es string, intentamos recuperar un objeto JSON robusto
         if (typeof payload === "string") {
           const raw = payload.trim();
-
-          // Primero intento JSON directo
           let parsed = null;
+
+          // 1) Intento directo
           try {
             parsed = JSON.parse(raw);
-          } catch (_e) {
-            // Si viene como dict de Python: comillas simples, True/False/None
+          } catch (_) {
+            // 2) Intento con substring { ... }
             try {
-              const fixed = raw
-                .replace(/'/g, '"')
-                .replace(/\bTrue\b/g, "true")
-                .replace(/\bFalse\b/g, "false")
-                .replace(/\bNone\b/g, "null");
-              parsed = JSON.parse(fixed);
-            } catch (e2) {
-              console.warn(
-                "[urdf_viewer_main] No se pudo parsear JSON parcial:",
-                e2
-              );
+              const s0 = raw.indexOf("{");
+              const s1 = raw.lastIndexOf("}");
+              if (s0 !== -1 && s1 !== -1 && s1 > s0) {
+                parsed = JSON.parse(raw.slice(s0, s1 + 1));
+              }
+            } catch (_) {
+              // 3) Intento estilo dict Python
+              try {
+                const fixed = raw
+                  .replace(/'/g, '"')
+                  .replace(/\bTrue\b/g, "true")
+                  .replace(/\bFalse\b/g, "false")
+                  .replace(/\bNone\b/g, "null");
+                const s0b = fixed.indexOf("{");
+                const s1b = fixed.lastIndexOf("}");
+                if (s0b !== -1 && s1b !== -1 && s1b > s0b) {
+                  parsed = JSON.parse(fixed.slice(s0b, s1b + 1));
+                }
+              } catch (e3) {
+                console.warn(
+                  "[urdf_viewer_main] No se pudo parsear JSON parcial:",
+                  e3
+                );
+              }
             }
           }
+
           payload = parsed || null;
         }
 
@@ -391,8 +411,7 @@ export function render(opts = {}) {
     console.log("[urdf_viewer_main] Análisis por mini-lotes finalizado.");
   }
 
-  // Nada de autoResize custom: ViewerCore ya engancha onResize.
-  // Solo devolvemos app para debug/uso externo.
+  // ViewerCore ya maneja onResize; no agregamos otro resize aquí.
 
   return app;
 }
