@@ -58,15 +58,18 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 # ======================= Helpers =======================
 def _parse_json_flexible(raw: str):
+    """Intenta extraer un dict JSON desde texto ruidoso."""
     if not raw:
         return None
     raw = raw.strip()
+    # Intento directo
     try:
         v = json.loads(raw)
         if isinstance(v, dict):
             return v
     except Exception:
         pass
+    # Buscar bloque {...}
     s0 = raw.find("{")
     s1 = raw.rfind("}")
     if s0 != -1 and s1 != -1 and s1 > s0:
@@ -95,7 +98,7 @@ def _call_api(infer_url: str, text: str, images, timeout: int) -> str:
 def _downscale_b64_for_api(img_b64: str, max_size: int = 384) -> str:
     """
     Baja resolución SOLO para lo que va a la API.
-    La imagen original (para la UI) NO se toca.
+    La imagen original usada en la UI NO se toca.
     """
     try:
         import io
@@ -139,12 +142,12 @@ def _register_colab_callback(
 
         def _describe_component_images(entries):
             """
-            entries = [
-              { "key": assetKey, "image_b64": "<b64_hi_or_lo>" },
+            entries: [
+              { "key": assetKey, "image_b64": "<b64>" },
               ...
             ]
-            Retorna SIEMPRE un JSON string válido:
-              {"assetKey": "descripcion", ...}
+            Devuelve SIEMPRE un string JSON:
+              '{"assetKey": "descripcion", ...}'
             """
             if not isinstance(entries, (list, tuple)) or not entries:
                 print("[Colab] ❌ entries vacío/incorrecto.")
@@ -152,6 +155,7 @@ def _register_colab_callback(
 
             keys = []
             imgs = []
+
             for i, item in enumerate(entries):
                 if not isinstance(item, dict):
                     continue
@@ -193,9 +197,7 @@ def _register_colab_callback(
                                 v = json.dumps(v, ensure_ascii=False)
                             results[k] = (str(v).strip() if v is not None else "")
                     if len(results) >= max(1, int(0.6 * n)):
-                        print(
-                            f"[Colab] ✅ M1 OK: {len(results)}/{n} descripciones."
-                        )
+                        print(f"[Colab] ✅ M1 OK: {len(results)}/{n} descripciones.")
                         return json.dumps(results, ensure_ascii=False)
                     else:
                         print(
@@ -212,20 +214,19 @@ def _register_colab_callback(
             for i in range(0, n, BATCH):
                 sub_keys = keys[i : i + BATCH]
                 sub_imgs = imgs[i : i + BATCH]
-                try:
-                    instr2 = {
-                        "keys": sub_keys,
-                        "reglas": [
-                            "Responde SOLO con un JSON.",
-                            "Solo claves de 'keys'.",
-                            "Máx 2 frases, español.",
-                        ],
-                    }
-                    text2 =
-                        "Genera descripciones para este sub-conjunto.\n" \
-                        + json.dumps(instr2, ensure_ascii=False)
-                except Exception:
-                    text2 = "Genera un JSON con claves de 'keys' y descripciones cortas en español."
+
+                instr2 = {
+                    "keys": sub_keys,
+                    "reglas": [
+                        "Responde SOLO con un JSON.",
+                        "Solo claves de 'keys'.",
+                        "Máx 2 frases en español.",
+                    ],
+                }
+                text2 = (
+                    "Genera descripciones para este sub-conjunto.\n"
+                    + json.dumps(instr2, ensure_ascii=False)
+                )
 
                 try:
                     raw2 = _call_api(infer_url, text2, sub_imgs, timeout)
@@ -235,7 +236,9 @@ def _register_colab_callback(
                             if k in sub_keys:
                                 if isinstance(v, (dict, list)):
                                     v = json.dumps(v, ensure_ascii=False)
-                                results[k] = (str(v).strip() if v is not None else "")
+                                results[k] = (
+                                    str(v).strip() if v is not None else ""
+                                )
                 except Exception as e:
                     print(f"[Colab] ⚠️ M2 error lote {i//BATCH}: {e}")
 
@@ -256,8 +259,8 @@ def _register_colab_callback(
                     continue
                 single_text = (
                     "Describe brevemente la pieza del robot en la imagen: "
-                    "función mecánica, zona aproximada, tipo de unión o "
-                    "movimiento sugerido. Español, máximo 2 frases."
+                    "función mecánica, zona aproximada y tipo de unión o movimiento. "
+                    "Español, máximo 2 frases."
                 )
                 try:
                     raw3 = _call_api(infer_url, single_text, [img], timeout)
@@ -267,18 +270,17 @@ def _register_colab_callback(
                     continue
 
                 desc = (raw3 or "").strip()
+                # Si accidentalmente es JSON, lo compactamos
                 try:
                     maybe = json.loads(desc)
                     if isinstance(maybe, (dict, list)):
                         desc = json.dumps(maybe, ensure_ascii=False)
                 except Exception:
                     pass
+
                 results[k] = desc
 
-            print(
-                f"[Colab] ✅ M3 completado. Total: {len(results)}/{n}."
-            )
-            # 🔴 SIEMPRE devolver JSON STRING para que en JS sea parseable
+            print(f"[Colab] ✅ M3 completado. Total: {len(results)}/{n}.")
             return json.dumps(results, ensure_ascii=False)
 
         output.register_callback(
@@ -541,7 +543,6 @@ def URDF_Render(
     selectMode: SELECT_MODE,
     background: BACKGROUND,
     pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
-    autoResize: true,
   }};
 
   let mod = null;
