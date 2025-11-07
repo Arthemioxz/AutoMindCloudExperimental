@@ -1,68 +1,112 @@
-<img width="545" height="158" alt="image" src="https://github.com/user-attachments/assets/2c320b9b-fe05-43db-a91c-f0b145c71bcd" />
+<!-- 🔹 HEADER -->
+<p align="center">
+  <img width="545" height="158" alt="AutoMind Logo"
+       src="https://github.com/user-attachments/assets/2c320b9b-fe05-43db-a91c-f0b145c71bcd" />
+</p>
 
-<br><br>
+<br>
 
-<div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-  <img width="180" height="100" alt="image" 
+<!-- 🔹 MINI IMAGES SIDE BY SIDE -->
+<p align="center">
+  <img width="180" height="100" alt="Preview 1"
        src="https://github.com/user-attachments/assets/18c36cdb-51f9-48f0-9458-52fa5ef2e844" />
-
-  <img width="180" height="100" alt="image" 
+  &nbsp;&nbsp;&nbsp;
+  <img width="360" height="200" alt="Preview 2"
        src="https://github.com/user-attachments/assets/e5e36d66-31bd-4abd-a1c4-029d65075082" />
-</div>
+</p>
 
-<br><br>
+---
 
+<h3 align="center">🚀 AutoMind Cloud Library for Colab</h3>
 
-Example of the Library Colab (Request Reading Permissions to Artemio Araya Day): https://colab.research.google.com/drive/1cwDrG9dbK1MfyaiI2gRaXxdlKRAjw_Wp?usp=sharing
+<p align="center">
+  <em>Request reading permissions to <b>Artemio Araya Day</b></em><br>
+  <a href="https://colab.research.google.com/drive/1cwDrG9dbK1MfyaiI2gRaXxdlKRAjw_Wp?usp=sharing">📘 Open Library on Google Colab</a>
+</p>
 
-- Calculus Digitalization & Automation (Automatic Evaluation complement to Sympy)
-- Calculus Summary with IA
-- Whiteboard on Colab
-- Step Render on Colab
-- Orthogonal Render on Colab
-- URDF Render on Colab
+---
 
-**Examples**
+### 🔧 Features
+- ⚙️ **Calculus Digitalization & Automation** (Automatic Evaluation complement to Sympy)  
+- 🧠 **Calculus Summary with IA**  
+- 🧩 **Whiteboard Integration on Colab**  
+- 🧱 **STEP / Orthogonal / URDF Renderers**
 
-**Classic Physics**
+---
 
-Heat Transfer by Conduction: https://colab.research.google.com/drive/1BukgVekSpaFWaPCdTEhVIUdaAJPGtnz1
+### 🧪 Examples
 
-<img width="578" height="477" alt="image" src="https://github.com/user-attachments/assets/7d28cb70-0c31-48b4-ac1e-2e651963c006" />
+#### **Classic Physics**
+**Heat Transfer by Conduction**  
+➡️ [Open in Colab](https://colab.research.google.com/drive/1BukgVekSpaFWaPCdTEhVIUdaAJPGtnz1)
 
-<br><br>
+<p align="center">
+  <img width="578" height="477" alt="Conduction"
+       src="https://github.com/user-attachments/assets/7d28cb70-0c31-48b4-ac1e-2e651963c006" />
+</p>
 
-Heat Transfer by Convection: https://colab.research.google.com/drive/1g95LonNxeMBTITWCpZgncDFi58bPi0lk?usp=sharing
+---
 
-<img width="875" height="496" alt="image" src="https://github.com/user-attachments/assets/f9eba9e3-83c2-43a1-a401-02bb4bac8778" />
+**Heat Transfer by Convection**  
+➡️ [Open in Colab](https://colab.research.google.com/drive/1g95LonNxeMBTITWCpZgncDFi58bPi0lk?usp=sharing)
 
-<br><br>
+<p align="center">
+  <img width="875" height="496" alt="Convection"
+       src="https://github.com/user-attachments/assets/f9eba9e3-83c2-43a1-a401-02bb4bac8778" />
+</p>
 
-Electromagnetism: https://colab.research.google.com/drive/1hJzAv6H5JG4P9kzMewav-Ne3ZhjSPm31
+---
 
-<img width="592" height="348" alt="image" src="https://github.com/user-attachments/assets/38ef2bf8-f549-484f-b7af-f692f245cde8" />
+**Electromagnetism**  
+➡️ [Open in Colab](https://colab.research.google.com/drive/1hJzAv6H5JG4P9kzMewav-Ne3ZhjSPm31)
 
-<br><br>
+<p align="center">
+  <img width="592" height="348" alt="Electromagnetism"
+       src="https://github.com/user-attachments/assets/38ef2bf8-f549-484f-b7af-f692f245cde8" />
+</p>
 
-Nuclear Physics: https://colab.research.google.com/drive/16XNpgvXsNqvK9qBESKXUa4QjcQBbJl2W?usp=sharing
+---
 
-<img width="593" height="279" alt="image" src="https://github.com/user-attachments/assets/41a46153-a2c8-4096-a6cf-b79309473594" />
+**Nuclear Physics**  
+➡️ [Open in Colab](https://colab.research.google.com/drive/16XNpgvXsNqvK9qBESKXUa4QjcQBbJl2W?usp=sharing)
 
-<br><br>
+<p align="center">
+  <img width="593" height="279" alt="Nuclear Physics"
+       src="https://github.com/user-attachments/assets/41a46153-a2c8-4096-a6cf-b79309473594" />
+</p>
 
-**White Board** (Thanks to my sister Mercedes Araya Day for the drawing)
+---
 
-<img width="933" height="481" alt="image" src="https://github.com/user-attachments/assets/eb9b46c6-038d-4acd-b46d-ad6ef2f725e8" />
+### ✏️ Whiteboard
+*(Thanks to my sister Mercedes Araya Day for the drawing)*
 
-**IA Calculus Summary**
+<p align="center">
+  <img width="933" height="481" alt="Whiteboard"
+       src="https://github.com/user-attachments/assets/eb9b46c6-038d-4acd-b46d-ad6ef2f725e8" />
+</p>
 
-<img width="1118" height="476" alt="image" src="https://github.com/user-attachments/assets/e73298a1-658a-4e00-a626-944475e56821" />
+---
 
+### 🤖 IA Calculus Summary
 
-**Step Render on Colab**
+<p align="center">
+  <img width="1118" height="476" alt="IA Calculus Summary"
+       src="https://github.com/user-attachments/assets/e73298a1-658a-4e00-a626-944475e56821" />
+</p>
 
-<img width="1306" height="436" alt="image" src="https://github.com/user-attachments/assets/56414870-9c4e-423d-aa7e-d9aeaa8e443f" />
+---
 
-**URDF Render on Colab**
+### 🧱 Step Render on Colab
+<p align="center">
+  <img width="1306" height="436" alt="STEP Render"
+       src="https://github.com/user-attachments/assets/56414870-9c4e-423d-aa7e-d9aeaa8e443f" />
+</p>
 
-<img width="1322" height="513" alt="image" src="https://github.com/user-attachments/assets/c88f28eb-ab80-42a0-965c-a77981ce9b4e" />
+---
+
+### 🤖 URDF Render on Colab
+<p align="center">
+  <img width="1322" height="513" alt="URDF Render"
+       src="https://github.com/user-attachments/assets/c88f28eb-ab80-42a0-965c-a77981ce9b4e" />
+</p>
+
