@@ -1,7 +1,7 @@
 // urdf_viewer_main.js
-// Entrypoint: ViewerCore + AssetDB + SelectionAndDrag + ToolsDock + ComponentsPanel
-// IA: describe_component_image secuencial (una imagen por componente).
-// Thumbalist/offscreen se mantiene como sistema de captura de thumbnails.
+// ViewerCore + AssetDB + SelectionAndDrag + ToolsDock + ComponentsPanel
+// IA secuencial: una imagen por componente -> describe_component_image
+// Sistema de thumbnails/offscreen (thumbalist-style) se mantiene.
 
 /* global THREE */
 
@@ -24,10 +24,8 @@ export function render(opts = {}) {
     clickAudioDataURL = null,
   } = opts;
 
-  // Core viewer
   const core = createViewer({ container, background });
 
-  // Assets
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map();
 
@@ -44,13 +42,11 @@ export function render(opts = {}) {
     },
   });
 
-  // Cargar URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // Thumbalist/offscreen thumbnails (no romper)
+  // 📸 Thumbalist/offscreen (no se toca la filosofía)
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
-  // Interacción
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -60,7 +56,6 @@ export function render(opts = {}) {
     selectMode,
   });
 
-  // App facade
   const app = {
     ...core,
     robot,
@@ -83,25 +78,27 @@ export function render(opts = {}) {
       }
     },
 
-    componentDescriptions: {},   // { key/base/baseNoExt: desc }
+    // mapa dinámico con las descripciones que van llegando
+    componentDescriptions: {},
     descriptionsReady: false,
 
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions || {};
       if (!src) return "";
 
-      // 1) clave exacta
+      // directa
       if (src[assetKey]) return src[assetKey];
 
-      // 2) por base y base sin extensión
+      // por nombre de archivo
       const clean = String(assetKey || "").split("?")[0].split("#")[0];
       const baseFull = clean.split(/[\\/]/).pop() || "";
       const dot = baseFull.lastIndexOf(".");
       const base = dot >= 0 ? baseFull.slice(0, dot) : baseFull;
-      if (src[base]) return src[base];
-      if (src[base.toLowerCase()]) return src[base.toLowerCase()];
 
-      // 3) si en algún momento se usara array + index
+      if (src[base]) return src[base];
+      if (src[base?.toLowerCase()]) return src[base.toLowerCase()];
+
+      // por índice (si alguna vez se usa array)
       if (Array.isArray(src) && typeof index === "number") {
         return src[index] || "";
       }
@@ -110,21 +107,15 @@ export function render(opts = {}) {
     },
   };
 
-  // UI
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
-
-  // Referencia interna para refrescar lista al ir llegando texto
   app._componentsPanel = comps;
 
-  // Click sound opcional
   if (clickAudioDataURL) {
-    try {
-      installClickSound(clickAudioDataURL);
-    } catch (_) {}
+    try { installClickSound(clickAudioDataURL); } catch (_) {}
   }
 
-  // IA secuencial: una imagen por vez
+  // 🔥 IA secuencial, sin romper thumbalist:
   bootstrapComponentDescriptions(app, assetToMeshes, off);
 
   const destroy = () => {
@@ -158,6 +149,7 @@ function listAssets(assetToMeshes) {
       sensitivity: "base",
     })
   );
+
   return items;
 }
 
@@ -236,7 +228,6 @@ function frameMeshes(core, meshes) {
 /* =================== THUMBALIST / OFFSCREEN =================== */
 
 function buildOffscreenForThumbnails(core, assetToMeshes) {
-  // Si no hay robot todavía, devolvemos stub
   if (!core.robot || typeof THREE === "undefined") {
     return {
       thumbnail: async () => null,
@@ -260,7 +251,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   });
   renderer.setSize(OFF_W, OFF_H, false);
 
-  // Copiamos algunos settings del renderer principal para consistencia
   if (core.renderer) {
     renderer.physicallyCorrectLights =
       core.renderer.physicallyCorrectLights ?? true;
@@ -299,11 +289,9 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     10000
   );
 
-  // Clon del robot para aislar componentes sin tocar el viewer principal
   const robotClone = core.robot.clone(true);
   scene.add(robotClone);
 
-  // Clonar materiales para no compartir estado
   robotClone.traverse((o) => {
     if (o.isMesh && o.material) {
       if (Array.isArray(o.material)) {
@@ -317,7 +305,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   });
 
-  // Mapear assetKey -> meshes en el clon
   const cloneAssetToMeshes = new Map();
   robotClone.traverse((o) => {
     const k = o?.userData?.__assetKey;
@@ -329,7 +316,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   });
 
   const ready = (async () => {
-    await sleep(120); // pequeño delay para asegurar layout interno
+    await sleep(120);
   })();
 
   async function snapshotAsset(assetKey) {
@@ -342,7 +329,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const tmp = new THREE.Box3();
     let has = false;
 
-    // Guardar visibilidad y ocultar todo menos el asset actual
     const vis = [];
     cloneAssetToMeshes.forEach((arr, key) => {
       arr.forEach((m) => {
@@ -389,9 +375,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     renderer.render(scene, camera);
     const url = renderer.domElement.toDataURL("image/png");
 
-    // Restaurar visibilidad
     vis.forEach(([o, v]) => (o.visible = v));
-
     return url;
   }
 
@@ -399,7 +383,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     thumbnail: async (assetKey) => {
       try {
         await ready;
-        // pequeño delay para no saturar
         await sleep(80);
         return await snapshotAsset(assetKey);
       } catch (e) {
@@ -414,7 +397,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   };
 }
 
-/* ================= IA SECUENCIAL: 1 IMAGEN POR VEZ ================= */
+/* ================= IA SECUENCIAL: describe_component_image ================= */
 
 let _bootstrapStarted = false;
 
@@ -472,14 +455,13 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
             if (!v) return;
             const text = String(v);
 
-            // Guardar tal cual
             app.componentDescriptions[k] = text;
 
-            // Normalizar claves equivalentes
             const clean = String(k).split("?")[0].split("#")[0];
             const baseFull = clean.split(/[\\/]/).pop() || "";
             const dot = baseFull.lastIndexOf(".");
             const base = dot >= 0 ? baseFull.slice(0, dot) : baseFull;
+
             if (base && !app.componentDescriptions[base]) {
               app.componentDescriptions[base] = text;
             }
@@ -488,7 +470,6 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
             }
           });
 
-          // Refrescar panel si expone refresh()
           if (app._componentsPanel) {
             try {
               if (typeof app._componentsPanel.refresh === "function") {
@@ -531,17 +512,14 @@ function extractDescMap(result) {
   if (!result) return {};
   const d = result.data || result;
 
-  // Caso 1: application/json limpio
   if (d["application/json"] && typeof d["application/json"] === "object") {
     return d["application/json"];
   }
 
-  // Caso 2: lista [ { ... } ]
   if (Array.isArray(d) && d.length && typeof d[0] === "object") {
     return d[0];
   }
 
-  // Caso 3: text/plain con JSON o dict python
   const tp = d["text/plain"];
   if (typeof tp === "string") {
     const t = tp.trim();
@@ -566,7 +544,6 @@ function extractDescMap(result) {
     } catch (_) {}
   }
 
-  // Caso 4: objeto directo
   if (typeof d === "object" && !Array.isArray(d)) {
     return d;
   }
@@ -600,9 +577,7 @@ function installClickSound(dataURL) {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-    try {
-      src.start();
-    } catch (_) {}
+    try { src.start(); } catch (_) {}
   }
 
   window.__urdf_click__ = play;
