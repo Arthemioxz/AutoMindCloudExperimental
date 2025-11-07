@@ -317,7 +317,7 @@ def URDF_Render(
     select_mode: str = "link",
     background: int | None = 0xFFFFFF,
     # Ajusta repo/branch a tu repo real:
-    repo: str = "ArtemioA/AutoMindCloudExperimental",
+    repo: str = "Arthemioxz/AutoMindCloudExperimental",
     branch: str = "main",
     compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
