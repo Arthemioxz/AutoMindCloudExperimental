@@ -1,5 +1,5 @@
 // ComponentsPanel.js
-// Panel de componentes con thumbnails y frame de descripción.
+// Panel de componentes: lista + thumbnails + frame con descripción al hacer click.
 
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll) {
@@ -74,11 +74,7 @@ export function createComponentsPanel(app, theme) {
       borderBottom: `1px solid ${theme.stroke}`,
       background: theme.tealFaint,
     },
-    title: {
-      fontWeight: "800",
-      color: theme.text,
-      fontSize: "14px",
-    },
+    title: { fontWeight: "800", color: theme.text, fontSize: "14px" },
     showAllBtn: {
       padding: "6px 10px",
       borderRadius: "10px",
@@ -145,7 +141,7 @@ export function createComponentsPanel(app, theme) {
       : null) || document.body;
   host.appendChild(ui.root);
 
-  // Hover botón
+  // Hover botón principal
   ui.btn.addEventListener("mouseenter", () => {
     ui.btn.style.transform = "translateY(-1px) scale(1.02)";
     ui.btn.style.background = theme.tealFaint;
@@ -170,13 +166,10 @@ export function createComponentsPanel(app, theme) {
   });
 
   ui.showAllBtn.addEventListener("click", () => {
-    try {
-      app.showAll();
-    } catch (_) {}
+    try { app.showAll(); } catch (_) {}
     hideDetails();
   });
 
-  // Estado panel
   let open = false;
   let building = false;
   let disposed = false;
@@ -272,7 +265,7 @@ export function createComponentsPanel(app, theme) {
       row.appendChild(meta);
       ui.list.appendChild(row);
 
-      // hover row
+      // Hover fila
       row.addEventListener("mouseenter", () => {
         row.style.transform = "translateY(-1px) scale(1.02)";
         row.style.background = theme.tealFaint;
@@ -284,16 +277,14 @@ export function createComponentsPanel(app, theme) {
         row.style.borderColor = theme.stroke;
       });
 
-      // click row: aislar + mostrar descripción
+      // Click: aisla y muestra descripción en frame
       row.addEventListener("click", () => {
-        try {
-          app.isolate.asset(ent.assetKey);
-        } catch (_) {}
+        try { app.isolate.asset(ent.assetKey); } catch (_) {}
         showDetails(ent, index);
         set(true);
       });
 
-      // thumbnail (usa cache del offscreen, no recaptura caro)
+      // Thumbnail (usa cache; no recalcula al hacer click)
       (async () => {
         try {
           const url = await app.assets.thumbnail?.(ent.assetKey);
@@ -312,8 +303,7 @@ export function createComponentsPanel(app, theme) {
     let text = "";
     try {
       if (typeof app.getComponentDescription === "function") {
-        text =
-          app.getComponentDescription(ent.assetKey, index) || "";
+        text = app.getComponentDescription(ent.assetKey, index) || "";
       }
     } catch (_) {
       text = "";
@@ -329,14 +319,11 @@ export function createComponentsPanel(app, theme) {
     }
 
     if (!text) {
+      text = "Sin descripción generada para esta pieza.";
       console.debug(
-        "[ComponentsPanel] Sin descripción (aún) para",
+        "[ComponentsPanel] No se encontró descripción para",
         ent.assetKey
       );
-      ui.details.style.display = "none";
-      ui.detailsTitle.textContent = "";
-      ui.detailsBody.textContent = "";
-      return;
     }
 
     ui.detailsTitle.textContent = ent.base;
@@ -357,21 +344,13 @@ export function createComponentsPanel(app, theme) {
 
   function destroy() {
     disposed = true;
-    try {
-      document.removeEventListener("keydown", onHotkeyC, true);
-    } catch (_) {}
-    try {
-      ui.btn.remove();
-    } catch (_) {}
-    try {
-      ui.panel.remove();
-    } catch (_) {}
-    try {
-      ui.root.remove();
-    } catch (_) {}
+    try { document.removeEventListener("keydown", onHotkeyC, true); } catch (_) {}
+    try { ui.btn.remove(); } catch (_) {}
+    try { ui.panel.remove(); } catch (_) {}
+    try { ui.root.remove(); } catch (_) {}
   }
 
-  // hotkey 'c'
+  // Hotkey 'c'
   function onHotkeyC(e) {
     const tag = (e.target && e.target.tagName) || "";
     const t = tag.toLowerCase();
@@ -386,14 +365,14 @@ export function createComponentsPanel(app, theme) {
 
   document.addEventListener("keydown", onHotkeyC, true);
 
-  // inicial
+  // Inicial
   set(false);
   maybeBuild();
 
   return { open: openPanel, close: closePanel, set, refresh, destroy };
 }
 
-/* ----------------- Helpers ----------------- */
+/* ---------------- Helpers ---------------- */
 
 function applyStyles(el, styles) {
   Object.assign(el.style, styles);
