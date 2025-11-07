@@ -1,4 +1,4 @@
-# ==========================================================
+# ========================================================== 
 # URDF_Render_Script.py  (versión optimizada con batch IA)
 # ==========================================================
 # Puente Colab <-> JS para descripciones de piezas del URDF.
