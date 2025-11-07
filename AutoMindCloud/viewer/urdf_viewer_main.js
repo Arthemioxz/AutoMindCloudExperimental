@@ -1,4 +1,4 @@
-// urdf_viewer_main.js 
+// urdf_viewer_main.js
 import { THEME } from "./Theme.js";
 import { createViewer } from "./core/ViewerCore.js";
 import { buildAssetDB, createLoadMeshCb } from "./core/AssetDB.js";
@@ -33,7 +33,7 @@ export function render(opts = {}) {
 
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // 🔹 Usa el sistema robusto offscreen para thumbnails
+  // 🔹 Sistema offscreen para thumbnails (alta calidad para UI)
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
   const inter = attachInteraction({
@@ -51,6 +51,7 @@ export function render(opts = {}) {
 
     assets: {
       list: () => listAssets(assetToMeshes),
+      // Importante: esto sigue devolviendo la miniatura ORIGINAL (offscreen)
       thumbnail: (assetKey) => off?.thumbnail(assetKey),
     },
 
@@ -123,6 +124,80 @@ export function render(opts = {}) {
 
 let _bootstrapStarted = false;
 
+/**
+ * Comprime un dataURL a ~targetKB usando JPEG y reescalado.
+ * SOLO para las copias que se mandan a la API.
+ * La UI sigue usando la miniatura original.
+ */
+async function toTinyB64(url, targetKB = 5) {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const maxBytes = targetKB * 1024;
+          const canvas = document.createElement("canvas");
+          const ctx = canvas.getContext("2d");
+
+          if (!ctx) {
+            const parts = url.split(",");
+            resolve(parts[1] || "");
+            return;
+          }
+
+          const w = img.naturalWidth || img.width || 1;
+          const h = img.naturalHeight || img.height || 1;
+
+          // Escala agresiva: queremos algo muy liviano
+          const maxDim = Math.max(w, h) || 1;
+          const targetDim = 320; // tamaño razonable para ~5KB
+          const scale = Math.min(1, targetDim / maxDim);
+
+          canvas.width = Math.max(16, Math.round(w * scale));
+          canvas.height = Math.max(16, Math.round(h * scale));
+
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+          let quality = 0.7;
+          let out = canvas.toDataURL("image/jpeg", quality);
+          let b64 = (out.split(",")[1] || "");
+          let bytes = (b64.length * 3) / 4;
+
+          let iter = 0;
+          while (bytes > maxBytes && iter < 7 && quality > 0.25) {
+            quality -= 0.1;
+            out = canvas.toDataURL("image/jpeg", quality);
+            b64 = (out.split(",")[1] || "");
+            bytes = (b64.length * 3) / 4;
+            iter++;
+          }
+
+          if (!b64) {
+            const parts = url.split(",");
+            b64 = parts[1] || "";
+          }
+
+          resolve(b64);
+        } catch (e) {
+          console.warn("[Components] toTinyB64 error:", e);
+          const parts = url.split(",");
+          resolve(parts[1] || "");
+        }
+      };
+      img.onerror = () => {
+        const parts = url.split(",");
+        resolve(parts[1] || "");
+      };
+      img.src = url;
+    } catch (e) {
+      console.warn("[Components] toTinyB64 outer error:", e);
+      const parts = url.split(",");
+      resolve(parts[1] || "");
+    }
+  });
+}
+
 function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   if (_bootstrapStarted) return;
   _bootstrapStarted = true;
@@ -154,10 +229,17 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
       try {
         const url = await off.thumbnail(ent.assetKey);
         if (!url || typeof url !== "string") continue;
-        const parts = url.split(",");
-        if (parts.length !== 2) continue;
-        const b64 = parts[1];
-        entries.push({ key: ent.assetKey, image_b64: b64 });
+
+        // 🔹 Solo para API: versión comprimida ~5KB
+        const tinyB64 = await toTinyB64(url, 5);
+        if (!tinyB64) continue;
+
+        // Mandamos SOLO la versión comprimida al callback de Colab
+        entries.push({
+          key: ent.assetKey,
+          image_b64: tinyB64,
+          mime: "image/jpeg",
+        });
       } catch (e) {
         console.warn("[Components] Error thumbnail", ent.assetKey, e);
       }
@@ -170,7 +252,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     }
 
     console.debug(
-      `[Components] Enviando ${entries.length} capturas a Colab para descripción.`
+      `[Components] Enviando ${entries.length} capturas (comprimidas) a Colab para descripción.`
     );
 
     try {
@@ -352,8 +434,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     };
   }
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
   const OFF_W = 640;
   const OFF_H = 480;
 
@@ -368,7 +448,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   });
   renderer.setSize(OFF_W, OFF_H, false);
 
-  // Match main renderer for consistent look
+  // Match main renderer para look consistente
   if (core.renderer) {
     renderer.physicallyCorrectLights =
       core.renderer.physicallyCorrectLights ?? true;
@@ -424,7 +504,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   });
 
-  // Map assetKey → meshes en el clon (asumiendo __assetKey seteado en load)
+  // Map assetKey → meshes en el clon
   const cloneAssetToMeshes = new Map();
   robotClone.traverse((o) => {
     const k = o?.userData?.__assetKey;
@@ -436,7 +516,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   });
 
   const ready = (async () => {
-    //await sleep(10);
     await new Promise((r) =>
       requestAnimationFrame(() =>
         requestAnimationFrame(r)
@@ -465,7 +544,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       tmp.setFromObject(m);
       if (!has) {
         box.copy(tmp);
-        has = true;
+        has = True;
       } else {
         box.union(tmp);
       }
@@ -508,7 +587,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     thumbnail: async (assetKey) => {
       try {
         await ready;
-        //await sleep(1.5);
         return snapshotAsset(assetKey);
       } catch (e) {
         console.warn("[Thumbnails] error:", e);
