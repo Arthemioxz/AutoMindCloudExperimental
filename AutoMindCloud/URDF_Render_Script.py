@@ -4,8 +4,7 @@
 # - Full-screen viewer (Colab/Jupyter/VSCode)
 # - Descripciones de componentes vía callback Colab -> API externa
 # - SOLO las imágenes enviadas a la API se comprimen a ~5KB
-# - Las miniaturas del panel (thumbnails) mantienen la resolución
-#   generada por el sistema offscreen del viewer.
+# - Thumbnails del panel usan la imagen que genera el viewer (no se tocan aquí)
 # ==========================================================
 
 import base64
@@ -25,7 +24,7 @@ _COLAB_CALLBACK_REGISTERED = False
 
 
 # ==========================================================
-# Descarga URDF desde Drive y normaliza estructura
+# Descarga URDF desde Drive
 # ==========================================================
 def Download_URDF(Drive_Link, Output_Name="Model"):
     root_dir = "/content"
@@ -61,8 +60,7 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 
 # ==========================================================
-# Helper: comprimir base64 a ~target_kb (best-effort)
-# (Solo copias para la API, la UI usa el original)
+# Helper: comprimir base64 a ~target_kb (solo copia para API)
 # ==========================================================
 def _shrink_to_approx_kb(img_b64: str, target_kb: int = 5) -> str:
     try:
@@ -79,7 +77,6 @@ def _shrink_to_approx_kb(img_b64: str, target_kb: int = 5) -> str:
 
         im = Image.open(BytesIO(raw)).convert("RGB")
 
-        # Escala aproximada según tamaño actual
         scale = (max_bytes / float(len(raw))) ** 0.5
         scale = max(0.12, min(1.0, scale))
         new_w = max(16, int(im.width * scale))
@@ -103,8 +100,6 @@ def _shrink_to_approx_kb(img_b64: str, target_kb: int = 5) -> str:
 
 # ==========================================================
 # Callback Colab: describe_component_images
-#  - Recibe thumbnails desde JS
-#  - Comprime a ~5KB antes de llamar a la API
 # ==========================================================
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90):
     global _COLAB_CALLBACK_REGISTERED
@@ -141,7 +136,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
 
                 mime = item.get("mime") or "image/png"
 
-                # Solo la copia para la API se comprime
+                # Solo comprimimos la COPIA que va a la API
                 small_b64 = _shrink_to_approx_kb(img_b64, target_kb=5)
                 mime_out = "image/jpeg" if small_b64 != img_b64 else mime
 
@@ -181,16 +176,22 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                 return {}
 
             def parse_json(s: str):
+                # intenta JSON directo o el primer bloque {...}
+                s = s.strip()
+                s0, s1 = s.find("{"), s.rfind("}")
+                if s0 != -1 and s1 != -1 and s1 > s0:
+                    candidate = s[s0 : s1 + 1]
+                else:
+                    candidate = s
                 try:
-                    return json.loads(s)
+                    return json.loads(candidate)
                 except Exception:
-                    s0, s1 = s.find("{"), s.rfind("}")
-                    if s0 != -1 and s1 != -1:
-                        try:
-                            return json.loads(s[s0 : s1 + 1])
-                        except Exception:
-                            pass
-                    return None
+                    # intenta reemplazando comillas simples estilo dict Python
+                    try:
+                        fixed = candidate.replace("'", '"')
+                        return json.loads(fixed)
+                    except Exception:
+                        return None
 
             parsed = parse_json(raw)
             if isinstance(parsed, dict):
@@ -325,7 +326,6 @@ def URDF_Render(
         if bn.endswith((".png", ".jpg", ".jpeg")) and bn not in mesh_db:
             add_entry(bn, path)
 
-    # HTML
     def esc(s: str) -> str:
         return (
             s.replace("\\", "\\\\")
@@ -348,9 +348,7 @@ def URDF_Render(
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>
 <title>URDF Viewer</title>
 <style>
-  :root {{
-    --vh: 1vh;
-  }}
+  :root {{ --vh: 1vh; }}
   html, body {{
     margin:0;
     padding:0;
@@ -360,9 +358,7 @@ def URDF_Render(
     overflow:hidden;
   }}
   @supports not (height: 100dvh) {{
-    html, body {{
-      height: calc(var(--vh) * 100);
-    }}
+    html, body {{ height: calc(var(--vh) * 100); }}
   }}
   body {{
     padding-top: env(safe-area-inset-top);
@@ -378,9 +374,7 @@ def URDF_Render(
     touch-action:none;
   }}
   @supports not (height: 100dvh) {{
-    #app {{
-      height: calc(var(--vh) * 100);
-    }}
+    #app {{ height: calc(var(--vh) * 100); }}
   }}
   .badge {{
     position:fixed;
