@@ -22,9 +22,6 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
  * }
  */
 
-/**
- * Punto de entrada público principal.
- */
 export async function renderUrdfViewer(options) {
   const {
     container,
@@ -42,23 +39,17 @@ export async function renderUrdfViewer(options) {
     return;
   }
 
-  // ============================
-  // 1. Crear viewer base
-  // ============================
-  const viewer = createViewer(root, {
-    theme: THEME,
-  });
+  // 1) Crear viewer base
+  const viewer = createViewer(root, { theme: THEME });
 
-  // Normalizar core (scene, camera, renderer, domElement)
+  // 2) Normalizar core desde viewer
   const core = getViewerCore(viewer);
   if (!core) {
-    console.error('[URDF] No se pudo inicializar core del viewer (scene/camera/renderer/domElement).');
+    console.error('[URDF] No se pudo inicializar core del viewer (scene/camera/renderer/controls/domElement).');
     return;
   }
 
-  // ============================
-  // 2. Cargar URDF / AssetDB
-  // ============================
+  // 3) Cargar URDF / AssetDB
   const loadMeshCb = createLoadMeshCb({ basePath });
   const assetDB = await buildAssetDB({
     urdfUrl,
@@ -67,27 +58,24 @@ export async function renderUrdfViewer(options) {
     viewer
   });
 
-  // ============================
-  // 3. Interacciones (selección, drag, etc.)
-  // ============================
+  // 4) Interacciones (Selection & Drag)
   let interactionAPI = {};
   try {
     interactionAPI = attachInteraction({
-      viewer: core.viewer,
       scene: core.scene,
       camera: core.camera,
       renderer: core.renderer,
+      controls: core.controls,
       domElement: core.domElement,
-      assetDB
+      assetDB,
+      viewer
     });
   } catch (err) {
     console.error('[SelectionAndDrag] Error al adjuntar interacción:', err);
     interactionAPI = {};
   }
 
-  // ============================
-  // 4. Sistema antiguo: THUMBALIST
-  // ============================
+  // 5) Thumbnails (sistema antiguo thumbalist)
   let thumbMap = {};
   if (enableThumbalist) {
     try {
@@ -103,19 +91,17 @@ export async function renderUrdfViewer(options) {
     }
   }
 
-  // ============================
-  // 5. Descripciones automáticas de componentes
-  // ============================
+  // 6) Descripciones automáticas
   let descMap = {};
   if (autoDescribe && descEndpoint) {
     try {
-      const parts = getComponentIdList(assetDB);
-      if (parts.length) {
+      const ids = getComponentIdList(assetDB);
+      if (ids.length) {
         const raw = await requestDescriptions({
           endpoint: descEndpoint,
-          ids: parts
+          ids
         });
-        descMap = extractDescMap(raw, parts);
+        descMap = extractDescMap(raw, ids);
         if (Object.keys(descMap).length === 0) {
           console.warn('[Components] Respuesta sin descripciones utilizables.', raw);
         } else {
@@ -130,60 +116,61 @@ export async function renderUrdfViewer(options) {
     }
   }
 
-  // ============================
-  // 6. UI: ToolsDock + ComponentsPanel
-  // ============================
-  const toolsDock = createToolsDock({
+  // 7) Armar "app" que esperan ToolsDock y ComponentsPanel
+  const app = {
     root,
     viewer,
+    scene: core.scene,
+    camera: core.camera,
+    renderer: core.renderer,
+    controls: core.controls,
+    domElement: core.domElement,
     assetDB,
     interactionAPI,
-    thumbMap
-  });
-
-  const componentsPanel = createComponentsPanel({
-    root,
-    viewer,
-    assetDB,
-    interactionAPI,
-    descMap,
-    thumbMap
-  });
-
-  // API pública
-  const api = {
-    root,
-    viewer,
-    assetDB,
-    interactionAPI,
-    toolsDock,
-    componentsPanel,
     thumbMap,
     descMap
   };
 
-  // Compat global
-  if (typeof window !== 'undefined') {
-    window.__URDF_VIEWER__ = api;
+  // 8) UI: ToolsDock + ComponentsPanel usando la API clásica (app.*)
+  let toolsDock = null;
+  let componentsPanel = null;
+
+  try {
+    toolsDock = createToolsDock(app);
+  } catch (err) {
+    console.error('[ToolsDock] Error al inicializar:', err);
   }
 
-  return api;
+  try {
+    componentsPanel = createComponentsPanel(app);
+  } catch (err) {
+    console.error('[ComponentsPanel] Error al inicializar:', err);
+  }
+
+  // Completar app con refs a UI
+  app.toolsDock = toolsDock;
+  app.componentsPanel = componentsPanel;
+
+  // Exponer global para depuración / legacy
+  if (typeof window !== 'undefined') {
+    window.__URDF_VIEWER__ = app;
+  }
+
+  return app;
 }
 
 /**
- * Alias para compatibilidad con bootloader existente: entry.render(...)
+ * Alias para compatibilidad con bootloader existente:
+ * muchos scripts llaman entry.render(...)
  */
 export async function render(options) {
   return renderUrdfViewer(options);
 }
 
 /* =========================================================
- * Helpers Core
+ * Helpers core
  * =======================================================*/
 
-/**
- * Resuelve el contenedor a HTMLElement.
- */
 function resolveContainer(container) {
   if (!container) return null;
   if (container instanceof HTMLElement) return container;
@@ -194,7 +181,8 @@ function resolveContainer(container) {
 }
 
 /**
- * Normaliza el core del viewer para asegurar scene/camera/renderer/domElement.
+ * Extrae scene, camera, renderer, controls y domElement desde el viewer.
+ * Se adapta a varias firmas típicas de ViewerCore.
  */
 function getViewerCore(viewer) {
   if (!viewer) return null;
@@ -211,27 +199,32 @@ function getViewerCore(viewer) {
     viewer.renderer ||
     (typeof viewer.getRenderer === 'function' && viewer.getRenderer());
 
+  const controls =
+    viewer.controls ||
+    (typeof viewer.getControls === 'function' && viewer.getControls());
+
   const domElement =
     viewer.domElement ||
     viewer.canvas ||
     (renderer && renderer.domElement) ||
     (typeof viewer.getDomElement === 'function' && viewer.getDomElement());
 
-  if (!scene || !camera || !renderer || !domElement) {
-    console.error('[URDF] Viewer incompleto:', {
+  if (!scene || !camera || !renderer || !controls || !domElement) {
+    console.error('[URDF] Viewer incompleto para core:', {
       hasScene: !!scene,
       hasCamera: !!camera,
       hasRenderer: !!renderer,
+      hasControls: !!controls,
       hasDomElement: !!domElement
     });
     return null;
   }
 
-  return { viewer, scene, camera, renderer, domElement };
+  return { viewer, scene, camera, renderer, controls, domElement };
 }
 
 /**
- * Devuelve lista de IDs/nombres de componentes a describir.
+ * Devuelve lista de IDs/nombres de componentes.
  */
 function getComponentIdList(assetDB) {
   if (!assetDB) return [];
@@ -254,9 +247,6 @@ function getComponentIdList(assetDB) {
  * Descripciones
  * =======================================================*/
 
-/**
- * Llama al endpoint de descripciones.
- */
 async function requestDescriptions({ endpoint, ids }) {
   const body = {
     text:
@@ -268,9 +258,7 @@ async function requestDescriptions({ endpoint, ids }) {
 
   const res = await fetch(endpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
 
@@ -284,7 +272,7 @@ async function requestDescriptions({ endpoint, ids }) {
 }
 
 /**
- * Parser robusto para el mapa de descripciones.
+ * Parser robusto de mapa de descripciones.
  */
 function extractDescMap(raw, knownIds = []) {
   try {
@@ -293,45 +281,38 @@ function extractDescMap(raw, knownIds = []) {
       return {};
     }
 
-    // Si ya es objeto
     if (typeof raw === 'object') {
-      if (!Array.isArray(raw)) {
-        return sanitizeDescObject(raw);
-      }
+      if (!Array.isArray(raw)) return sanitizeDescObject(raw);
       console.warn('[Components] Se recibió un array, se esperaba objeto key -> desc.');
       return {};
     }
 
-    // Si es string
     if (typeof raw === 'string') {
       const trimmed = raw.trim();
 
-      // Intento 1: JSON directo
+      // 1) JSON directo
       if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
         try {
-          const obj = JSON.parse(trimmed);
-          return sanitizeDescObject(obj);
+          return sanitizeDescObject(JSON.parse(trimmed));
         } catch (e) {
-          console.warn('[Components] JSON directo inválido, probando extracción:', e);
+          console.warn('[Components] JSON directo inválido:', e);
         }
       }
 
-      // Intento 2: JSON embebido
+      // 2) JSON embebido
       const first = trimmed.indexOf('{');
       const last = trimmed.lastIndexOf('}');
       if (first !== -1 && last !== -1 && last > first) {
-        const candidate = trimmed.slice(first, last + 1);
         try {
-          const obj = JSON.parse(candidate);
-          return sanitizeDescObject(obj);
+          return sanitizeDescObject(JSON.parse(trimmed.slice(first, last + 1)));
         } catch (e) {
           console.warn('[Components] JSON embebido inválido:', e);
         }
       }
 
-      // Intento 3: formato "pieza: desc"
+      // 3) Formato "pieza: desc"
       const mapFromLines = parseKeyValueLines(trimmed, knownIds);
-      if (Object.keys(mapFromLines).length > 0) {
+      if (Object.keys(mapFromLines).length) {
         console.info('[Components] Usando parser tipo "pieza: desc".');
         return mapFromLines;
       }
@@ -348,9 +329,6 @@ function extractDescMap(raw, knownIds = []) {
   }
 }
 
-/**
- * Asegura que sea { key: string }.
- */
 function sanitizeDescObject(obj) {
   const out = {};
   Object.keys(obj || {}).forEach(k => {
@@ -363,17 +341,12 @@ function sanitizeDescObject(obj) {
   return out;
 }
 
-/**
- * Construye { key: desc } desde líneas tipo:
- *  "pieza_1: Esto es una base"
- *  "pieza_2 - Motor principal"
- */
 function parseKeyValueLines(text, knownIds = []) {
   const lines = text.split(/\r?\n/);
   const map = {};
   const idSet = new Set(knownIds || []);
 
-  for (let line of lines) {
+  for (const line of lines) {
     const clean = line.trim();
     if (!clean) continue;
 
@@ -381,7 +354,7 @@ function parseKeyValueLines(text, knownIds = []) {
     if (!m) continue;
 
     let key = m[1].trim();
-    let desc = m[2].trim();
+    const desc = m[2].trim();
     if (!desc) continue;
 
     if (idSet.size) {
@@ -396,14 +369,9 @@ function parseKeyValueLines(text, knownIds = []) {
 }
 
 /* =========================================================
- * Sistema antiguo de thumbnails ("thumbalist")
+ * Thumbalist
  * =======================================================*/
 
-/**
- * Genera thumbnails por componente.
- * Usa el core normalizado para evitar errores.
- * Devuelve: { [id]: dataURL }
- */
 async function generateThumbalist({ core, assetDB, size = 256 }) {
   if (!core || !assetDB) {
     console.warn('[Thumbalist] Core o AssetDB no definidos.');
@@ -416,9 +384,9 @@ async function generateThumbalist({ core, assetDB, size = 256 }) {
     return {};
   }
 
-  const { renderer, camera, scene } = core;
+  const { renderer, camera, scene, viewer } = core;
   if (!renderer || !camera || !scene || !renderer.domElement) {
-    console.warn('[Thumbalist] Falta renderer/camera/scene/domElement para generar thumbnails.');
+    console.warn('[Thumbalist] Falta renderer/camera/scene/domElement para thumbnails.');
     return {};
   }
 
@@ -429,24 +397,24 @@ async function generateThumbalist({ core, assetDB, size = 256 }) {
   const map = {};
 
   const isolate = (id) => {
-    if (core.viewer.isolateComponent) return core.viewer.isolateComponent(id);
-    if (core.viewer.isolateLink) return core.viewer.isolateLink(id);
-    if (core.viewer.focusOnPart) return core.viewer.focusOnPart(id);
+    if (viewer.isolateComponent) return viewer.isolateComponent(id);
+    if (viewer.isolateLink) return viewer.isolateLink(id);
+    if (viewer.focusOnPart) return viewer.focusOnPart(id);
   };
 
   const restore = () => {
-    if (core.viewer.clearIsolation) return core.viewer.clearIsolation();
-    if (core.viewer.restoreAll) return core.viewer.restoreAll();
+    if (viewer.clearIsolation) return viewer.clearIsolation();
+    if (viewer.restoreAll) return viewer.restoreAll();
   };
 
   for (const id of ids) {
     try {
       isolate(id);
 
-      if (core.viewer.fitToObject && typeof core.viewer.fitToObject === 'function') {
-        core.viewer.fitToObject(id);
-      } else if (core.viewer.fitToSelection && typeof core.viewer.fitToSelection === 'function') {
-        core.viewer.fitToSelection();
+      if (viewer.fitToObject && typeof viewer.fitToObject === 'function') {
+        viewer.fitToObject(id);
+      } else if (viewer.fitToSelection && typeof viewer.fitToSelection === 'function') {
+        viewer.fitToSelection();
       }
 
       if (renderer.setSize) {
@@ -471,14 +439,10 @@ async function generateThumbalist({ core, assetDB, size = 256 }) {
 }
 
 /* =========================================================
- * Exposición global para compatibilidad legacy
+ * Exposición global legacy
  * =======================================================*/
 
 if (typeof window !== 'undefined') {
-  if (!window.renderUrdfViewer) {
-    window.renderUrdfViewer = renderUrdfViewer;
-  }
-  if (!window.render) {
-    window.render = renderUrdfViewer;
-  }
+  if (!window.renderUrdfViewer) window.renderUrdfViewer = renderUrdfViewer;
+  if (!window.render) window.render = renderUrdfViewer;
 }
