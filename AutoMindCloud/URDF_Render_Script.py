@@ -5,16 +5,18 @@
 #   from URDF_Render_Script import URDF_Render
 #   URDF_Render("Model")
 #
-# JS:
-#   - Genera thumbnails base64 de cada componente al inicio.
-#   - Llama a google.colab.kernel.invokeFunction("describe_component_images", [entries], {}).
-#   - Recibe { assetKey: descripcion }.
-#   - Al hacer click en un componente, muestra la descripción en el frame del panel.
+# Este script:
+#   - Busca /urdf y /meshes dentro de folder_path.
+#   - Construye un meshDB embebido (base64) para el viewer JS.
+#   - Renderiza un viewer HTML de pantalla completa.
+#   - (Opcional) expone un callback "describe_component_images" para que JS
+#     pueda usar una API externa y generar descripciones de componentes.
+#     Esto SOLO se activa si llamas URDF_Render(..., IA_Widgets=True).
 
-import base64
-import re
 import os
+import re
 import json
+import base64
 import shutil
 import zipfile
 import requests
@@ -27,6 +29,10 @@ _COLAB_CALLBACK_REGISTERED = False
 
 
 def Download_URDF(Drive_Link, Output_Name="Model"):
+    """
+    Descarga un ZIP de Google Drive y lo deja limpio en /content/Output_Name
+    con subcarpetas /urdf y /meshes.
+    """
     root_dir = "/content"
     file_id = Drive_Link.split("/d/")[1].split("/")[0]
     url = f"https://drive.google.com/uc?id={file_id}"
@@ -43,11 +49,12 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
     import gdown
 
     gdown.download(url, zip_path, quiet=True)
+
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(tmp_extract)
 
-    def junk(n: str) -> bool:
-        return n.startswith(".") or n == "__MACOSX"
+    def junk(name: str) -> bool:
+        return name.startswith(".") or name == "__MACOSX"
 
     top = [n for n in os.listdir(tmp_extract) if not junk(n)]
     if len(top) == 1 and os.path.isdir(os.path.join(tmp_extract, top[0])):
@@ -104,9 +111,10 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 payload = {
                     "text": (
                         "Describe brevemente qué pieza de robot se ve en esta imagen. "
-                        "Se formal, directo y robotico, no digas cosas como En esta imagen se muestra o la pieza es"
-                        "Indica precisamente su función mecánica, la zona aproximada del robot donde va "
-                        "y el tipo de unión o movimiento que sugiere. Español, 8 frases."
+                        "Sé formal, directo y robótico; NO uses frases como "
+                        "'En esta imagen se muestra' o 'La pieza es'. "
+                        "Indica función mecánica, zona aproximada del robot "
+                        "y tipo de unión/movimiento que sugiere. Español, máx 8 frases."
                     ),
                     "images": [{"image_b64": img_b64, "mime": "image/png"}],
                 }
@@ -125,8 +133,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                     results[key] = ""
                     continue
 
-                txt = r.text.strip()
-                # Si viene como string JSON con comillas
+                txt = (r.text or "").strip()
                 try:
                     if txt.startswith('"') and txt.endswith('"'):
                         txt = json.loads(txt)
@@ -158,19 +165,23 @@ def URDF_Render(
     branch: str = "main",
     compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
+    IA_Widgets: bool = False,
 ):
     """
     Renderiza el URDF Viewer.
 
-    - JS captura imágenes de componentes al inicio.
-    - JS manda base64 a Colab.
-    - Colab llama a la API y responde con descripciones.
-    - JS guarda el mapa y el ComponentsPanel lo usa al hacer click.
+    - Siempre renderiza el robot + UI (ToolsDock + ComponentsPanel).
+    - Opcionalmente puede activar los widgets de IA para describir piezas.
+      Para eso debes llamar: URDF_Render("Model", IA_Widgets=True).
+    - Si IA_Widgets=False (por defecto), NO se registra callback en Colab
+      ni se realizan llamadas a la API desde JS.
     """
-    _register_colab_callback(api_base=api_base)
+    # Registrar callback de IA solo si el usuario lo activó
+    if IA_Widgets:
+        _register_colab_callback(api_base=api_base)
 
-    # Buscar urdf/meshes
-    def find_dirs(root):
+    # Buscar /urdf y /meshes
+    def find_dirs(root: str):
         u = os.path.join(root, "urdf")
         m = os.path.join(root, "meshes")
         if os.path.isdir(u) and os.path.isdir(m):
@@ -231,25 +242,19 @@ def URDF_Render(
             ):
                 disk_files.append(os.path.join(root, name))
 
-    meshes_root_abs = os.path.abspath(meshes_dir)
-    by_rel, by_base = {}, {}
-    for path in disk_files:
-        rel = (
-            os.path.relpath(os.path.abspath(path), meshes_root_abs)
-            .replace("\\", "/")
-            .lower()
-        )
-        by_rel[rel] = path
-        by_base[os.path.basename(path).lower()] = path
+    def b64(path: str) -> str:
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode("ascii")
 
-    _cache: dict[str, str] = {}
     mesh_db: dict[str, str] = {}
 
-    def b64(path: str) -> str:
-        if path not in _cache:
-            with open(path, "rb") as f:
-                _cache[path] = base64.b64encode(f.read()).decode("ascii")
-        return _cache[path]
+    by_rel = {}
+    by_base = {}
+    for path in disk_files:
+        rel = os.path.relpath(path, meshes_dir).replace("\\", "/")
+        by_rel[rel.lower()] = path
+        bn = os.path.basename(path).lower()
+        by_base[bn] = path
 
     def add_entry(key: str, path: str):
         k = key.replace("\\", "/").lower().lstrip("./")
@@ -281,12 +286,12 @@ def URDF_Render(
             .replace("</script>", "<\\/script>")
         )
 
-    urdf_js = esc(urdf_raw)
+    urdf_js = esc(urdf_raw or "")
     mesh_js = json.dumps(mesh_db)
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
+    ia_js = "true" if IA_Widgets else "false"
 
-    # HTML que carga el viewer modularizado
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -315,11 +320,11 @@ def URDF_Render(
     padding-left: env(safe-area-inset-left);
   }}
   #app {{
-    position: fixed;
-    inset: 0;
-    width: 100vw;
-    height: 100dvh;
-    touch-action: none;
+    position:fixed;
+    inset:0;
+    width:100vw;
+    height:100dvh;
+    touch-action:none;
   }}
   @supports not (height: 100dvh) {{
     #app {{ height: calc(var(--vh) * 100); }}
@@ -360,7 +365,10 @@ def URDF_Render(
 
   function setColabFrameHeight() {{
     const h = Math.ceil(
-      (window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 600)
+      (window.visualViewport?.height ||
+       window.innerHeight ||
+       document.documentElement.clientHeight ||
+       600)
     );
     try {{
       if (window.google?.colab?.output?.setIframeHeight) {{
@@ -386,8 +394,8 @@ def URDF_Render(
   }}
   setTimeout(setColabFrameHeight, 50);
 
-  const repo = {json.dumps(repo)};
-  const branch = {json.dumps(branch)};
+  const repo     = {json.dumps(repo)};
+  const branch   = {json.dumps(branch)};
   const compFile = {json.dumps(compFile)};
 
   async function latest() {{
@@ -409,6 +417,7 @@ def URDF_Render(
 
   const SELECT_MODE = {sel_js};
   const BACKGROUND  = {bg_js};
+  const IA_WIDGETS  = {ia_js};
 
   const opts = {{
     container: document.getElementById('app'),
@@ -417,7 +426,8 @@ def URDF_Render(
     selectMode: SELECT_MODE,
     background: BACKGROUND,
     pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
-    autoResize: true
+    autoResize: true,
+    IA_Widgets: IA_WIDGETS
   }};
 
   let mod = null;
