@@ -10,13 +10,6 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
 
 /**
  * Public entry: render the URDF viewer.
- * @param {Object} opts
- * @param {HTMLElement} opts.container
- * @param {string} opts.urdfContent              — URDF string
- * @param {Object.<string,string>} opts.meshDB   — key → base64
- * @param {'link'|'mesh'} [opts.selectMode='link']
- * @param {number|null} [opts.background=THEME.bgCanvas]
- * @param {string|null} [opts.clickAudioDataURL] — optional UI SFX (not required)
  */
 export function render(opts = {}) {
   const {
@@ -31,36 +24,35 @@ export function render(opts = {}) {
   // 1) Core viewer
   const core = createViewer({ container, background });
 
-  // 2) Asset DB + loadMeshCb with onMeshTag hook to index meshes by assetKey
+  // 2) Asset DB + loadMeshCb with onMeshTag hook
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map(); // assetKey -> Mesh[]
   const loadMeshCb = createLoadMeshCb(assetDB, {
     onMeshTag(obj, assetKey) {
+      // Index meshes for this assetKey
       const list = assetToMeshes.get(assetKey) || [];
       obj.traverse((o) => {
         if (o && o.isMesh && o.geometry) list.push(o);
       });
       assetToMeshes.set(assetKey, list);
 
-      // Guarda también el assetKey en userData del mesh para el clon offscreen
+      // Tag meshes so offscreen clone can map them
       obj.traverse(o => {
         if (o && o.isMesh && o.geometry) {
           o.userData = o.userData || {};
-          if (!o.userData.__assetKey) {
-            o.userData.__assetKey = assetKey;
-          }
+          if (!o.userData.__assetKey) o.userData.__assetKey = assetKey;
         }
       });
     }
   });
 
-  // 3) Load URDF (this triggers tagging via `onMeshTag`)
+  // 3) Load URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // 4) Offscreen thumbnails builder (sistema antiguo bueno)
+  // 4) Offscreen thumbnails (sistema antiguo bueno)
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
-  // 5) Interaction (hover, select, drag joints, key 'i')
+  // 5) Interaction
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -70,25 +62,21 @@ export function render(opts = {}) {
     selectMode
   });
 
-  // 6) Facade “app” that is passed to UI components
+  // 6) App facade
   const app = {
-    // Core
     ...core,
     robot,
 
-    // Assets API for ComponentsPanel
     assets: {
       list: () => listAssets(assetToMeshes),
       thumbnail: (assetKey) => off?.thumbnail(assetKey)
     },
 
-    // IA descriptions (se llena en bootstrapComponentDescriptions)
     componentDescriptions: {},
     getComponentDescription(assetKey) {
       return this.componentDescriptions?.[assetKey] || null;
     },
 
-    // Isolation helpers
     isolate: {
       asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey),
       clear: () => showAll(core)
@@ -101,19 +89,18 @@ export function render(opts = {}) {
     }
   };
 
-  // 7) UI modules
+  // 7) UI
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // 8) Bootstrap: generar thumbnails + pedir descripciones IA a Colab
+  // 8) IA: thumbnails + batch -> Colab -> descriptions map
   bootstrapComponentDescriptions(app, off);
 
-  // Optional click SFX
+  // Optional SFX
   if (clickAudioDataURL) {
     try { installClickSound(clickAudioDataURL); } catch (_) {}
   }
 
-  // Public destroy
   const destroy = () => {
     try { comps.destroy(); } catch (_) {}
     try { tools.destroy(); } catch (_) {}
@@ -181,12 +168,8 @@ function frameMeshes(core, meshes) {
   meshes.forEach(m => {
     if (!m) return;
     tmp.setFromObject(m);
-    if (!has) {
-      box.copy(tmp);
-      has = true;
-    } else {
-      box.union(tmp);
-    }
+    if (!has) { box.copy(tmp); has = true; }
+    else box.union(tmp);
   });
   if (!has) return;
 
@@ -242,7 +225,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   });
   renderer.setSize(OFF_W, OFF_H, false);
 
-  // Match main renderer
   if (core?.renderer) {
     renderer.physicallyCorrectLights =
       core.renderer.physicallyCorrectLights ?? true;
@@ -273,7 +255,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
   const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
-  // Clone robot
   const robotClone = core.robot.clone(true);
   scene.add(robotClone);
 
@@ -290,7 +271,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   });
 
-  // Map assetKey -> meshes en el clon
   const cloneAssetToMeshes = new Map();
   robotClone.traverse(o => {
     const k = o?.userData?.__assetKey;
@@ -301,10 +281,11 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     }
   });
 
-  // Warmup
   const ready = (async () => {
     await sleep(1000);
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await new Promise(r =>
+      requestAnimationFrame(() => requestAnimationFrame(r))
+    );
     renderer.render(scene, camera);
   })();
 
@@ -326,12 +307,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     let has = false;
     meshes.forEach(m => {
       tmp.setFromObject(m);
-      if (!has) {
-        box.copy(tmp);
-        has = true;
-      } else {
-        box.union(tmp);
-      }
+      if (!has) { box.copy(tmp); has = true; }
+      else box.union(tmp);
     });
     if (!has) {
       vis.forEach(([o, v]) => { o.visible = v; });
@@ -354,6 +331,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       Math.sin(el),
       Math.cos(el) * Math.sin(az)
     ).multiplyScalar(dist);
+
     camera.position.copy(center.clone().add(dirV));
     camera.lookAt(center);
 
@@ -385,8 +363,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 /* ----------------- Bootstrap IA descriptions ----------------- */
 
 function bootstrapComponentDescriptions(app, off) {
-  if (!off || !app || !app.assets || typeof app.assets.list !== 'function') {
-    console.debug('[Components] IA bootstrap omitido: sin offscreen o sin assets.');
+  if (!off || !app?.assets?.list) {
+    console.debug('[Components] IA bootstrap omitido: falta offscreen o assets.');
     return;
   }
 
@@ -395,7 +373,7 @@ function bootstrapComponentDescriptions(app, off) {
     window.parent?.google?.colab?.kernel?.invokeFunction;
 
   if (!invoke) {
-    console.debug('[Components] No Colab kernel disponible, sin IA.');
+    console.debug('[Components] No Colab kernel disponible; sin IA.');
     return;
   }
 
@@ -409,7 +387,6 @@ function bootstrapComponentDescriptions(app, off) {
 
       console.debug('[Components] Generando thumbnails para', assets.length, 'componentes...');
       const entries = [];
-
       for (const a of assets) {
         const url = await off.thumbnail(a.assetKey);
         if (!url || typeof url !== 'string') continue;
@@ -426,8 +403,8 @@ function bootstrapComponentDescriptions(app, off) {
 
       console.debug('[Components] Enviando', entries.length, 'capturas a Colab describe_component_images...');
       const res = await invoke('describe_component_images', [entries], {});
-
       const descMap = extractDescMap(res);
+
       if (descMap && Object.keys(descMap).length) {
         app.componentDescriptions = descMap;
         console.debug('[Components] Descripciones IA cargadas:', Object.keys(descMap).length);
@@ -441,37 +418,81 @@ function bootstrapComponentDescriptions(app, off) {
 }
 
 function extractDescMap(res) {
-  if (!res || typeof res !== 'object' || !res.data) return null;
-  const data = res.data;
+  console.debug('[Components] Callback result bruto:', res);
+  if (!res || typeof res !== 'object') return null;
 
-  let raw = data['application/json'] ?? data['text/plain'] ?? null;
-  if (!raw) return null;
+  // En Colab normalmente viene como { data: { ... } }
+  let data = res.data || res;
 
-  if (typeof raw === 'string') {
-    // Intento parseo directo
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed;
-      }
-    } catch (_) {
-      // intentar rescatar dict estilo Python con comillas simples
-      try {
-        const fixed = raw
-          .replace(/(\w+)\s*:/g, '"$1":')
-          .replace(/'/g, '"');
-        const parsed2 = JSON.parse(fixed);
-        if (parsed2 && typeof parsed2 === 'object' && !Array.isArray(parsed2)) {
-          return parsed2;
-        }
-      } catch (_) {
-        return null;
+  // Caso 1: ya parece un mapa key->string (sin application/json/text/plain)
+  if (
+    data &&
+    typeof data === 'object' &&
+    !Array.isArray(data)
+  ) {
+    const keys = Object.keys(data);
+    const hasMimeKeys = keys.some(
+      (k) => k === 'application/json' || k === 'text/plain'
+    );
+    if (!hasMimeKeys && keys.length) {
+      const looksMap = keys.every((k) => {
+        const v = data[k];
+        return (
+          typeof v === 'string' ||
+          typeof v === 'number'
+        );
+      });
+      if (looksMap) {
+        console.debug('[Components] Interpretando respuesta como dict directo.');
+        return data;
       }
     }
-  } else if (typeof raw === 'object' && !Array.isArray(raw)) {
+  }
+
+  // Caso 2: viene envuelto en mime-types
+  let raw = data['application/json'] ?? data['text/plain'] ?? null;
+  if (!raw) {
+    return null;
+  }
+
+  // Si ya es objeto
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    console.debug('[Components] Usando objeto application/json directo.');
     return raw;
   }
 
+  if (typeof raw !== 'string') return null;
+
+  raw = raw.trim();
+
+  // Intento JSON puro
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      console.debug('[Components] JSON válido parseado desde respuesta.');
+      return parsed;
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  // Intento diccionario estilo Python: {'a': 'b', ...}
+  try {
+    const candidate = raw
+      // claves no entrecomilladas → "clave":
+      .replace(/([{,]\s*)([A-Za-z0-9_./-]+)\s*:/g, '$1"$2":')
+      // comillas simples → dobles
+      .replace(/'/g, '"');
+    const parsed2 = JSON.parse(candidate);
+    if (parsed2 && typeof parsed2 === 'object' && !Array.isArray(parsed2)) {
+      console.debug('[Components] Diccionario estilo Python parseado correctamente.');
+      return parsed2;
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  console.warn('[Components] No se pudo interpretar la respuesta como mapa de descripciones.');
   return null;
 }
 
