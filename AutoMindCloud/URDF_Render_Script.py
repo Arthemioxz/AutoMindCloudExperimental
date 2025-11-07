@@ -9,13 +9,15 @@
 # Este script:
 #   - Busca /urdf y /meshes dentro de folder_path.
 #   - Construye un meshDB embebido (base64) para el viewer JS.
-#   - Renderiza un viewer HTML fullscreen adaptado a Colab.
+#   - Renderiza un viewer HTML fullscreen para Colab.
 #   - (Opcional) registra el callback "describe_component_images"
-#     para que el JS pueda pedir descripciones de componentes vía API.
+#     para que el JS pueda pedir descripciones vía API externa.
 #
 # IMPORTANTE:
-#   - Si NO pasas IA_Widgets=True, no se registra ningún callback
-#     ni se envían imágenes a ninguna API.
+#   - Si NO pasas IA_Widgets=True:
+#       * No se registra callback.
+#       * No se envía ninguna imagen a ninguna API.
+#       * Solo funciona el viewer + panel de componentes "local".
 
 import os
 import re
@@ -73,8 +75,8 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120):
     """
-    Registra el callback 'describe_component_images' SOLO una vez.
-    Recibe imágenes comprimidas (~5KB) desde JS y devuelve { assetKey: descripcion }.
+    Registra el callback 'describe_component_images' si estamos en Colab.
+    Recibe thumbnails ~5KB en base64 y devuelve { assetKey: descripcion }.
     """
     global _COLAB_CALLBACK_REGISTERED
     if _COLAB_CALLBACK_REGISTERED:
@@ -88,7 +90,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
 
         def _describe_component_images(entries):
             """
-            entries: [{ "key": assetKey, "image_b64": "...", ...}, ...]
+            entries: [{ "key": assetKey, "image_b64": "..." }, ...]
             """
             try:
                 n = len(entries)
@@ -112,10 +114,10 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 payload = {
                     "text": (
                         "Describe brevemente qué pieza de robot se ve en esta imagen. "
-                        "Sé formal, directo y robótico. NO uses frases como "
+                        "Sé conciso, técnico y directo. NO uses frases como "
                         "'En esta imagen se muestra' ni 'La pieza es'. "
-                        "Indica función mecánica, zona aproximada del robot, "
-                        "y tipo de unión/movimiento. Español, máximo 8 frases."
+                        "Indica función mecánica, zona aproximada del robot "
+                        "y tipo de unión/movimiento que sugiere. Español, máx 8 frases."
                     ),
                     "images": [{"image_b64": img_b64, "mime": "image/png"}],
                 }
@@ -123,7 +125,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 try:
                     r = requests.post(infer_url, json=payload, timeout=timeout)
                 except Exception as e:
-                    print(f"[Colab] Error de conexión API para {key}: {e}")
+                    print(f"[Colab] Error conexión API para {key}: {e}")
                     results[key] = ""
                     continue
 
@@ -134,7 +136,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
 
                 txt = (r.text or "").strip()
                 try:
-                    # Si viene como string JSON con comillas
                     if txt.startswith('"') and txt.endswith('"'):
                         txt = json.loads(txt)
                 except Exception:
@@ -164,23 +165,29 @@ def URDF_Render(
     IA_Widgets: bool = False,
 ):
     """
-    Renderiza el URDF Viewer en Colab.
+    Renderiza el URDF Viewer para Colab.
 
-    - Siempre: muestra robot + ToolsDock + ComponentsPanel.
-    - Opcional: si IA_Widgets=True, habilita integración con IA:
+    - Siempre:
+        * Carga URDF + meshes desde folder_path.
+        * Inserta meshDB embedido.
+        * Muestra viewer + ToolsDock + ComponentsPanel.
+    - Si IA_Widgets=True:
         * Registra callback 'describe_component_images'.
-        * El JS enviará thumbnails comprimidos ~5KB en mini-lotes.
+        * El JS enviará thumbnails comprimidos (~5KB) a ese callback.
     - Si IA_Widgets=False:
-        * NO se registra callback.
-        * NO se envían imágenes a ninguna API.
-        * El panel de componentes funciona igual, solo sin textos IA.
+        * No se registra callback.
+        * No hay tráfico a ninguna API.
+
+    Puedes llamar:
+        URDF_Render("URDFModel")
+        URDF_Render("URDFModel", IA_Widgets=True)
     """
 
-    # IA opt-in
     if IA_Widgets:
         _register_colab_callback(api_base=api_base)
 
-    # Buscar directorios urdf/meshes
+    # --- Buscar directorios urdf / meshes ---
+
     def find_dirs(root: str):
         u = os.path.join(root, "urdf")
         m = os.path.join(root, "meshes")
@@ -201,12 +208,14 @@ def URDF_Render(
             f"<b style='color:red'>No se encontró /urdf y /meshes dentro de {folder_path}</b>"
         )
 
-    # Buscar URDF principal
+    # --- URDF principal ---
+
     urdf_files = [
         os.path.join(urdf_dir, f)
         for f in os.listdir(urdf_dir)
         if f.lower().endswith(".urdf")
     ]
+
     urdf_files.sort(
         key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
         reverse=True,
@@ -233,7 +242,8 @@ def URDF_Render(
         with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
             urdf_raw = f.read().lstrip("\ufeff")
 
-    # Construir meshDB
+    # --- Construir meshDB embedido ---
+
     disk_files = []
     for root, _, files in os.walk(meshes_dir):
         for name in files:
@@ -265,7 +275,7 @@ def URDF_Render(
         if k not in mesh_db:
             mesh_db[k] = b64(path)
 
-    # 1) desde URDF
+    # 1) Desde URDF (coincidir refs)
     for ref in mesh_refs:
         raw = ref.replace("\\", "/")
         lower = raw.lower()
@@ -281,7 +291,7 @@ def URDF_Render(
             add_entry(lower, cand)
             add_entry(base, cand)
 
-    # 2) incluir basenames restantes
+    # 2) Incluir basenames restantes como fallback
     for base, path in by_base.items():
         if base not in mesh_db:
             add_entry(base, path)
@@ -299,6 +309,8 @@ def URDF_Render(
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
     ia_js = "true" if IA_Widgets else "false"
+
+    # --- HTML + JS (usa urdf_viewer_main.js del repo) ---
 
     html = f"""<!doctype html>
 <html lang="en">
