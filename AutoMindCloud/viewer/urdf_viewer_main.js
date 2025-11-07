@@ -1,8 +1,8 @@
-// urdf_viewer_main.js
-// Entrypoint: ViewerCore + AssetDB + Interaction + Tools + Components.
-// - Genera thumbnails offscreen (alta calidad para UI).
-// - Envía thumbnails (base64) a Colab -> allí se comprimen y se llama a la API.
-// - Recibe mapa { pieza: descripcion } y lo muestra en ComponentsPanel.
+// urdf_viewer_main.js — versión con logs detallados en navegador
+// -------------------------------------------------------------
+// Muestra logs en consola con etiquetas [DEBUG Components]
+// para ver paso a paso qué devuelve el callback Colab
+// -------------------------------------------------------------
 
 import { THEME } from "./Theme.js";
 import { createViewer } from "./core/ViewerCore.js";
@@ -169,15 +169,16 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
       }
     }
 
+    console.group("[DEBUG Components]");
+    console.debug("📸 Capturas generadas:", entries.length);
+    console.debug("Primera clave:", entries[0]?.key);
+
     if (!entries.length) {
       console.debug("[Components] No se generaron capturas para describir.");
+      console.groupEnd();
       app.descriptionsReady = true;
       return;
     }
-
-    console.debug(
-      `[Components] Enviando ${entries.length} capturas a Colab para descripción.`
-    );
 
     try {
       const result = await window.google.colab.kernel.invokeFunction(
@@ -186,69 +187,84 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
         {}
       );
 
+      console.debug("🧩 Resultado bruto recibido desde Colab:", result);
+
       const descMap = extractDescMap(result);
+      console.debug("📦 Resultado parseado por extractDescMap:", descMap);
+
       const keys =
         descMap && typeof descMap === "object" ? Object.keys(descMap) : [];
 
       if (keys.length) {
         app.componentDescriptions = descMap;
         app.descriptionsReady = true;
-        if (typeof window !== "undefined") {
-          window.COMPONENT_DESCRIPTIONS = descMap;
-        }
+        window.COMPONENT_DESCRIPTIONS = descMap;
         console.debug(
-          `[Components] Descripciones listas (${keys.length} piezas).`
+          `[✅ Components] Descripciones listas (${keys.length} piezas):`,
+          keys
         );
       } else {
-        console.warn("[Components] Respuesta sin descripciones utilizables.");
+        console.warn("[⚠️ Components] Respuesta sin descripciones utilizables.");
+        console.debug("Contenido crudo del resultado:", result);
         app.descriptionsReady = true;
       }
     } catch (err) {
-      console.error("[Components] Error invokeFunction:", err);
+      console.error("[❌ Components] Error invokeFunction:", err);
       app.descriptionsReady = true;
+    } finally {
+      console.groupEnd();
     }
   })();
 }
 
+/* ============ Parser con logs ============ */
+
 function extractDescMap(result) {
-  if (!result) return {};
+  console.groupCollapsed("[DEBUG extractDescMap]");
+  console.debug("Entrada:", result);
+
+  if (!result) {
+    console.groupEnd();
+    return {};
+  }
 
   let d = result;
 
   if (d.data && typeof d.data === "object") {
     d = d.data;
+    console.debug("📨 Extraído .data:", d);
   }
 
-  // application/json directo
   if (d["application/json"] && typeof d["application/json"] === "object") {
+    console.debug("🎯 Detectado application/json plano");
+    console.groupEnd();
     return d["application/json"];
   }
 
-  // dict plano
   if (typeof d === "object" && !Array.isArray(d)) {
-    // si tiene keys de texto, lo tomamos tal cual
     const keys = Object.keys(d);
-    if (
-      keys.length &&
-      !("text/plain" in d) &&
-      !("application/json" in d)
-    ) {
+    if (keys.length && !("text/plain" in d) && !("application/json" in d)) {
+      console.debug("🎯 Detectado dict plano con claves:", keys);
+      console.groupEnd();
       return d;
     }
   }
 
-  // array de posibles wrappers
   if (Array.isArray(d)) {
+    console.debug("🔄 Array detectado, iterando subniveles...");
     for (const item of d) {
       const sub = extractDescMap(item);
-      if (sub && Object.keys(sub).length) return sub;
+      if (sub && Object.keys(sub).length) {
+        console.groupEnd();
+        return sub;
+      }
     }
   }
 
-  // text/plain con dict/JSON
   const tp = d["text/plain"];
   if (typeof tp === "string") {
     const t = tp.trim();
+    console.debug("🧾 text/plain detectado (len=", t.length, ")");
 
     let candidate = t;
     const s0 = t.indexOf("{");
@@ -259,23 +275,23 @@ function extractDescMap(result) {
 
     try {
       const parsed = JSON.parse(candidate);
-      if (parsed && typeof parsed === "object") return parsed;
-    } catch (e) {}
-
-    try {
-      const fixed = candidate.replace(/'/g, '"');
-      const parsed = JSON.parse(fixed);
-      if (parsed && typeof parsed === "object") return parsed;
-    } catch (e) {}
-
-    try {
-      // Último recurso: dict Python literal
-      // eslint-disable-next-line no-new-func
-      const parsed = Function('"use strict"; return (' + candidate + ");")();
-      if (parsed && typeof parsed === "object") return parsed;
-    } catch (e) {}
+      console.debug("🎯 JSON.parse exitoso:", parsed);
+      console.groupEnd();
+      return parsed;
+    } catch (e) {
+      try {
+        const fixed = candidate.replace(/'/g, '"');
+        const parsed = JSON.parse(fixed);
+        console.debug("🎯 parse con comillas fijas:", parsed);
+        console.groupEnd();
+        return parsed;
+      } catch (e2) {
+        console.debug("⚠️ No fue JSON válido directo ni corregido.");
+      }
+    }
   }
 
+  console.groupEnd();
   return {};
 }
 
@@ -375,13 +391,6 @@ function frameMeshes(core, meshes) {
 /* ============ Offscreen thumbnails ============ */
 
 function buildOffscreenForThumbnails(core, assetToMeshes) {
-  if (!core.robot) {
-    return {
-      thumbnail: async () => null,
-      destroy() {},
-    };
-  }
-
   const OFF_W = 640;
   const OFF_H = 480;
 
@@ -396,57 +405,24 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   });
   renderer.setSize(OFF_W, OFF_H, false);
 
-  if (core.renderer) {
-    renderer.physicallyCorrectLights =
-      core.renderer.physicallyCorrectLights ?? true;
-    renderer.toneMapping = core.renderer.toneMapping;
-    renderer.toneMappingExposure =
-      core.renderer.toneMappingExposure ?? 1.0;
-
-    if ("outputColorSpace" in renderer) {
-      renderer.outputColorSpace =
-        core.renderer.outputColorSpace ?? THREE.SRGBColorSpace;
-    } else {
-      renderer.outputEncoding =
-        core.renderer.outputEncoding ?? THREE.sRGBEncoding;
-    }
-
-    renderer.shadowMap.enabled =
-      core.renderer.shadowMap?.enabled ?? false;
-    renderer.shadowMap.type =
-      core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
-  }
-
   const scene = new THREE.Scene();
-  scene.background =
-    core.scene?.background ?? new THREE.Color(0xffffff);
-  scene.environment = core.scene?.environment ?? null;
+  scene.background = core.scene?.background ?? new THREE.Color(0xffffff);
 
   const amb = new THREE.AmbientLight(0xffffff, 0.95);
   const dir = new THREE.DirectionalLight(0xffffff, 1.1);
   dir.position.set(2.5, 2.5, 2.5);
   scene.add(amb, dir);
 
-  const camera = new THREE.PerspectiveCamera(
-    60,
-    OFF_W / OFF_H,
-    0.01,
-    10000
-  );
+  const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
 
   const robotClone = core.robot.clone(true);
   scene.add(robotClone);
 
   robotClone.traverse((o) => {
     if (o.isMesh && o.material) {
-      if (Array.isArray(o.material)) {
-        o.material = o.material.map((m) => m.clone());
-      } else {
-        o.material = o.material.clone();
-      }
+      if (Array.isArray(o.material)) o.material = o.material.map((m) => m.clone());
+      else o.material = o.material.clone();
       o.material.needsUpdate = true;
-      o.castShadow = renderer.shadowMap.enabled;
-      o.receiveShadow = renderer.shadowMap.enabled;
     }
   });
 
@@ -461,9 +437,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   });
 
   const ready = (async () => {
-    await new Promise((r) =>
-      requestAnimationFrame(() => requestAnimationFrame(r))
-    );
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     renderer.render(scene, camera);
   })();
 
@@ -522,7 +496,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const url = renderer.domElement.toDataURL("image/png");
 
     vis.forEach(([o, v]) => (o.visible = v));
-
     return url;
   }
 
@@ -574,8 +547,6 @@ function installClickSound(dataURL) {
 
   window.__urdf_click__ = play;
 }
-
-/* --------------------- Global UMD-style hook -------------------- */
 
 if (typeof window !== "undefined") {
   window.URDFViewer = { render };
