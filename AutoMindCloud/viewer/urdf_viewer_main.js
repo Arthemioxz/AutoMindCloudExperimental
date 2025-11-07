@@ -22,6 +22,7 @@ export function render(opts = {}) {
     autoResize = true,
   } = opts;
 
+  // Core viewer
   const core = createViewer({
     container,
     background,
@@ -30,10 +31,14 @@ export function render(opts = {}) {
 
   const assetDB = buildAssetDB(meshDB);
   const loadMeshCb = createLoadMeshCb(assetDB);
+
+  // Cargar URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
+  // Mapa assetKey -> [meshes]
   const assetToMeshes = buildAssetToMeshes(robot);
 
+  // Interacción selección / drag
   const selection = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -43,6 +48,7 @@ export function render(opts = {}) {
     selectMode,
   });
 
+  // Offscreen para thumbnails (centrados y grandes)
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
   const app = {
@@ -67,13 +73,11 @@ export function render(opts = {}) {
 
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions;
-      if (!src || !app.descriptionsReady) {
-        return "";
-      }
+      if (!src || !app.descriptionsReady) return "";
 
+      // Mapa { key: desc }
       if (!Array.isArray(src) && typeof src === "object") {
-        const exact = src[assetKey];
-        if (exact) return exact;
+        if (src[assetKey]) return src[assetKey];
 
         const clean = String(assetKey || "").split("?")[0].split("#")[0];
         const base = clean.split("/").pop();
@@ -83,6 +87,7 @@ export function render(opts = {}) {
         if (src[baseNoExt]) return src[baseNoExt];
       }
 
+      // Lista indexada (fallback)
       if (Array.isArray(src) && typeof index === "number") {
         return src[index] || "";
       }
@@ -91,6 +96,7 @@ export function render(opts = {}) {
     },
   };
 
+  // UI
   const theme = THEME || {};
   createToolsDock(app, theme);
   createComponentsPanel(app, theme);
@@ -107,6 +113,7 @@ export function render(opts = {}) {
     });
   }
 
+  // Bridge Colab: genera thumbnails, comprime a ~5KB SOLO para API, loguea I/O
   setupColabDescriptions(app, assetToMeshes, off);
 
   if (typeof window !== "undefined") {
@@ -195,9 +202,7 @@ function frameMeshes(core, meshes) {
   for (const m of meshes) {
     if (!m.isMesh || !m.geometry) continue;
     tmp.setFromObject(m);
-    if (!tmp.isEmpty()) {
-      box.union(tmp);
-    }
+    if (!tmp.isEmpty()) box.union(tmp);
   }
 
   if (box.isEmpty()) return;
@@ -227,7 +232,7 @@ function frameMeshes(core, meshes) {
   }
 }
 
-/* ============ Offscreen thumbnails centrados ============ */
+/* ============ Offscreen thumbnails centrados (para UI) ============ */
 
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   if (!core.robot) {
@@ -339,7 +344,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   };
 }
 
-/* ============ Compresión a ~5KB SOLO para la API ============ */
+/* ============ Utilidades compresión ~5KB SOLO para API ============ */
 
 function estimateBytesFromDataURL(dataURL) {
   if (!dataURL || typeof dataURL !== "string") return 0;
@@ -378,6 +383,7 @@ function compressForAPI5KB(dataURL, targetKB = 5) {
         ctx.drawImage(img, 0, 0, w, h);
       };
 
+      // Límite inicial de tamaño
       const maxDim = 160;
       const maxSide = Math.max(w, h);
       if (maxSide > maxDim) {
@@ -392,7 +398,8 @@ function compressForAPI5KB(dataURL, targetKB = 5) {
       let q = 0.9;
       let best = canvas.toDataURL("image/jpeg", q);
 
-      for (let i = 0; i < 12; i++) {
+      // Bajar calidad / resolución hasta acercarse a 5KB
+      for (let i = 0; i < 16; i++) {
         const size = estimateBytesFromDataURL(best);
         if (size <= maxBytes) break;
 
@@ -410,7 +417,7 @@ function compressForAPI5KB(dataURL, targetKB = 5) {
         finalSize,
         "bytes (~",
         (finalSize / 1024).toFixed(2),
-        "KB )"
+        "KB)"
       );
 
       resolve(best);
@@ -425,26 +432,36 @@ function compressForAPI5KB(dataURL, targetKB = 5) {
   });
 }
 
-/* ============ Bridge Colab: mini-lotes con logs ============ */
+/* ============ Normalizar respuesta de Colab ============ */
 
 function normalizeDescribeResult(result) {
-  if (!result) return {};
-  const d = result.data || result;
+  console.log("[DescribeBatch] Raw invokeFunction result:", result);
 
+  if (!result) return {};
+
+  // Colab suele envolver en { data: { ... } }
+  let d = result.data || result;
+
+  // application/json directo
   if (d && typeof d === "object" && !Array.isArray(d)) {
     if (d["application/json"] && typeof d["application/json"] === "object") {
       return d["application/json"];
     }
-    return d;
-  }
-
-  if (Array.isArray(d) && d.length) {
-    const first = d[0];
-    if (first && typeof first === "object" && !Array.isArray(first)) {
-      return first;
+    if (d["text/plain"] && typeof d["text/plain"] === "string") {
+      try {
+        return JSON.parse(d["text/plain"]);
+      } catch (_) {
+        // sigue abajo
+      }
     }
   }
 
+  // Si parece ya ser un mapa clave->desc
+  if (d && typeof d === "object" && !Array.isArray(d)) {
+    return d;
+  }
+
+  // Si es string JSON crudo
   if (typeof d === "string") {
     try {
       return JSON.parse(d);
@@ -456,14 +473,17 @@ function normalizeDescribeResult(result) {
   return {};
 }
 
+/* ============ Bridge Colab: mini-lotes + logs ============ */
+
 function setupColabDescriptions(app, assetToMeshes, off) {
-  if (
-    typeof window === "undefined" ||
-    !window.google ||
-    !window.google.colab ||
-    !window.google.colab.kernel ||
-    typeof window.google.colab.kernel.invokeFunction !== "function"
-  ) {
+  const hasColab =
+    typeof window !== "undefined" &&
+    window.google &&
+    window.google.colab &&
+    window.google.colab.kernel &&
+    typeof window.google.colab.kernel.invokeFunction === "function";
+
+  if (!hasColab) {
     console.debug("[Describe] Colab bridge no disponible; sin descripciones.");
     app.descriptionsReady = true;
     return;
@@ -481,23 +501,23 @@ function setupColabDescriptions(app, assetToMeshes, off) {
   (async () => {
     const entries = [];
 
+    // 1) Generar thumbnails UI + versión 5KB para API
     for (const ent of items) {
       try {
         const url = await off.thumbnail(ent.assetKey);
         if (!url) continue;
 
-        ent.thumbURL = url; // para ComponentsPanel (full calidad)
+        // Thumbnails originales para la lista (NO se tocan)
+        ent.thumbURL = url;
 
+        // Copia comprimida a ~5KB solo para API
         const small = await compressForAPI5KB(url, 5);
         if (!small) continue;
-
         const parts = small.split(",");
         const b64 = (parts[1] || "").trim();
         if (!b64) continue;
 
         const sizeBytes = Math.floor((b64.length * 3) / 4);
-        entries.push({ key: ent.assetKey, image_b64: b64 });
-
         console.log(
           "[DescribePrep] Listo para API:",
           ent.assetKey,
@@ -505,8 +525,10 @@ function setupColabDescriptions(app, assetToMeshes, off) {
           sizeBytes,
           "bytes (~",
           (sizeBytes / 1024).toFixed(2),
-          "KB )"
+          "KB)"
         );
+
+        entries.push({ key: ent.assetKey, image_b64: b64 });
       } catch (e) {
         console.warn("[DescribePrep] Error generando entrada para API:", e);
       }
@@ -519,37 +541,30 @@ function setupColabDescriptions(app, assetToMeshes, off) {
     }
 
     console.debug(
-      `[Describe] Enviando ${entries.length} imágenes en mini-lotes a Colab callback...`
+      `[Describe] Enviando ${entries.length} imágenes en mini-lotes a Colab...`
     );
 
     const batchSize = 8;
     const allDescs = {};
 
+    // 2) Mini-lotes -> Colab -> API
     for (let i = 0; i < entries.length; i += batchSize) {
       const batch = entries.slice(i, i + batchSize);
 
-      // ===== LOG en consola: qué se envía a la API (resumen) =====
       const payloadPreview = batch.map((e) => ({
         key: e.key,
         bytes: Math.floor((e.image_b64.length * 3) / 4),
       }));
       console.log(
-        `[DescribeBatch] Batch ${
-          i / batchSize + 1
-        } -> payload a API (via Colab):`,
+        `[DescribeBatch] Batch ${i / batchSize + 1} -> hacia API (via Colab):`,
         payloadPreview
       );
 
       try {
         const result = await invoke("describe_component_images", [batch], {});
-        console.log(
-          `[DescribeBatch] Raw result batch ${i / batchSize + 1}:`,
-          result
-        );
-
         const map = normalizeDescribeResult(result) || {};
         console.log(
-          `[DescribeBatch] Parsed map batch ${i / batchSize + 1}:`,
+          `[DescribeBatch] Batch ${i / batchSize + 1} -> parsed map:`,
           map
         );
 
@@ -576,7 +591,13 @@ function setupColabDescriptions(app, assetToMeshes, off) {
       }
     }
 
+    // 3) Marcar listo
     app.descriptionsReady = true;
+
+    console.debug(
+      "[Describe] Descripciones finalizadas. Total claves:",
+      Object.keys(app.componentDescriptions || {}).length
+    );
 
     if (typeof window !== "undefined") {
       window.dispatchEvent(
@@ -585,11 +606,6 @@ function setupColabDescriptions(app, assetToMeshes, off) {
         })
       );
     }
-
-    console.debug(
-      "[Describe] Descripciones finalizadas. Total claves:",
-      Object.keys(app.componentDescriptions || {}).length
-    );
   })();
 }
 
