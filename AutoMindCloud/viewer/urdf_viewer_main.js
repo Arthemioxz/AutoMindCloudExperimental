@@ -15,10 +15,10 @@ import { createComponentsPanel } from './ui/ComponentsPanel.js';
  *   container: string | HTMLElement,
  *   urdfUrl: string,
  *   basePath?: string,
- *   descEndpoint?: string,          // Endpoint de tu API de descripciones (texto/JSON)
- *   autoDescribe?: boolean,         // true para pedir descripciones a la API
- *   enableThumbalist?: boolean,     // true para generar thumbnails por pieza
- *   thumbSize?: number,             // tamaño de thumbnail (ej: 256)
+ *   descEndpoint?: string,
+ *   autoDescribe?: boolean,
+ *   enableThumbalist?: boolean,
+ *   thumbSize?: number,
  * }
  */
 
@@ -49,6 +49,13 @@ export async function renderUrdfViewer(options) {
     theme: THEME,
   });
 
+  // Normalizar core (scene, camera, renderer, domElement)
+  const core = getViewerCore(viewer);
+  if (!core) {
+    console.error('[URDF] No se pudo inicializar core del viewer (scene/camera/renderer/domElement).');
+    return;
+  }
+
   // ============================
   // 2. Cargar URDF / AssetDB
   // ============================
@@ -63,10 +70,20 @@ export async function renderUrdfViewer(options) {
   // ============================
   // 3. Interacciones (selección, drag, etc.)
   // ============================
-  const interactionAPI = attachInteraction({
-    viewer,
-    assetDB
-  });
+  let interactionAPI = {};
+  try {
+    interactionAPI = attachInteraction({
+      viewer: core.viewer,
+      scene: core.scene,
+      camera: core.camera,
+      renderer: core.renderer,
+      domElement: core.domElement,
+      assetDB
+    });
+  } catch (err) {
+    console.error('[SelectionAndDrag] Error al adjuntar interacción:', err);
+    interactionAPI = {};
+  }
 
   // ============================
   // 4. Sistema antiguo: THUMBALIST
@@ -75,7 +92,7 @@ export async function renderUrdfViewer(options) {
   if (enableThumbalist) {
     try {
       thumbMap = await generateThumbalist({
-        viewer,
+        core,
         assetDB,
         size: thumbSize
       });
@@ -154,15 +171,14 @@ export async function renderUrdfViewer(options) {
 }
 
 /**
- * Alias para compatibilidad con el bootloader existente:
- * muchos scripts esperan entry.render(...)
+ * Alias para compatibilidad con bootloader existente: entry.render(...)
  */
 export async function render(options) {
   return renderUrdfViewer(options);
 }
 
 /* =========================================================
- * Helpers
+ * Helpers Core
  * =======================================================*/
 
 /**
@@ -175,6 +191,43 @@ function resolveContainer(container) {
     return document.getElementById(container) || document.querySelector(container);
   }
   return null;
+}
+
+/**
+ * Normaliza el core del viewer para asegurar scene/camera/renderer/domElement.
+ */
+function getViewerCore(viewer) {
+  if (!viewer) return null;
+
+  const scene =
+    viewer.scene ||
+    (typeof viewer.getScene === 'function' && viewer.getScene());
+
+  const camera =
+    viewer.camera ||
+    (typeof viewer.getCamera === 'function' && viewer.getCamera());
+
+  const renderer =
+    viewer.renderer ||
+    (typeof viewer.getRenderer === 'function' && viewer.getRenderer());
+
+  const domElement =
+    viewer.domElement ||
+    viewer.canvas ||
+    (renderer && renderer.domElement) ||
+    (typeof viewer.getDomElement === 'function' && viewer.getDomElement());
+
+  if (!scene || !camera || !renderer || !domElement) {
+    console.error('[URDF] Viewer incompleto:', {
+      hasScene: !!scene,
+      hasCamera: !!camera,
+      hasRenderer: !!renderer,
+      hasDomElement: !!domElement
+    });
+    return null;
+  }
+
+  return { viewer, scene, camera, renderer, domElement };
 }
 
 /**
@@ -196,6 +249,10 @@ function getComponentIdList(assetDB) {
   }
   return [];
 }
+
+/* =========================================================
+ * Descripciones
+ * =======================================================*/
 
 /**
  * Llama al endpoint de descripciones.
@@ -344,11 +401,12 @@ function parseKeyValueLines(text, knownIds = []) {
 
 /**
  * Genera thumbnails por componente.
+ * Usa el core normalizado para evitar errores.
  * Devuelve: { [id]: dataURL }
  */
-async function generateThumbalist({ viewer, assetDB, size = 256 }) {
-  if (!viewer || !assetDB) {
-    console.warn('[Thumbalist] Viewer o AssetDB no definidos.');
+async function generateThumbalist({ core, assetDB, size = 256 }) {
+  if (!core || !assetDB) {
+    console.warn('[Thumbalist] Core o AssetDB no definidos.');
     return {};
   }
 
@@ -358,12 +416,9 @@ async function generateThumbalist({ viewer, assetDB, size = 256 }) {
     return {};
   }
 
-  const renderer = viewer.renderer || (viewer.getRenderer && viewer.getRenderer());
-  const camera = viewer.camera || (viewer.getCamera && viewer.getCamera());
-  const scene = viewer.scene || (viewer.getScene && viewer.getScene());
-
-  if (!renderer || !camera || !scene) {
-    console.warn('[Thumbalist] Falta renderer/camera/scene para generar thumbnails.');
+  const { renderer, camera, scene } = core;
+  if (!renderer || !camera || !scene || !renderer.domElement) {
+    console.warn('[Thumbalist] Falta renderer/camera/scene/domElement para generar thumbnails.');
     return {};
   }
 
@@ -374,24 +429,24 @@ async function generateThumbalist({ viewer, assetDB, size = 256 }) {
   const map = {};
 
   const isolate = (id) => {
-    if (viewer.isolateComponent) return viewer.isolateComponent(id);
-    if (viewer.isolateLink) return viewer.isolateLink(id);
-    if (viewer.focusOnPart) return viewer.focusOnPart(id);
+    if (core.viewer.isolateComponent) return core.viewer.isolateComponent(id);
+    if (core.viewer.isolateLink) return core.viewer.isolateLink(id);
+    if (core.viewer.focusOnPart) return core.viewer.focusOnPart(id);
   };
 
   const restore = () => {
-    if (viewer.clearIsolation) return viewer.clearIsolation();
-    if (viewer.restoreAll) return viewer.restoreAll();
+    if (core.viewer.clearIsolation) return core.viewer.clearIsolation();
+    if (core.viewer.restoreAll) return core.viewer.restoreAll();
   };
 
   for (const id of ids) {
     try {
       isolate(id);
 
-      if (viewer.fitToObject && typeof viewer.fitToObject === 'function') {
-        viewer.fitToObject(id);
-      } else if (viewer.fitToSelection && typeof viewer.fitToSelection === 'function') {
-        viewer.fitToSelection();
+      if (core.viewer.fitToObject && typeof core.viewer.fitToObject === 'function') {
+        core.viewer.fitToObject(id);
+      } else if (core.viewer.fitToSelection && typeof core.viewer.fitToSelection === 'function') {
+        core.viewer.fitToSelection();
       }
 
       if (renderer.setSize) {
