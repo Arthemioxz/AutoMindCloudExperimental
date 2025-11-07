@@ -63,25 +63,30 @@ export function render(opts = {}) {
       tools.set(!!open);
     },
 
-    // se llenará con { assetKey: descripcion }
+    // mapa { assetKey / base / baseNoExt : descripcion }
     componentDescriptions: {},
+    descriptionsReady: false,
 
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions;
-      if (!src) return "";
+      if (!src || !app.descriptionsReady) {
+        return ""; // el panel decide si mostrar "cargando..."
+      }
 
-      // mapa tipo { 'drive.dae': '...' }
       if (!Array.isArray(src) && typeof src === "object") {
+        // clave exacta
         if (src[assetKey]) return src[assetKey];
 
-        const base = (assetKey || "").split("/").pop();
+        // mismo nombre con ruta
+        const clean = String(assetKey || "").split("?")[0].split("#")[0];
+        const base = clean.split("/").pop();
         if (src[base]) return src[base];
 
+        // sin extensión
         const baseNoExt = base.split(".")[0];
         if (src[baseNoExt]) return src[baseNoExt];
       }
 
-      // array (fallback)
       if (Array.isArray(src) && typeof index === "number") {
         return src[index] || "";
       }
@@ -99,7 +104,6 @@ export function render(opts = {}) {
     } catch (_) {}
   }
 
-  // --- Bootstrap Colab: capturas + descripciones al inicio ---
   bootstrapComponentDescriptions(app, assetToMeshes, off);
 
   const destroy = () => {
@@ -113,9 +117,14 @@ export function render(opts = {}) {
   return { ...app, destroy };
 }
 
-/* ==================== JS <-> Colab ==================== */
+/* ============ JS <-> Colab ============ */
+
+let _bootstrapStarted = false;
 
 function bootstrapComponentDescriptions(app, assetToMeshes, off) {
+  if (_bootstrapStarted) return;
+  _bootstrapStarted = true;
+
   const hasColab =
     typeof window !== "undefined" &&
     window.google &&
@@ -125,12 +134,14 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
 
   if (!hasColab) {
     console.debug("[Components] Colab bridge no disponible; sin descripciones.");
+    app.descriptionsReady = true; // no habrá
     return;
   }
 
   const items = listAssets(assetToMeshes);
   if (!items.length) {
     console.debug("[Components] No hay assets para describir.");
+    app.descriptionsReady = true;
     return;
   }
 
@@ -150,10 +161,15 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
       }
     }
 
+    if (!entries.length) {
+      console.debug("[Components] No se generaron capturas para describir.");
+      app.descriptionsReady = true;
+      return;
+    }
+
     console.debug(
       `[Components] Enviando ${entries.length} capturas a Colab para descripción.`
     );
-    if (!entries.length) return;
 
     try {
       const result = await window.google.colab.kernel.invokeFunction(
@@ -165,18 +181,27 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
       console.debug("[Components] Respuesta raw:", result);
 
       const descMap = extractDescMap(result);
-      console.debug("[Components] Mapa final de descripciones:", descMap);
+      const keys = descMap && typeof descMap === "object"
+        ? Object.keys(descMap)
+        : [];
 
-      if (descMap && typeof descMap === "object") {
+      if (keys.length) {
         app.componentDescriptions = descMap;
+        app.descriptionsReady = true;
         if (typeof window !== "undefined") {
           window.COMPONENT_DESCRIPTIONS = descMap; // debug
         }
+        console.debug(
+          `[Components] Descripciones listas (${keys.length} piezas).`
+        );
       } else {
-        console.warn("[Components] No se obtuvo mapa de descripciones válido.");
+        // No pisamos nada si viene vacío; marcamos ready igualmente.
+        console.warn("[Components] Respuesta sin descripciones utilizables.");
+        app.descriptionsReady = true;
       }
     } catch (err) {
       console.error("[Components] Error invokeFunction:", err);
+      app.descriptionsReady = true;
     }
   })();
 }
@@ -195,42 +220,41 @@ function extractDescMap(result) {
     return d[0];
   }
 
-  // 3) text/plain con dict de Python (lo que tienes ahora)
+  // 3) dict de Python en text/plain (lo que vimos en tu log)
   const tp = d["text/plain"];
   if (typeof tp === "string") {
     const t = tp.trim();
 
-    // a) por si acaso ya viene como JSON válido
+    // a) si ya es JSON válido
     if ((t.startsWith("{") || t.startsWith("[")) && t.includes('"')) {
       try {
         const parsed = JSON.parse(t);
         if (parsed && typeof parsed === "object") return parsed;
       } catch {
-        // seguimos al fallback
+        // seguimos
       }
     }
 
-    // b) típico: representación de dict de Python con comillas simples
-    //    Ej: {'drive.dae': 'La imagen ...', ...}
+    // b) dict Python: {'key': 'value', ...}
     try {
       if (t.startsWith("{") && t.endsWith("}")) {
-        // Lo interpretamos como literal JS/ Python-like usando Function.
-        // No usamos replace de comillas, respetamos apóstrofes dentro de los textos.
+        // Lo interpretamos como literal JS (es prácticamente igual).
+        // Mantiene comillas simples internas sin romper nada.
         const obj = Function('"use strict"; return (' + t + ");")();
         if (obj && typeof obj === "object") return obj;
       }
     } catch (e) {
-      console.warn("[Components] No se pudo parsear text/plain como dict:", e, t);
+      console.warn("[Components] No se pudo parsear text/plain como dict:", e);
     }
   }
 
-  // 4) si ya es objeto simple
+  // 4) objeto suelto
   if (typeof d === "object" && !Array.isArray(d)) return d;
 
   return {};
 }
 
-/* ==================== Helpers viewer ==================== */
+/* ============ Helpers viewer ============ */
 
 function listAssets(assetToMeshes) {
   const items = [];
