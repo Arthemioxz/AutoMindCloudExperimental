@@ -1,5 +1,5 @@
 // ComponentsPanel.js
-// Panel de componentes: lista + thumbnails + frame con descripción al hacer click.
+// Lista de componentes + frame de descripción al hacer click.
 
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll) {
@@ -153,7 +153,7 @@ export function createComponentsPanel(app, theme) {
     ui.btn.style.borderColor = theme.stroke;
   });
 
-  // Hover show all
+  // Hover Show all
   ui.showAllBtn.addEventListener("mouseenter", () => {
     ui.showAllBtn.style.transform = "translateY(-1px) scale(1.02)";
     ui.showAllBtn.style.background = theme.tealFaint;
@@ -277,14 +277,15 @@ export function createComponentsPanel(app, theme) {
         row.style.borderColor = theme.stroke;
       });
 
-      // Click: aisla y muestra descripción en frame
+      // CLICK: aislar + mostrar frame de descripción
       row.addEventListener("click", () => {
+        console.debug("[ComponentsPanel] Click en", ent.assetKey);
         try { app.isolate.asset(ent.assetKey); } catch (_) {}
         showDetails(ent, index);
         set(true);
       });
 
-      // Thumbnail (usa cache; no recalcula al hacer click)
+      // Thumbnail
       (async () => {
         try {
           const url = await app.assets.thumbnail?.(ent.assetKey);
@@ -329,6 +330,13 @@ export function createComponentsPanel(app, theme) {
     ui.detailsTitle.textContent = ent.base;
     ui.detailsBody.textContent = text;
     ui.details.style.display = "block";
+
+    console.debug(
+      "[ComponentsPanel] showDetails:",
+      ent.assetKey,
+      "=>",
+      text
+    );
   }
 
   function hideDetails() {
@@ -372,7 +380,7 @@ export function createComponentsPanel(app, theme) {
   return { open: openPanel, close: closePanel, set, refresh, destroy };
 }
 
-/* ---------------- Helpers ---------------- */
+/* ----- Helpers ----- */
 
 function applyStyles(el, styles) {
   Object.assign(el.style, styles);
