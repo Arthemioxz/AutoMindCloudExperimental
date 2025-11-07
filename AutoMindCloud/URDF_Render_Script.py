@@ -1,7 +1,18 @@
 # ==========================================================
 # URDF_Render_Script.py
 # Puente Colab <-> JS para descripciones de piezas del URDF.
-# Versión: 3 mecanismos (batch -> mini-batch -> 1x1) + downscale imágenes para API
+#
+# - Genera viewer HTML embebido.
+# - Registra callback "describe_component_images" para ser llamado desde JS.
+# - Callback:
+#     * Recibe mini-lotes con {key, image_b64}
+#     * Baja resolución SOLO para la copia enviada a la API
+#     * Aplica 3 mecanismos:
+#           M1: batch grande
+#           M2: mini-batches
+#           M3: 1x1 fallback
+#     * Devuelve SIEMPRE dict Python { assetKey: "descripcion" }
+#       (Colab lo serializa bien → JS lo lee como objeto)
 # ==========================================================
 
 import base64
@@ -58,10 +69,11 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 # ======================= Helpers =======================
 def _parse_json_flexible(raw: str):
-    """Intenta extraer un dict JSON desde texto ruidoso."""
+    """Intenta extraer un dict JSON desde texto potencialmente ruidoso."""
     if not raw:
         return None
     raw = raw.strip()
+
     # Intento directo
     try:
         v = json.loads(raw)
@@ -69,7 +81,8 @@ def _parse_json_flexible(raw: str):
             return v
     except Exception:
         pass
-    # Buscar bloque {...}
+
+    # Buscar primer bloque {...}
     s0 = raw.find("{")
     s1 = raw.rfind("}")
     if s0 != -1 and s1 != -1 and s1 > s0:
@@ -79,6 +92,7 @@ def _parse_json_flexible(raw: str):
                 return v
         except Exception:
             pass
+
     return None
 
 
@@ -97,8 +111,8 @@ def _call_api(infer_url: str, text: str, images, timeout: int) -> str:
 
 def _downscale_b64_for_api(img_b64: str, max_size: int = 384) -> str:
     """
-    Baja resolución SOLO para lo que va a la API.
-    La imagen original usada en la UI NO se toca.
+    Baja resolución SOLO para la copia enviada a la API.
+    No toca la imagen original que usa la UI.
     """
     try:
         import io
@@ -108,6 +122,7 @@ def _downscale_b64_for_api(img_b64: str, max_size: int = 384) -> str:
         im = Image.open(io.BytesIO(data)).convert("RGB")
         w, h = im.size
         max_dim = max(w, h)
+
         if max_dim <= max_size:
             buf = io.BytesIO()
             im.save(buf, format="JPEG", quality=80)
@@ -117,19 +132,27 @@ def _downscale_b64_for_api(img_b64: str, max_size: int = 384) -> str:
         new_w = max(32, int(w * scale))
         new_h = max(32, int(h * scale))
         im = im.resize((new_w, new_h), Image.LANCZOS)
+
         buf = io.BytesIO()
         im.save(buf, format="JPEG", quality=80)
         return base64.b64encode(buf.getvalue()).decode("ascii")
+
     except Exception as e:
         print(f"[Colab] ⚠️ No se pudo redimensionar imagen para API: {e}")
         return img_b64
 
 
-# ======================= Callback: 3 mecanismos =======================
+# ======================= Callback con 3 mecanismos =======================
 def _register_colab_callback(
     api_base: str = API_DEFAULT_BASE,
     timeout: int = 90,
 ):
+    """
+    Registra el callback 'describe_component_images' para ser llamado desde JS.
+
+    Retorna SIEMPRE un dict Python:
+      { assetKey: "descripcion en español (≤2 frases)", ... }
+    """
     global _COLAB_CALLBACK_REGISTERED
     if _COLAB_CALLBACK_REGISTERED:
         return
@@ -137,38 +160,30 @@ def _register_colab_callback(
     try:
         from google.colab import output  # type: ignore
 
-        api_base = api_base.rstrip("/")
-        infer_url = api_base + API_INFER_PATH
+        infer_url = api_base.rstrip("/") + API_INFER_PATH
 
         def _describe_component_images(entries):
-            """
-            entries: [
-              { "key": assetKey, "image_b64": "<b64>" },
-              ...
-            ]
-            Devuelve SIEMPRE un string JSON:
-              '{"assetKey": "descripcion", ...}'
-            """
             if not isinstance(entries, (list, tuple)) or not entries:
                 print("[Colab] ❌ entries vacío/incorrecto.")
-                return json.dumps({})
+                return {}
 
             keys = []
             imgs = []
 
-            for i, item in enumerate(entries):
+            for item in entries:
                 if not isinstance(item, dict):
                     continue
                 key = item.get("key") or item.get("assetKey")
                 img_b64 = item.get("image_b64")
                 if not key or not isinstance(img_b64, str) or not img_b64.strip():
                     continue
+
                 small_b64 = _downscale_b64_for_api(img_b64.strip())
                 keys.append(str(key))
                 imgs.append({"image_b64": small_b64, "mime": "image/jpeg"})
 
             if not keys:
-                return json.dumps({})
+                return {}
 
             n = len(keys)
             print(f"[Colab] describe_component_images: {n} imágenes válidas.")
@@ -180,31 +195,34 @@ def _register_colab_callback(
                     "keys": keys,
                     "reglas": [
                         "Responde SOLO con un JSON válido.",
-                        "Cada clave debe estar en 'keys'.",
-                        "Máx 2 frases por componente en español.",
+                        "Cada clave debe ser una de 'keys'.",
+                        "Máximo 2 frases por componente.",
+                        "Idioma: español.",
                     ],
                 }
-                batch_text = (
+                prompt = (
                     "Eres un generador de JSON estricto. Devuelve únicamente un objeto JSON.\n"
                     + json.dumps(instr, ensure_ascii=False)
                 )
-                raw = _call_api(infer_url, batch_text, imgs, timeout)
+                raw = _call_api(infer_url, prompt, imgs, timeout)
                 parsed = _parse_json_flexible(raw)
+
                 if isinstance(parsed, dict):
                     for k, v in parsed.items():
                         if k in keys:
                             if isinstance(v, (dict, list)):
                                 v = json.dumps(v, ensure_ascii=False)
                             results[k] = (str(v).strip() if v is not None else "")
+
                     if len(results) >= max(1, int(0.6 * n)):
-                        print(f"[Colab] ✅ M1 OK: {len(results)}/{n} descripciones.")
-                        return json.dumps(results, ensure_ascii=False)
+                        print(f"[Colab] ✅ M1 OK: {len(results)}/{n}.")
+                        return results
                     else:
                         print(
-                            f"[Colab] ⚠️ M1 incompleto ({len(results)}/{n}), pasamos a M2."
+                            f"[Colab] ⚠️ M1 incompleto ({len(results)}/{n}), usando M2."
                         )
                 else:
-                    print("[Colab] ⚠️ M1 sin JSON utilizable, pasamos a M2.")
+                    print("[Colab] ⚠️ M1 sin JSON utilizable, usando M2.")
             except Exception as e:
                 print(f"[Colab] ⚠️ M1 falló: {e}")
 
@@ -214,63 +232,59 @@ def _register_colab_callback(
             for i in range(0, n, BATCH):
                 sub_keys = keys[i : i + BATCH]
                 sub_imgs = imgs[i : i + BATCH]
-
                 instr2 = {
                     "keys": sub_keys,
                     "reglas": [
                         "Responde SOLO con un JSON.",
-                        "Solo claves de 'keys'.",
-                        "Máx 2 frases en español.",
+                        "Solo usa claves dentro de 'keys'.",
+                        "Máximo 2 frases, español.",
                     ],
                 }
-                text2 = (
-                    "Genera descripciones para este sub-conjunto.\n"
+                prompt2 = (
+                    "Genera descripciones para este subconjunto de componentes.\n"
                     + json.dumps(instr2, ensure_ascii=False)
                 )
-
                 try:
-                    raw2 = _call_api(infer_url, text2, sub_imgs, timeout)
+                    raw2 = _call_api(infer_url, prompt2, sub_imgs, timeout)
                     parsed2 = _parse_json_flexible(raw2)
                     if isinstance(parsed2, dict):
                         for k, v in parsed2.items():
                             if k in sub_keys:
                                 if isinstance(v, (dict, list)):
                                     v = json.dumps(v, ensure_ascii=False)
-                                results[k] = (
-                                    str(v).strip() if v is not None else ""
-                                )
+                                results[k] = (str(v).strip() if v is not None else "")
                 except Exception as e:
                     print(f"[Colab] ⚠️ M2 error lote {i//BATCH}: {e}")
 
             if len(results) == n:
                 print(f"[Colab] ✅ M2 completó {n}/{n}.")
-                return json.dumps(results, ensure_ascii=False)
+                return results
             elif results:
                 print(
-                    f"[Colab] ⚠️ M2 parcial {len(results)}/{n}, faltantes a M3."
+                    f"[Colab] ⚠️ M2 parcial {len(results)}/{n}, el resto pasa a M3."
                 )
             else:
                 print("[Colab] ⚠️ M2 sin resultados, pasamos a M3.")
 
-            # ---------- M3: Fallback 1x1 ----------
+            # ---------- M3: 1x1 ----------
             print("[Colab] 🛟 M3 1x1.")
             for k, img in zip(keys, imgs):
                 if k in results:
                     continue
-                single_text = (
+
+                single_prompt = (
                     "Describe brevemente la pieza del robot en la imagen: "
-                    "función mecánica, zona aproximada y tipo de unión o movimiento. "
-                    "Español, máximo 2 frases."
+                    "indica función mecánica, zona aproximada en el robot y tipo de unión o movimiento. "
+                    "Máximo 2 frases. Español."
                 )
                 try:
-                    raw3 = _call_api(infer_url, single_text, [img], timeout)
+                    raw3 = _call_api(infer_url, single_prompt, [img], timeout)
                 except Exception as e:
                     print(f"[Colab] ❌ M3 error para {k}: {e}")
                     results[k] = ""
                     continue
 
                 desc = (raw3 or "").strip()
-                # Si accidentalmente es JSON, lo compactamos
                 try:
                     maybe = json.loads(desc)
                     if isinstance(maybe, (dict, list)):
@@ -281,7 +295,7 @@ def _register_colab_callback(
                 results[k] = desc
 
             print(f"[Colab] ✅ M3 completado. Total: {len(results)}/{n}.")
-            return json.dumps(results, ensure_ascii=False)
+            return results
 
         output.register_callback(
             "describe_component_images", _describe_component_images
@@ -302,7 +316,8 @@ def URDF_Render(
     folder_path: str = "Model",
     select_mode: str = "link",
     background: int | None = 0xFFFFFF,
-    repo: str = "Arthemioxz/AutoMindCloudExperimental",
+    # Ajusta repo/branch a tu repo real:
+    repo: str = "ArtemioA/AutoMindCloudExperimental",
     branch: str = "main",
     compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
@@ -435,8 +450,10 @@ def URDF_Render(
 <style>
   :root {{ --vh: 1vh; }}
   html, body {{
-    margin:0; padding:0;
-    width:100%; height:100dvh;
+    margin:0;
+    padding:0;
+    width:100%;
+    height:100dvh;
     overflow:hidden;
     background:#{int(background or 0xFFFFFF):06x};
   }}
@@ -450,19 +467,27 @@ def URDF_Render(
     padding-left: env(safe-area-inset-left);
   }}
   #app {{
-    position:fixed; inset:0;
-    width:100vw; height:100dvh;
+    position:fixed;
+    inset:0;
+    width:100vw;
+    height:100dvh;
     touch-action:none;
   }}
   @supports not (height: 100dvh) {{
     #app {{ height: calc(var(--vh) * 100); }}
   }}
   .badge {{
-    position:fixed; right:14px; bottom:12px;
+    position:fixed;
+    right:14px;
+    bottom:12px;
     z-index:10;
-    user-select:none; pointer-events:none;
+    user-select:none;
+    pointer-events:none;
   }}
-  .badge img {{ max-height:40px; display:block; }}
+  .badge img {{
+    max-height:40px;
+    display:block;
+  }}
 </style>
 </head>
 <body>
