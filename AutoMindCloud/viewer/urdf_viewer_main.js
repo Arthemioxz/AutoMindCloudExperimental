@@ -1,4 +1,6 @@
 // urdf_viewer_main.js
+// Entrypoint that composes ViewerCore + AssetDB + Selection & Drag + UI (Tools & Components)
+
 import { THEME } from "./Theme.js";
 import { createViewer } from "./core/ViewerCore.js";
 import { buildAssetDB, createLoadMeshCb } from "./core/AssetDB.js";
@@ -16,24 +18,39 @@ export function render(opts = {}) {
     clickAudioDataURL = null,
   } = opts;
 
+  // 1) Core viewer
   const core = createViewer({ container, background });
 
+  // 2) Asset DB + loadMeshCb with onMeshTag hook to index meshes by assetKey
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map();
 
   const loadMeshCb = createLoadMeshCb(assetDB, {
     onMeshTag(obj, assetKey) {
+      // Mapeo para el viewer en vivo
       const list = assetToMeshes.get(assetKey) || [];
       obj.traverse((o) => {
         if (o && o.isMesh && o.geometry) list.push(o);
       });
       assetToMeshes.set(assetKey, list);
+
+      // Muy importante: taggear para el clon offscreen (sistema viejo de thumbalist)
+      obj.traverse((o) => {
+        if (o && o.isMesh) {
+          o.userData = o.userData || {};
+          o.userData.__assetKey = assetKey;
+        }
+      });
     },
   });
 
+  // 3) Load URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
+
+  // 4) Offscreen thumbnails (usa el sistema viejo, robusto)
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
+  // 5) Interacción
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -43,12 +60,15 @@ export function render(opts = {}) {
     selectMode,
   });
 
+  // 6) Facade app
   const app = {
     ...core,
     robot,
 
     assets: {
       list: () => listAssets(assetToMeshes),
+      // Thumbnails de la lista de componentes:
+      // → usan la salida original de off.thumbnail (sin comprimir).
       thumbnail: (assetKey) => off?.thumbnail(assetKey),
     },
 
@@ -83,18 +103,21 @@ export function render(opts = {}) {
     },
   };
 
+  // 7) UI
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
+  // 8) Click sound opcional
   if (clickAudioDataURL) {
     try {
       installClickSound(clickAudioDataURL);
     } catch (_) {}
   }
 
-  // Capturar imágenes y pedir descripciones al inicio
+  // 9) Colab: capturar thumbnails y pedir descripciones (usando versiones ~5KB)
   bootstrapComponentDescriptions(app, assetToMeshes, off);
 
+  // 10) Destroy
   const destroy = () => {
     try { comps.destroy(); } catch (_) {}
     try { tools.destroy(); } catch (_) {}
@@ -106,7 +129,7 @@ export function render(opts = {}) {
   return { ...app, destroy };
 }
 
-/* ---------- JS <-> Colab ---------- */
+/* ---------- JS <-> Colab: thumbnails comprimidos (~5KB) ---------- */
 
 function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   const hasColab =
@@ -132,19 +155,25 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
 
     for (const ent of items) {
       try {
+        // Thumbnail full-res para UI:
         const url = await off.thumbnail(ent.assetKey);
         if (!url || typeof url !== "string") continue;
-        const parts = url.split(",");
-        if (parts.length !== 2) continue;
-        const b64 = parts[1];
-        entries.push({ key: ent.assetKey, image_b64: b64 });
+
+        // Versión optimizada SOLO para enviar a Colab (~5KB):
+        const b64_5kb = await make5KBBase64FromDataURL(url, 5);
+        if (!b64_5kb) continue;
+
+        entries.push({
+          key: ent.assetKey,
+          image_b64: b64_5kb,
+        });
       } catch (e) {
         console.warn("[Components] Error thumbnail", ent.assetKey, e);
       }
     }
 
     console.debug(
-      `[Components] Enviando ${entries.length} capturas a Colab para descripción.`
+      `[Components] Enviando ${entries.length} capturas (5KB) a Colab para descripción.`
     );
     if (!entries.length) return;
 
@@ -253,9 +282,6 @@ function frameMeshes(core, meshes) {
   const box = new THREE.Box3();
   const tmp = new THREE.Box3();
   let has = false;
-  const vis = [];
-
-  for (const m of meshes) vis.push([m, m.visible]);
 
   for (const m of meshes) {
     tmp.setFromObject(m);
@@ -265,10 +291,7 @@ function frameMeshes(core, meshes) {
     } else box.union(tmp);
   }
 
-  if (!has) {
-    vis.forEach(([o, v]) => (o.visible = v));
-    return;
-  }
+  if (!has) return;
 
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
@@ -291,35 +314,161 @@ function frameMeshes(core, meshes) {
   camera.lookAt(center);
 
   renderer.render(scene, camera);
-  vis.forEach(([o, v]) => (o.visible = v));
 }
 
+/* ---------- Offscreen thumbnails (sistema viejo mejorado) ---------- */
+/**
+ * Usa un renderer offscreen propio + clon del robot.
+ * - Evita thumbs negros.
+ * - Thumbnails para la UI salen en buena calidad.
+ * - El Colab usa luego una copia comprimida (~5KB) sin tocar estos.
+ */
 function buildOffscreenForThumbnails(core, assetToMeshes) {
-  const { scene, camera, renderer } = core;
-  if (!scene || !camera || !renderer) {
+  if (!core.robot || typeof THREE === "undefined") {
     return {
       thumbnail: async () => null,
       destroy() {},
     };
   }
 
-  const cache = new Map();
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  function snapshot(assetKey) {
-    if (cache.has(assetKey)) return cache.get(assetKey);
+  const OFF_W = 640;
+  const OFF_H = 480;
 
-    const meshes = assetToMeshes.get(assetKey) || [];
+  const canvas = document.createElement("canvas");
+  canvas.width = OFF_W;
+  canvas.height = OFF_H;
+
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    preserveDrawingBuffer: true,
+  });
+  renderer.setSize(OFF_W, OFF_H, false);
+
+  // Intentar matchear config del renderer principal para evitar diferencias raras
+  if (core.renderer) {
+    renderer.physicallyCorrectLights =
+      core.renderer.physicallyCorrectLights ?? true;
+    renderer.toneMapping = core.renderer.toneMapping;
+    renderer.toneMappingExposure =
+      core.renderer.toneMappingExposure ?? 1.0;
+
+    if ("outputColorSpace" in renderer) {
+      renderer.outputColorSpace =
+        core.renderer.outputColorSpace ?? THREE.SRGBColorSpace;
+    } else {
+      renderer.outputEncoding =
+        core.renderer.outputEncoding ?? THREE.sRGBEncoding;
+    }
+
+    renderer.shadowMap.enabled = core.renderer.shadowMap?.enabled ?? false;
+    renderer.shadowMap.type = core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
+  }
+
+  const baseScene = new THREE.Scene();
+  baseScene.background =
+    core.scene && core.scene.background
+      ? core.scene.background
+      : new THREE.Color(0xffffff);
+  baseScene.environment = core.scene ? core.scene.environment : null;
+
+  // Luces suaves para evitar negros
+  const amb = new THREE.AmbientLight(0xffffff, 0.95);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+  dir.position.set(2.5, 2.5, 2.5);
+  baseScene.add(amb, dir);
+
+  const camera = new THREE.PerspectiveCamera(
+    60,
+    OFF_W / OFF_H,
+    0.01,
+    10000
+  );
+
+  // Precalentar renderer
+  const ready = (async () => {
+    await sleep(300);
+    await new Promise((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(r))
+    );
+    renderer.render(baseScene, camera);
+  })();
+
+  function buildCloneAndMap() {
+    const scene = baseScene.clone();
+    scene.background = baseScene.background;
+    scene.environment = baseScene.environment;
+
+    const robotClone = core.robot.clone(true);
+    scene.add(robotClone);
+
+    // Clonar materiales para este renderer
+    robotClone.traverse((o) => {
+      if (o.isMesh && o.material) {
+        if (Array.isArray(o.material)) {
+          o.material = o.material.map((m) => m.clone());
+        } else {
+          o.material = o.material.clone();
+        }
+        o.material.needsUpdate = true;
+        o.castShadow = renderer.shadowMap.enabled;
+        o.receiveShadow = renderer.shadowMap.enabled;
+      }
+    });
+
+    const cloneAssetToMeshes = new Map();
+
+    // Reconstruir mapping usando __assetKey
+    robotClone.traverse((o) => {
+      if (o.isMesh && o.geometry) {
+        const k = o.userData && o.userData.__assetKey;
+        if (k) {
+          const arr = cloneAssetToMeshes.get(k) || [];
+          arr.push(o);
+          cloneAssetToMeshes.set(k, arr);
+        }
+      }
+    });
+
+    // Fallback por nombre si hiciera falta
+    if (!cloneAssetToMeshes.size && assetToMeshes && assetToMeshes.size) {
+      robotClone.traverse((o) => {
+        if (o.isMesh && o.geometry) {
+          assetToMeshes.forEach((meshes, ak) => {
+            if (meshes.some((m) => m.name === o.name)) {
+              const arr = cloneAssetToMeshes.get(ak) || [];
+              arr.push(o);
+              cloneAssetToMeshes.set(ak, arr);
+            }
+          });
+        }
+      });
+    }
+
+    return { scene, robotClone, cloneAssetToMeshes };
+  }
+
+  function snapshotAsset(assetKey) {
+    const { scene, robotClone, cloneAssetToMeshes } = buildCloneAndMap();
+    const meshes = cloneAssetToMeshes.get(assetKey) || [];
     if (!meshes.length) return null;
 
+    const vis = [];
+    robotClone.traverse((o) => {
+      if (o.isMesh && o.geometry) vis.push([o, o.visible]);
+    });
+
+    // Ocultar todo
+    for (const [m] of vis) m.visible = false;
+    // Mostrar sólo el asset
+    for (const m of meshes) m.visible = true;
+
+    // Fit camera
     const box = new THREE.Box3();
     const tmp = new THREE.Box3();
     let has = false;
-    const vis = [];
-
-    for (const m of meshes) {
-      vis.push([m, m.visible]);
-      m.visible = true;
-    }
 
     for (const m of meshes) {
       tmp.setFromObject(m);
@@ -328,11 +477,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
         has = true;
       } else box.union(tmp);
     }
-
-    if (!has) {
-      vis.forEach(([o, v]) => (o.visible = v));
-      return null;
-    }
+    if (!has) return null;
 
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
@@ -355,25 +500,100 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     camera.lookAt(center);
 
     renderer.render(scene, camera);
+
+    // DataURL completo (alta calidad) para la UI
     const url = renderer.domElement.toDataURL("image/png");
 
-    vis.forEach(([o, v]) => (o.visible = v));
-    cache.set(assetKey, url);
+    // Restaurar (aunque es un clon descartable)
+    for (const [o, v] of vis) o.visible = v;
+
     return url;
   }
 
   return {
     thumbnail: async (assetKey) => {
       try {
-        return snapshot(assetKey);
+        await ready;
+        await new Promise((r) => requestAnimationFrame(r));
+        return snapshotAsset(assetKey);
       } catch (e) {
         console.warn("[Thumbnails] error:", e);
         return null;
       }
     },
-    destroy() {},
+    destroy: () => {
+      try { renderer.dispose(); } catch (_) {}
+      try { baseScene.clear(); } catch (_) {}
+    },
   };
 }
+
+/* ---------- Compresión a ~5KB SOLO para envío a Colab ---------- */
+
+function estimateBytesFromBase64(b64) {
+  return Math.ceil((b64.length * 3) / 4);
+}
+
+/**
+ * Recibe un dataURL, devuelve SOLO el base64 de una versión JPEG ~5KB.
+ * No afecta las thumbnails originales usadas en la UI.
+ */
+function make5KBBase64FromDataURL(url, targetKB = 5) {
+  const maxBytes = targetKB * 1024;
+
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.naturalWidth || img.width || 512;
+        let h = img.naturalHeight || img.height || 512;
+
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+
+        let quality = 0.9;
+        let bestB64 = "";
+
+        for (let i = 0; i < 10; i++) {
+          canvas.width = w;
+          canvas.height = h;
+          ctx.clearRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+
+          const dataURL = canvas.toDataURL("image/jpeg", quality);
+          const b64 = dataURL.split(",")[1] || "";
+          if (!b64) break;
+
+          bestB64 = b64;
+          const bytes = estimateBytesFromBase64(b64);
+
+          if (
+            bytes <= maxBytes ||
+            (w <= 32 && h <= 32 && quality <= 0.25)
+          ) {
+            break;
+          }
+
+          // Reducir progresivamente
+          w = Math.max(32, Math.floor(w * 0.7));
+          h = Math.max(32, Math.floor(h * 0.7));
+          quality = Math.max(0.25, quality * 0.8);
+        }
+
+        resolve(bestB64 || url.split(",")[1] || "");
+      };
+      img.onerror = () => {
+        resolve(url.split(",")[1] || "");
+      };
+      img.src = url;
+    } catch (e) {
+      console.warn("[5KB] Error al comprimir:", e);
+      resolve(url.split(",")[1] || "");
+    }
+  });
+}
+
+/* ------------------------- Click Sound ------------------------- */
 
 function installClickSound(dataURL) {
   if (!dataURL || typeof dataURL !== "string") return;
@@ -399,12 +619,23 @@ function installClickSound(dataURL) {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-    try { src.start(); } catch (_) {}
+    try {
+      src.start();
+    } catch (_) {}
   }
 
   window.__urdf_click__ = play;
 }
 
+/* --------------------- Global hook --------------------- */
+
 if (typeof window !== "undefined") {
-  window.URDFViewer = { render };
+  window.URDFViewer = window.URDFViewer || {};
+  window.URDFViewer.render = (opts) => {
+    const app = render(opts);
+    try {
+      window.URDFViewer.__app = app;
+    } catch (_) {}
+    return app;
+  };
 }
