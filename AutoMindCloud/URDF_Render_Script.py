@@ -136,7 +136,7 @@ def URDF_Render(
     select_mode: str = "link",
     background: int | None = 0xFFFFFF,
     # dynamic loader (repo/branch/file)
-    repo: str = "ArtemioA/AutoMindCloudExperimental",
+    repo: str = "Arthemioxz/AutoMindCloudExperimental",
     branch: str = "main",
     compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
     # 🔹 descripción automática de componentes
