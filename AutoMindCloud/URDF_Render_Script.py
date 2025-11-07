@@ -1,4 +1,4 @@
-# URDF_Render_Script.py
+# URDF_Render_Script.py 
 # Puente Colab <-> JS para URDF Viewer + IA de descripciones por componente.
 #
 # Uso en Colab:
