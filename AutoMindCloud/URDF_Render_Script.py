@@ -1,17 +1,12 @@
 # ==========================================================
-# URDF_Render_Script.py  (versión optimizada con batch IA + compresión ~5KB)
+# URDF_Render_Script.py  (Fullscreen + batch IA + compresión ~5KB)
 # ==========================================================
-# Puente Colab <-> JS para descripciones de piezas del URDF.
-#
-# Uso en Colab:
-#   from URDF_Render_Script import URDF_Render
-#   URDF_Render("Model")
-#
-# JS:
-#   - Genera thumbnails base64 de cada componente al inicio.
-#   - Llama a google.colab.kernel.invokeFunction("describe_component_images", [entries], {}).
-#   - Recibe { assetKey: descripcion }.
-#   - Al hacer click en un componente, muestra la descripción en el frame del panel.
+# - Full-screen viewer (Colab/Jupyter/VSCode)
+# - Descripciones de componentes vía callback Colab -> API externa
+# - SOLO las imágenes enviadas a la API se comprimen a ~5KB
+# - Las miniaturas del panel (thumbnails) mantienen la resolución
+#   generada por el sistema offscreen del viewer.
+# ==========================================================
 
 import base64
 import re
@@ -21,6 +16,7 @@ import shutil
 import zipfile
 import requests
 from IPython.display import HTML
+import gdown
 
 API_DEFAULT_BASE = "https://gpt-proxy-github-619255898589.us-central1.run.app"
 API_INFER_PATH = "/infer"
@@ -28,6 +24,9 @@ API_INFER_PATH = "/infer"
 _COLAB_CALLBACK_REGISTERED = False
 
 
+# ==========================================================
+# Descarga URDF desde Drive y normaliza estructura
+# ==========================================================
 def Download_URDF(Drive_Link, Output_Name="Model"):
     root_dir = "/content"
     file_id = Drive_Link.split("/d/")[1].split("/")[0]
@@ -41,8 +40,6 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
     os.makedirs(tmp_extract, exist_ok=True)
     if os.path.exists(final_dir):
         shutil.rmtree(final_dir)
-
-    import gdown
 
     gdown.download(url, zip_path, quiet=True)
     with zipfile.ZipFile(zip_path, "r") as zf:
@@ -64,13 +61,10 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 
 # ==========================================================
-# 🔹 Helper: comprimir base64 a ~target_kb (best-effort)
+# Helper: comprimir base64 a ~target_kb (best-effort)
+# (Solo copias para la API, la UI usa el original)
 # ==========================================================
 def _shrink_to_approx_kb(img_b64: str, target_kb: int = 5) -> str:
-    """
-    Intenta dejar la imagen alrededor de target_kb KB.
-    Si no hay PIL o algo falla, devuelve el original.
-    """
     try:
         from io import BytesIO
         from PIL import Image
@@ -83,8 +77,7 @@ def _shrink_to_approx_kb(img_b64: str, target_kb: int = 5) -> str:
         if len(raw) <= max_bytes:
             return img_b64
 
-        im = Image.open(BytesIO(raw))
-        im = im.convert("RGB")
+        im = Image.open(BytesIO(raw)).convert("RGB")
 
         # Escala aproximada según tamaño actual
         scale = (max_bytes / float(len(raw))) ** 0.5
@@ -109,10 +102,11 @@ def _shrink_to_approx_kb(img_b64: str, target_kb: int = 5) -> str:
 
 
 # ==========================================================
-# 🔹 Nuevo Callback Optimizado (envía todas las imágenes juntas)
+# Callback Colab: describe_component_images
+#  - Recibe thumbnails desde JS
+#  - Comprime a ~5KB antes de llamar a la API
 # ==========================================================
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90):
-    """Registra el callback 'describe_component_images' una sola vez."""
     global _COLAB_CALLBACK_REGISTERED
     if _COLAB_CALLBACK_REGISTERED:
         return
@@ -124,20 +118,20 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
         infer_url = api_base + API_INFER_PATH
 
         def _describe_component_images(entries):
-            """Recibe [{key, image_b64, mime?}, ...] y devuelve {key: descripcion}"""
             try:
                 n = len(entries)
             except TypeError:
                 n = 0
-            print(f"[Colab] describe_component_images: recibido {n} imágenes totales.")
+            print(f"[Colab] describe_component_images: recibido {n} imágenes.")
 
             if not isinstance(entries, (list, tuple)) or n == 0:
                 print("[Colab] ❌ Payload inválido o vacío.")
                 return {}
 
-            # Preparar lote de imágenes
-            keys, imgs = [], []
-            for i, item in enumerate(entries):
+            keys = []
+            imgs = []
+
+            for item in entries:
                 if not isinstance(item, dict):
                     continue
                 key = item.get("key")
@@ -145,17 +139,11 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                 if not (key and img_b64):
                     continue
 
-                # MIME desde JS si viene, sino png por defecto
                 mime = item.get("mime") or "image/png"
 
-                # 🔹 Asegurar tamaño ~5KB antes de llamar a la API
+                # Solo la copia para la API se comprime
                 small_b64 = _shrink_to_approx_kb(img_b64, target_kb=5)
-
-                # Si se recomprime, asumimos JPEG; si no, dejamos mime original
-                if small_b64 != img_b64:
-                    mime_out = "image/jpeg"
-                else:
-                    mime_out = mime
+                mime_out = "image/jpeg" if small_b64 != img_b64 else mime
 
                 keys.append(key)
                 imgs.append({"image_b64": small_b64, "mime": mime_out})
@@ -164,14 +152,14 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                 print("[Colab] ⚠️ No hay imágenes válidas para enviar.")
                 return {}
 
-            print(f"[Colab] 🚀 Enviando {len(imgs)} imágenes en batch al modelo...")
+            print(f"[Colab] 🚀 Enviando {len(imgs)} imágenes comprimidas al modelo...")
 
             text = (
-                "Describe con certeza y tono técnico cada componente mostrado en las imágenes del robot URDF.\n"
+                "Describe con certeza y tono técnico cada componente mostrado en las imágenes del robot URDF. "
                 "Devuelve EXCLUSIVAMENTE un JSON válido donde cada clave es el nombre de la pieza (de la lista 'keys') "
-                "y cada valor una descripción breve en español (máx. 5 frases) que indique directamente su función mecánica, "
-                "posición aproximada en el robot y tipo de unión o movimiento, SIN usar expresiones como 'la imagen muestra', "
-                "'parece ser' o 'probablemente', 'la pieza muestra'. Usa afirmaciones directas"
+                "y cada valor una descripción breve en español (máx. 5 frases) indicando directamente su función mecánica, "
+                "posición aproximada en el robot y tipo de unión o movimiento, SIN usar expresiones como "
+                "'la imagen muestra', 'parece ser', 'probablemente' ni 'la pieza muestra'. "
                 + json.dumps({"keys": keys}, ensure_ascii=False)
             )
 
@@ -192,8 +180,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
                 print("[Colab] ⚠️ Respuesta vacía del modelo.")
                 return {}
 
-            # Intentar parsear JSON
-            def parse_json(s):
+            def parse_json(s: str):
                 try:
                     return json.loads(s)
                 except Exception:
@@ -207,7 +194,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
 
             parsed = parse_json(raw)
             if isinstance(parsed, dict):
-                print(f"[Colab] ✅ JSON parseado correctamente ({len(parsed)} descripciones).")
+                print(f"[Colab] ✅ JSON parseado correctamente ({len(parsed)} claves).")
                 return parsed
 
             print(f"[Colab] ⚠️ No se pudo interpretar JSON, preview:\n{raw[:400]}")
@@ -215,14 +202,13 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 90
 
         output.register_callback("describe_component_images", _describe_component_images)
         _COLAB_CALLBACK_REGISTERED = True
-        print("[Colab] ✅ Callback 'describe_component_images' registrado (modo batch).")
-
+        print("[Colab] ✅ Callback 'describe_component_images' registrado.")
     except Exception as e:
         print(f"[Colab] ❌ No se pudo registrar callback: {e}")
 
 
 # ==========================================================
-# 🔹 Render principal
+# Render principal fullscreen
 # ==========================================================
 def URDF_Render(
     folder_path: str = "Model",
@@ -233,16 +219,9 @@ def URDF_Render(
     compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
 ):
-    """
-    Renderiza el URDF Viewer.
-    - JS captura imágenes base64 al inicio.
-    - JS manda base64 a Colab (ya comprimidas para la API).
-    - Colab llama a la API en batch y responde con descripciones.
-    - JS muestra descripción en frame al hacer click.
-    """
     _register_colab_callback(api_base=api_base)
 
-    # Buscar carpetas urdf/meshes
+    # Buscar /urdf + /meshes
     def find_dirs(root):
         u = os.path.join(root, "urdf")
         m = os.path.join(root, "meshes")
@@ -259,9 +238,11 @@ def URDF_Render(
 
     urdf_dir, meshes_dir = find_dirs(folder_path)
     if not urdf_dir or not meshes_dir:
-        return HTML(f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>")
+        return HTML(
+            f"<b style='color:red'>No se encontró /urdf y /meshes en {folder_path}</b>"
+        )
 
-    # Leer URDF principal
+    # URDF principal
     urdf_files = [
         os.path.join(urdf_dir, f)
         for f in os.listdir(urdf_dir)
@@ -295,7 +276,7 @@ def URDF_Render(
         ) as f:
             urdf_raw = f.read().lstrip("\ufeff")
 
-    # Crear meshDB
+    # Mesh DB
     disk_files = []
     for root, _, files in os.walk(meshes_dir):
         for name in files:
@@ -344,6 +325,7 @@ def URDF_Render(
         if bn.endswith((".png", ".jpg", ".jpeg")) and bn not in mesh_db:
             add_entry(bn, path)
 
+    # HTML
     def esc(s: str) -> str:
         return (
             s.replace("\\", "\\\\")
@@ -354,6 +336,7 @@ def URDF_Render(
 
     urdf_js = esc(urdf_raw)
     mesh_js = json.dumps(mesh_db)
+    bg_css = f"#{int(background):06x}" if isinstance(background, int) else "#FFFFFF"
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
 
@@ -365,19 +348,58 @@ def URDF_Render(
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>
 <title>URDF Viewer</title>
 <style>
-  html, body {{
-    margin:0; padding:0; width:100%; height:100dvh; overflow:hidden;
-    background:#{int(background or 0xFFFFFF):06x};
+  :root {{
+    --vh: 1vh;
   }}
-  #app {{ position:fixed; inset:0; width:100%; height:100dvh; touch-action:none; }}
-  .badge {{ position:fixed; right:14px; bottom:12px; z-index:10; }}
-  .badge img {{ max-height:40px; display:block; }}
+  html, body {{
+    margin:0;
+    padding:0;
+    width:100%;
+    height:100dvh;
+    background:{bg_css};
+    overflow:hidden;
+  }}
+  @supports not (height: 100dvh) {{
+    html, body {{
+      height: calc(var(--vh) * 100);
+    }}
+  }}
+  body {{
+    padding-top: env(safe-area-inset-top);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+  }}
+  #app {{
+    position:fixed;
+    inset:0;
+    width:100vw;
+    height:100dvh;
+    touch-action:none;
+  }}
+  @supports not (height: 100dvh) {{
+    #app {{
+      height: calc(var(--vh) * 100);
+    }}
+  }}
+  .badge {{
+    position:fixed;
+    right:14px;
+    bottom:12px;
+    z-index:10;
+    user-select:none;
+    pointer-events:none;
+  }}
+  .badge img {{
+    max-height:40px;
+    display:block;
+  }}
 </style>
 </head>
 <body>
 <div id="app"></div>
 <div class="badge">
-  <img src="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png" alt="badge"/>
+  <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud.png" alt="badge"/>
 </div>
 
 <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
@@ -387,20 +409,113 @@ def URDF_Render(
 <script defer src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
 
 <script type="module">
-  import {{ render }} from "https://cdn.jsdelivr.net/gh/{repo}@{branch}/{compFile}?v={os.path.getmtime(__file__)}";
+  function applyVHVar() {{
+    const vh = (window.visualViewport?.height || window.innerHeight || 600) * 0.01;
+    document.documentElement.style.setProperty('--vh', `${{vh}}px`);
+  }}
+  applyVHVar();
+
+  function setColabFrameHeight() {{
+    const h = Math.ceil(
+      window.visualViewport?.height
+      || window.innerHeight
+      || document.documentElement.clientHeight
+      || 600
+    );
+    try {{
+      if (window.google?.colab?.output?.setIframeHeight) {{
+        window.google.colab.output.setIframeHeight(h, true);
+      }}
+    }} catch (_e) {{}}
+  }}
+
+  const ro = new ResizeObserver(() => {{
+    applyVHVar();
+    setColabFrameHeight();
+  }});
+  ro.observe(document.body);
+
+  window.addEventListener('resize', () => {{
+    applyVHVar();
+    setColabFrameHeight();
+  }});
+  if (window.visualViewport) {{
+    window.visualViewport.addEventListener('resize', () => {{
+      applyVHVar();
+      setColabFrameHeight();
+    }});
+  }}
+  setTimeout(setColabFrameHeight, 50);
+
+  const repo     = {json.dumps(repo)};
+  const branch   = {json.dumps(branch)};
+  const compFile = {json.dumps(compFile)};
+
+  async function latest() {{
+    try {{
+      const api = 'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
+      const r = await fetch(api, {{
+        headers: {{ 'Accept': 'application/vnd.github+json' }},
+        cache: 'no-store'
+      }});
+      if (!r.ok) throw 0;
+      const j = await r.json();
+      return (j.sha || '').slice(0, 7) || branch;
+    }} catch (_e) {{
+      return branch;
+    }}
+  }}
+
+  const SELECT_MODE = {sel_js};
+  const BACKGROUND  = {bg_js};
+
   const opts = {{
     container: document.getElementById('app'),
     urdfContent: `{urdf_js}`,
     meshDB: {mesh_js},
-    selectMode: {sel_js},
-    background: {bg_js},
+    selectMode: SELECT_MODE,
+    background: BACKGROUND,
     pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
     autoResize: true
   }};
-  const app = render(opts);
-  window.URDF_APP = app;
+
+  await new Promise(r => setTimeout(r, 50));
+
+  let mod = null;
+  try {{
+    const ver = await latest();
+    const base = 'https://cdn.jsdelivr.net/gh/' + repo + '@' + ver + '/';
+    mod = await import(base + compFile + '?v=' + Date.now());
+  }} catch (_e) {{
+    mod = await import('https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now());
+  }}
+
+  if (!mod || typeof mod.render !== 'function') {{
+    console.error('[URDF] No se pudo cargar el módulo de entrada o no expone render()');
+  }} else {{
+    const app = mod.render(opts);
+
+    function onResize() {{
+      try {{
+        if (app && typeof app.resize === 'function') {{
+          const w = window.innerWidth || document.documentElement.clientWidth;
+          const h = window.visualViewport?.height
+                 || window.innerHeight
+                 || document.documentElement.clientHeight;
+          app.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
+        }}
+      }} catch (_e) {{}}
+    }}
+
+    window.addEventListener('resize', onResize);
+    if (window.visualViewport) {{
+      window.visualViewport.addEventListener('resize', onResize);
+    }}
+    setTimeout(onResize, 0);
+    window.URDF_APP = app;
+  }}
 </script>
 </body>
-</html>"""
+</html>
+"""
     return HTML(html)
-
