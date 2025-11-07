@@ -1,5 +1,5 @@
-// /viewer/urdf_viewer_main.js
-// Entrypoint que compone ViewerCore + AssetDB + Interaction + UI (ToolsDock + ComponentsPanel)
+// urdf_viewer_main.js
+// Entrypoint: crea viewer, paneles y puente con Colab para descripciones.
 
 import { THEME } from "./Theme.js";
 import { createViewer } from "./core/ViewerCore.js";
@@ -8,18 +8,6 @@ import { attachInteraction } from "./interaction/SelectionAndDrag.js";
 import { createToolsDock } from "./ui/ToolsDock.js";
 import { createComponentsPanel } from "./ui/ComponentsPanel.js";
 
-/**
- * Public entry: render the URDF viewer.
- *
- * opts:
- *  - container: HTMLElement
- *  - urdfContent: string
- *  - meshDB: { [key: string]: base64 }
- *  - selectMode: 'link' | 'mesh'
- *  - background: int | null
- *  - clickAudioDataURL?: string
- *  - componentDescriptions?: array | { [assetKey]: string }
- */
 export function render(opts = {}) {
   const {
     container,
@@ -28,15 +16,12 @@ export function render(opts = {}) {
     selectMode = "link",
     background = THEME.bgCanvas || 0xffffff,
     clickAudioDataURL = null,
-    // puede venir desde el HTML o como fallback global
-    componentDescriptions =
-      (typeof window !== "undefined" && window.COMPONENT_DESCRIPTIONS) || null,
   } = opts;
 
-  // 1) Core viewer
+  // Core
   const core = createViewer({ container, background });
 
-  // 2) Asset DB + mapa assetKey -> meshes
+  // Asset DB + registro de meshes por assetKey
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map();
 
@@ -50,13 +35,12 @@ export function render(opts = {}) {
     },
   });
 
-  // 3) Cargar URDF (dispara onMeshTag)
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // 4) Thumbnails offscreen
+  // Offscreen thumbnails con cache
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
-  // 5) Interacción (hover, selección, joints, etc.)
+  // Interacción
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -66,18 +50,16 @@ export function render(opts = {}) {
     selectMode,
   });
 
-  // 6) Facade app para capas de UI
+  // App facade
   const app = {
     ...core,
     robot,
 
-    // --- Assets para ComponentsPanel ---
     assets: {
       list: () => listAssets(assetToMeshes),
       thumbnail: (assetKey) => off?.thumbnail(assetKey),
     },
 
-    // --- Aislar / restaurar ---
     isolate: {
       asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey),
       clear: () => showAll(core),
@@ -89,54 +71,40 @@ export function render(opts = {}) {
       tools.set(!!open);
     },
 
-    // 🔹 Descripciones inyectadas desde Python
-    componentDescriptions,
+    // Se llena cuando llega la respuesta de Colab
+    componentDescriptions: {},
 
-    /**
-     * Devuelve la descripción para un componente:
-     * - Si es array: por índice de fila.
-     * - Si es objeto: por assetKey o por basename.
-     */
     getComponentDescription(assetKey, index) {
-      const src = componentDescriptions;
-      if (!src) return "";
+      const map = app.componentDescriptions || {};
+      if (map[assetKey]) return map[assetKey];
 
-      // Array → índice
-      if (Array.isArray(src)) {
-        if (
-          typeof index === "number" &&
-          index >= 0 &&
-          index < src.length
-        ) {
-          return src[index] || "";
-        }
-        return "";
-      }
+      const base = (assetKey || "").split("/").pop().split(".")[0];
+      if (map[base]) return map[base];
 
-      // Objeto → assetKey directo
-      if (typeof src === "object") {
-        if (src[assetKey]) return src[assetKey];
-
-        const base = (assetKey || "").split("/").pop().split(".")[0];
-        if (base && src[base]) return src[base];
+      // Si viene como array (no es nuestro caso principal, pero soportado)
+      if (Array.isArray(map) && typeof index === "number") {
+        return map[index] || "";
       }
 
       return "";
     },
   };
 
-  // 7) UI
+  // UI
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // 8) Click sound opcional
+  // Click SFX opcional
   if (clickAudioDataURL) {
     try {
       installClickSound(clickAudioDataURL);
     } catch (_) {}
   }
 
-  // 9) Limpieza
+  // Bootstrap: capturar componentes y pedir descripciones AL INICIO
+  bootstrapComponentDescriptions(app, assetToMeshes, off);
+
+  // Destroy
   const destroy = () => {
     try {
       comps.destroy();
@@ -148,7 +116,7 @@ export function render(opts = {}) {
       inter.destroy();
     } catch (_) {}
     try {
-      off?.destroy?.();
+      off?.destroy();
     } catch (_) {}
     try {
       core.destroy();
@@ -156,6 +124,81 @@ export function render(opts = {}) {
   };
 
   return { ...app, destroy };
+}
+
+/* ------------------------ Bootstrap Colab Bridge ------------------------ */
+
+function bootstrapComponentDescriptions(app, assetToMeshes, off) {
+  // Verificar puente de Colab
+  const hasColab =
+    typeof window !== "undefined" &&
+    window.google &&
+    window.google.colab &&
+    window.google.colab.kernel &&
+    typeof window.google.colab.kernel.invokeFunction === "function";
+
+  if (!hasColab) {
+    console.debug(
+      "[Components] Colab bridge no disponible; se omite petición de descripciones."
+    );
+    return;
+  }
+
+  const items = listAssets(assetToMeshes);
+  if (!items.length) {
+    console.debug("[Components] Sin assets para describir.");
+    return;
+  }
+
+  (async () => {
+    const entries = [];
+
+    for (const ent of items) {
+      try {
+        const url = await off.thumbnail(ent.assetKey);
+        if (!url || typeof url !== "string") continue;
+        const parts = url.split(",");
+        if (parts.length !== 2) continue;
+        const b64 = parts[1];
+        entries.push({ key: ent.assetKey, image_b64: b64 });
+      } catch (e) {
+        console.warn(
+          "[Components] Error generando thumbnail para",
+          ent.assetKey,
+          e
+        );
+      }
+    }
+
+    console.debug(
+      `[Components] Enviando ${entries.length} capturas a Colab para descripción.`
+    );
+
+    if (!entries.length) return;
+
+    try {
+      const result = await window.google.colab.kernel.invokeFunction(
+        "describe_component_images",
+        [entries],
+        {}
+      );
+      const descMap =
+        (result && result.data && result.data[0]) || {};
+      console.debug(
+        "[Components] Descripciones recibidas desde Colab:",
+        descMap
+      );
+      app.componentDescriptions = descMap;
+      if (typeof window !== "undefined") {
+        window.COMPONENT_DESCRIPTIONS = descMap;
+      }
+    } catch (err) {
+      console.error(
+        "[Components] Error al invocar describe_component_images:",
+        err
+      );
+    }
+  })();
 }
 
 /* ---------------------------- Helpers ---------------------------- */
@@ -193,9 +236,7 @@ function isolateAsset(core, assetToMeshes, assetKey) {
       if (o.isMesh && o.geometry) o.visible = false;
     });
   }
-  meshes.forEach((m) => {
-    m.visible = true;
-  });
+  meshes.forEach((m) => (m.visible = true));
   frameMeshes(core, meshes);
 }
 
@@ -253,15 +294,14 @@ function frameMeshes(core, meshes) {
     Math.sin(el),
     Math.cos(el) * Math.sin(az)
   ).multiplyScalar(dist);
+
   camera.position.copy(center.clone().add(dirV));
   camera.lookAt(center);
-
   renderer.render(scene, camera);
 
   vis.forEach(([o, v]) => (o.visible = v));
 }
 
-// Offscreen thumbnails para ComponentsPanel
 function buildOffscreenForThumbnails(core, assetToMeshes) {
   const { scene, camera, renderer } = core;
   if (!scene || !camera || !renderer) {
@@ -271,10 +311,12 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     };
   }
 
-  const offRenderer = renderer;
-  const ready = Promise.resolve();
+  const thumbCache = new Map();
 
   function snapshotAsset(assetKey) {
+    if (!assetKey) return null;
+    if (thumbCache.has(assetKey)) return thumbCache.get(assetKey);
+
     const meshes = assetToMeshes.get(assetKey) || [];
     if (!meshes.length) return null;
 
@@ -322,18 +364,17 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     camera.position.copy(center.clone().add(dirV));
     camera.lookAt(center);
 
-    offRenderer.render(scene, camera);
-    const url = offRenderer.domElement.toDataURL("image/png");
+    renderer.render(scene, camera);
+    const url = renderer.domElement.toDataURL("image/png");
 
     vis.forEach(([o, v]) => (o.visible = v));
+    thumbCache.set(assetKey, url);
     return url;
   }
 
   return {
     thumbnail: async (assetKey) => {
       try {
-        await ready;
-        await new Promise((r) => setTimeout(r, 150));
         return snapshotAsset(assetKey);
       } catch (e) {
         console.warn("[Thumbnails] error:", e);
@@ -341,12 +382,11 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       }
     },
     destroy() {
-      // usamos el mismo renderer principal; no lo destruimos aquí
+      // usamos renderer principal; no destruimos aquí
     },
   };
 }
 
-// Click SFX opcional
 function installClickSound(dataURL) {
   if (!dataURL || typeof dataURL !== "string") return;
   let ctx = null;
@@ -379,7 +419,6 @@ function installClickSound(dataURL) {
   window.__urdf_click__ = play;
 }
 
-// UMD-style global para integraciones legacy
 if (typeof window !== "undefined") {
   window.URDFViewer = { render };
 }
