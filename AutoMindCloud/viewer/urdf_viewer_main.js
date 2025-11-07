@@ -1,10 +1,14 @@
-// urdf_viewer_main.js 
+// /viewer/urdf_viewer_main.js
+// Entrypoint: ViewerCore + AssetDB + Selection & Drag + Tools + Components + Colab bridge
+
 import { THEME } from "./Theme.js";
 import { createViewer } from "./core/ViewerCore.js";
 import { buildAssetDB, createLoadMeshCb } from "./core/AssetDB.js";
 import { attachInteraction } from "./interaction/SelectionAndDrag.js";
 import { createToolsDock } from "./ui/ToolsDock.js";
 import { createComponentsPanel } from "./ui/ComponentsPanel.js";
+
+/* global THREE */
 
 export function render(opts = {}) {
   const {
@@ -14,29 +18,29 @@ export function render(opts = {}) {
     selectMode = "link",
     background = THEME.bgCanvas || 0xffffff,
     clickAudioDataURL = null,
+    pixelRatio,
+    autoResize = true,
   } = opts;
 
-  const core = createViewer({ container, background });
-
-  const assetDB = buildAssetDB(meshDB);
-  const assetToMeshes = new Map();
-
-  const loadMeshCb = createLoadMeshCb(assetDB, {
-    onMeshTag(obj, assetKey) {
-      const list = assetToMeshes.get(assetKey) || [];
-      obj.traverse((o) => {
-        if (o && o.isMesh && o.geometry) list.push(o);
-      });
-      assetToMeshes.set(assetKey, list);
-    },
+  // Core viewer
+  const core = createViewer({
+    container,
+    background,
+    pixelRatio,
   });
 
+  // Asset DB desde meshDB (b64)
+  const assetDB = buildAssetDB(meshDB);
+  const loadMeshCb = createLoadMeshCb(assetDB);
+
+  // Cargar URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // 🔹 Usa el sistema robusto offscreen para thumbnails
-  const off = buildOffscreenForThumbnails(core, assetToMeshes);
+  // Mapa assetKey -> [meshes]
+  const assetToMeshes = buildAssetToMeshes(robot);
 
-  const inter = attachInteraction({
+  // Interacción selección / drag
+  const selection = attachInteraction({
     scene: core.scene,
     camera: core.camera,
     renderer: core.renderer,
@@ -45,9 +49,14 @@ export function render(opts = {}) {
     selectMode,
   });
 
+  // Offscreen para thumbnails centrados en cada componente
+  const off = buildOffscreenForThumbnails(core, assetToMeshes);
+
+  // App público que consumen ToolsDock / ComponentsPanel
   const app = {
     ...core,
     robot,
+    selection,
 
     assets: {
       list: () => listAssets(assetToMeshes),
@@ -61,34 +70,32 @@ export function render(opts = {}) {
 
     showAll: () => showAll(core),
 
-    openTools(open = true) {
-      tools.set(!!open);
-    },
-
-    // mapa { assetKey / base / baseNoExt : descripcion }
     componentDescriptions: {},
     descriptionsReady: false,
 
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions;
       if (!src || !app.descriptionsReady) {
-        return ""; // el panel decide si mostrar "cargando..."
+        // El panel decide si muestra "Cargando..."
+        return "";
       }
 
+      // Cuando viene como diccionario { key: desc }
       if (!Array.isArray(src) && typeof src === "object") {
-        // clave exacta
+        // 1) clave exacta
         if (src[assetKey]) return src[assetKey];
 
-        // mismo nombre con ruta
+        // 2) misma base sin ruta
         const clean = String(assetKey || "").split("?")[0].split("#")[0];
         const base = clean.split("/").pop();
         if (src[base]) return src[base];
 
-        // sin extensión
+        // 3) sin extensión
         const baseNoExt = base.split(".")[0];
         if (src[baseNoExt]) return src[baseNoExt];
       }
 
+      // Cuando viene como lista y tenemos índice estable
       if (Array.isArray(src) && typeof index === "number") {
         return src[index] || "";
       }
@@ -97,46 +104,374 @@ export function render(opts = {}) {
     },
   };
 
-  const tools = createToolsDock(app, THEME);
-  const comps = createComponentsPanel(app, THEME);
+  // UI
+  const theme = THEME || {};
+  createToolsDock(app, theme);
+  createComponentsPanel(app, theme);
 
   if (clickAudioDataURL) {
-    try {
-      installClickSound(clickAudioDataURL);
-    } catch (_) {}
+    installClickSound(clickAudioDataURL);
   }
 
-  bootstrapComponentDescriptions(app, assetToMeshes, off);
+  if (autoResize && typeof window !== "undefined") {
+    window.addEventListener("resize", () => {
+      try {
+        app.onResize();
+      } catch (_) {}
+    });
+  }
 
-  const destroy = () => {
-    try { comps.destroy(); } catch (_) {}
-    try { tools.destroy(); } catch (_) {}
-    try { inter.destroy(); } catch (_) {}
-    try { off?.destroy?.(); } catch (_) {}
-    try { core.destroy(); } catch (_) {}
-  };
+  // Bridge con Colab para descripciones (usa thumbnails grandes, comprime a 5KB solo para API)
+  setupColabDescriptions(app, assetToMeshes, off);
 
-  return { ...app, destroy };
+  return app;
 }
 
-/* ============ JS <-> Colab ============ */
+/* ================= Helpers: assets & aislar ================= */
 
-let _bootstrapStarted = false;
+function buildAssetToMeshes(root) {
+  const map = new Map();
+  if (!root || !root.traverse) return map;
 
-function bootstrapComponentDescriptions(app, assetToMeshes, off) {
-  if (_bootstrapStarted) return;
-  _bootstrapStarted = true;
+  root.traverse((o) => {
+    if (!o.isMesh || !o.geometry) return;
 
-  const hasColab =
-    typeof window !== "undefined" &&
-    window.google &&
-    window.google.colab &&
-    window.google.colab.kernel &&
-    typeof window.google.colab.kernel.invokeFunction === "function";
+    const ud = o.userData || {};
+    const key =
+      ud.assetKey ||
+      ud.filename ||
+      ud.meshKey ||
+      o.name ||
+      (ud.tag && String(ud.tag)) ||
+      null;
 
-  if (!hasColab) {
+    if (!key) return;
+
+    const k = String(key);
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(o);
+  });
+
+  return map;
+}
+
+function listAssets(assetToMeshes) {
+  const out = [];
+  assetToMeshes.forEach((meshes, key) => {
+    if (!meshes || !meshes.length) return;
+    const clean = String(key || "").split("?")[0].split("#")[0];
+    const base = clean.split("/").pop();
+    out.push({
+      assetKey: key,
+      base,
+      count: meshes.length,
+    });
+  });
+  out.sort((a, b) => a.base.localeCompare(b.base));
+  return out;
+}
+
+function isolateAsset(core, assetToMeshes, assetKey) {
+  const meshes = assetToMeshes.get(assetKey) || [];
+  if (!meshes.length) return;
+  const { robot } = core;
+  if (!robot) return;
+
+  robot.traverse((o) => {
+    if (o.isMesh && o.geometry) {
+      o.visible = meshes.includes(o);
+    }
+  });
+
+  frameMeshes(core, meshes);
+}
+
+function showAll(core) {
+  const { robot } = core;
+  if (!robot) return;
+  robot.traverse((o) => {
+    if (o.isMesh && o.geometry) o.visible = true;
+  });
+  if (core.fitAndCenter) core.fitAndCenter(robot, 1.06);
+}
+
+function frameMeshes(core, meshes) {
+  if (!meshes || !meshes.length || !core.camera) return;
+
+  const { camera, renderer, scene } = core;
+
+  const box = new THREE.Box3();
+  const tmp = new THREE.Box3();
+  const visBackup = [];
+
+  // Usar solo los meshes de ese componente
+  for (const m of meshes) {
+    if (!m.isMesh || !m.geometry) continue;
+    tmp.setFromObject(m);
+    if (!tmp.isEmpty()) {
+      box.union(tmp);
+    }
+  }
+
+  if (box.isEmpty()) return;
+
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const dist = maxDim * 2.0;
+
+  camera.near = Math.max(maxDim / 1000, 0.001);
+  camera.far = Math.max(maxDim * 1000, dist * 4.0);
+  camera.updateProjectionMatrix();
+
+  const az = Math.PI * 0.25;
+  const el = Math.PI * 0.22;
+  const dirV = new THREE.Vector3(
+    Math.cos(el) * Math.cos(az),
+    Math.sin(el),
+    Math.cos(el) * Math.sin(az)
+  ).multiplyScalar(dist);
+
+  camera.position.copy(center.clone().add(dirV));
+  camera.lookAt(center);
+
+  // Render único para ajuste
+  if (renderer && scene) {
+    renderer.render(scene, camera);
+  }
+}
+
+/* ============ Offscreen thumbnails centrados ============ */
+
+function buildOffscreenForThumbnails(core, assetToMeshes) {
+  if (!core.robot) {
+    return {
+      thumbnail: async () => null,
+      destroy() {},
+    };
+  }
+
+  const OFF_W = 512;
+  const OFF_H = 512;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = OFF_W;
+  canvas.height = OFF_H;
+
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    alpha: true,
+    preserveDrawingBuffer: true,
+  });
+  renderer.setPixelRatio(1);
+  renderer.setSize(OFF_W, OFF_H, false);
+  renderer.setClearColor(0x000000, 0);
+
+  const camera = new THREE.PerspectiveCamera(
+    30,
+    OFF_W / OFF_H,
+    0.001,
+    10000
+  );
+
+  const scene = core.scene;
+  const cache = new Map();
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function thumbnail(assetKey) {
+    if (cache.has(assetKey)) return cache.get(assetKey);
+
+    const meshes = assetToMeshes.get(assetKey) || [];
+    if (!meshes.length) {
+      cache.set(assetKey, null);
+      return null;
+    }
+
+    const box = new THREE.Box3();
+    for (const m of meshes) {
+      if (m.isMesh && m.geometry) {
+        box.expandByObject(m);
+      }
+    }
+    if (box.isEmpty()) {
+      cache.set(assetKey, null);
+      return null;
+    }
+
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const dist = maxDim * 2.2;
+
+    const az = Math.PI * 0.32;
+    const el = Math.PI * 0.26;
+    const dir = new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az)
+    ).multiplyScalar(dist);
+
+    camera.position.copy(center.clone().add(dir));
+    camera.lookAt(center);
+    camera.near = Math.max(maxDim / 500, 0.001);
+    camera.far = Math.max(maxDim * 40, dist * 3);
+    camera.updateProjectionMatrix();
+
+    // Mostrar solo esos meshes
+    const vis = [];
+    scene.traverse((o) => {
+      if (o.isMesh && o.geometry) {
+        vis.push([o, o.visible]);
+        o.visible = meshes.includes(o);
+      }
+    });
+
+    renderer.clear();
+    renderer.render(scene, camera);
+
+    const url = canvas.toDataURL("image/png");
+    for (const [o, v] of vis) o.visible = v;
+
+    await sleep(10);
+    cache.set(assetKey, url);
+    return url;
+  }
+
+  return {
+    thumbnail,
+    destroy: () => {
+      try {
+        renderer.dispose();
+      } catch (_) {}
+      try {
+        const ctx = canvas.getContext("2d");
+        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      } catch (_) {}
+    },
+  };
+}
+
+/* ============ Compresión a ~5KB SOLO para la API ============ */
+
+function estimateBytesFromDataURL(dataURL) {
+  if (!dataURL || typeof dataURL !== "string") return 0;
+  const parts = dataURL.split(",");
+  if (parts.length < 2) return 0;
+  const b64 = parts[1];
+  return Math.floor((b64.length * 3) / 4);
+}
+
+function compressForAPI5KB(dataURL, targetKB = 5) {
+  const maxBytes = targetKB * 1024;
+
+  return new Promise((resolve) => {
+    if (!dataURL || typeof dataURL !== "string") {
+      return resolve(null);
+    }
+
+    const img = new Image();
+    img.onload = () => {
+      let w = img.naturalWidth || img.width || 64;
+      let h = img.naturalHeight || img.height || 64;
+      if (!w || !h) {
+        w = 64;
+        h = 64;
+      }
+
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+
+      const shrinkTo = (factor) => {
+        w = Math.max(24, Math.floor(w * factor));
+        h = Math.max(24, Math.floor(h * factor));
+        canvas.width = w;
+        canvas.height = h;
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+      };
+
+      // Primer límite: máximo 160px en el lado más largo
+      const maxDim = 160;
+      const maxSide = Math.max(w, h);
+      if (maxSide > maxDim) {
+        const f = maxDim / maxSide;
+        shrinkTo(f);
+      } else {
+        canvas.width = w;
+        canvas.height = h;
+        ctx.drawImage(img, 0, 0, w, h);
+      }
+
+      let q = 0.9;
+      let best = canvas.toDataURL("image/jpeg", q);
+
+      for (let i = 0; i < 12; i++) {
+        const size = estimateBytesFromDataURL(best);
+        if (size <= maxBytes) break;
+
+        q *= 0.7;
+        if (q < 0.18) {
+          // Si ya bajamos mucha calidad, reducimos resolución y reseteamos q
+          shrinkTo(0.7);
+          q = 0.9;
+        }
+        best = canvas.toDataURL("image/jpeg", q);
+      }
+
+      resolve(best);
+    };
+
+    img.onerror = () => resolve(null);
+    img.src = dataURL;
+  });
+}
+
+/* ============ Bridge Colab: mini-lotes con 5KB ============ */
+
+function normalizeDescribeResult(result) {
+  if (!result) return {};
+  const d = result.data || result;
+
+  // Caso dict directo
+  if (d && typeof d === "object" && !Array.isArray(d)) {
+    if (d["application/json"] && typeof d["application/json"] === "object") {
+      return d["application/json"];
+    }
+    return d;
+  }
+
+  // Array con objeto dentro
+  if (Array.isArray(d) && d.length) {
+    const first = d[0];
+    if (first && typeof first === "object" && !Array.isArray(first)) {
+      return first;
+    }
+  }
+
+  // String JSON
+  if (typeof d === "string") {
+    try {
+      return JSON.parse(d);
+    } catch (_) {
+      return {};
+    }
+  }
+
+  return {};
+}
+
+function setupColabDescriptions(app, assetToMeshes, off) {
+  if (
+    typeof window === "undefined" ||
+    !window.google ||
+    !window.google.colab ||
+    !window.google.colab.kernel ||
+    typeof window.google.colab.kernel.invokeFunction !== "function"
+  ) {
     console.debug("[Components] Colab bridge no disponible; sin descripciones.");
-    app.descriptionsReady = true; // no habrá
+    app.descriptionsReady = true;
     return;
   }
 
@@ -147,19 +482,31 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     return;
   }
 
+  const invoke = window.google.colab.kernel.invokeFunction;
+
   (async () => {
     const entries = [];
 
+    // Generar thumbnails + versión 5KB para API
     for (const ent of items) {
       try {
         const url = await off.thumbnail(ent.assetKey);
-        if (!url || typeof url !== "string") continue;
-        const parts = url.split(",");
-        if (parts.length !== 2) continue;
-        const b64 = parts[1];
+        if (!url) continue;
+
+        // Para el panel de componentes:
+        ent.thumbURL = url;
+
+        // Para la API: versión comprimida a ~5KB
+        const small = await compressForAPI5KB(url, 5);
+        if (!small) continue;
+
+        const parts = small.split(",");
+        const b64 = (parts[1] || "").trim();
+        if (!b64) continue;
+
         entries.push({ key: ent.assetKey, image_b64: b64 });
       } catch (e) {
-        console.warn("[Components] Error thumbnail", ent.assetKey, e);
+        console.warn("[Components] Error generando entrada para API:", e);
       }
     }
 
@@ -170,356 +517,54 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     }
 
     console.debug(
-      `[Components] Enviando ${entries.length} capturas a Colab para descripción.`
+      `[Components] Enviando ${entries.length} imágenes (<=5KB) en mini-lotes a Colab...`
     );
 
-    try {
-      const result = await window.google.colab.kernel.invokeFunction(
-        "describe_component_images",
-        [entries],
-        {}
-      );
+    const batchSize = 8;
+    const allDescs = {};
 
-      console.debug("[Components] Respuesta raw:", result);
+    for (let i = 0; i < entries.length; i += batchSize) {
+      const batch = entries.slice(i, i + batchSize);
+      try {
+        const result = await invoke("describe_component_images", [batch], {});
+        const map = normalizeDescribeResult(result) || {};
+        Object.assign(allDescs, map);
+        app.componentDescriptions = {
+          ...(app.componentDescriptions || {}),
+          ...allDescs,
+        };
 
-      const descMap = extractDescMap(result);
-      const keys = descMap && typeof descMap === "object"
-        ? Object.keys(descMap)
-        : [];
-
-      if (keys.length) {
-        app.componentDescriptions = descMap;
-        app.descriptionsReady = true;
+        // Notificación incremental
         if (typeof window !== "undefined") {
-          window.COMPONENT_DESCRIPTIONS = descMap; // debug
+          window.dispatchEvent(
+            new CustomEvent("urdf-descriptions-partial", {
+              detail: { count: Object.keys(allDescs).length },
+            })
+          );
         }
-        console.debug(
-          `[Components] Descripciones listas (${keys.length} piezas).`
-        );
-      } else {
-        console.warn("[Components] Respuesta sin descripciones utilizables.");
-        app.descriptionsReady = true;
-      }
-    } catch (err) {
-      console.error("[Components] Error invokeFunction:", err);
-      app.descriptionsReady = true;
-    }
-  })();
-}
-
-function extractDescMap(result) {
-  if (!result) return {};
-  const d = result.data || result;
-
-  // 1) application/json directo
-  if (d["application/json"] && typeof d["application/json"] === "object") {
-    return d["application/json"];
-  }
-
-  // 2) lista con objeto
-  if (Array.isArray(d) && d.length && typeof d[0] === "object") {
-    return d[0];
-  }
-
-  // 3) dict de Python en text/plain
-  const tp = d["text/plain"];
-  if (typeof tp === "string") {
-    const t = tp.trim();
-
-    // a) JSON válido
-    if ((t.startsWith("{") || t.startsWith("[")) && t.includes('"')) {
-      try {
-        const parsed = JSON.parse(t);
-        if (parsed && typeof parsed === "object") return parsed;
-      } catch {
-        // seguimos
-      }
-    }
-
-    // b) dict Python: {'key': 'value', ...}
-    try {
-      if (t.startsWith("{") && t.endsWith("}")) {
-        const obj = Function('"use strict"; return (' + t + ");")();
-        if (obj && typeof obj === "object") return obj;
-      }
-    } catch (e) {
-      console.warn("[Components] No se pudo parsear text/plain como dict:", e);
-    }
-  }
-
-  // 4) objeto suelto
-  if (typeof d === "object" && !Array.isArray(d)) return d;
-
-  return {};
-}
-
-/* ============ Helpers viewer ============ */
-
-function listAssets(assetToMeshes) {
-  const items = [];
-  assetToMeshes.forEach((meshes, assetKey) => {
-    if (!meshes || !meshes.length) return;
-    const clean = String(assetKey || "").split("?")[0].split("#")[0];
-    const baseFull = clean.split("/").pop();
-    const dot = baseFull.lastIndexOf(".");
-    const base = dot >= 0 ? baseFull.slice(0, dot) : baseFull;
-    const ext = dot >= 0 ? baseFull.slice(dot + 1).toLowerCase() : "";
-    items.push({ assetKey, base, ext, count: meshes.length });
-  });
-  items.sort((a, b) =>
-    a.base.localeCompare(b.base, undefined, {
-      numeric: true,
-      sensitivity: "base",
-    })
-  );
-  return items;
-}
-
-function isolateAsset(core, assetToMeshes, assetKey) {
-  const meshes = assetToMeshes.get(assetKey) || [];
-  if (core.robot) {
-    core.robot.traverse((o) => {
-      if (o.isMesh && o.geometry) o.visible = false;
-    });
-  }
-  meshes.forEach((m) => (m.visible = true));
-  frameMeshes(core, meshes);
-}
-
-function showAll(core) {
-  if (!core.robot) return;
-  core.robot.traverse((o) => {
-    if (o.isMesh && o.geometry) o.visible = true;
-  });
-  if (core.fitAndCenter) core.fitAndCenter(core.robot, 1.06);
-}
-
-function frameMeshes(core, meshes) {
-  if (!meshes || !meshes.length || !core.camera) return;
-  const { camera, renderer, scene } = core;
-
-  const box = new THREE.Box3();
-  const tmp = new THREE.Box3();
-  let has = false;
-  const vis = [];
-
-  for (const m of meshes) vis.push([m, m.visible]);
-
-  for (const m of meshes) {
-    tmp.setFromObject(m);
-    if (!has) {
-      box.copy(tmp);
-      has = true;
-    } else box.union(tmp);
-  }
-
-  if (!has) {
-    vis.forEach(([o, v]) => (o.visible = v));
-    return;
-  }
-
-  const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z) || 1;
-  const dist = maxDim * 2.0;
-
-  camera.near = Math.max(maxDim / 1000, 0.001);
-  camera.far = Math.max(maxDim * 1000, 1000);
-  camera.updateProjectionMatrix();
-
-  const az = Math.PI * 0.25;
-  const el = Math.PI * 0.18;
-  const dirV = new THREE.Vector3(
-    Math.cos(el) * Math.cos(az),
-    Math.sin(el),
-    Math.cos(el) * Math.sin(az)
-  ).multiplyScalar(dist);
-
-  camera.position.copy(center.clone().add(dirV));
-  camera.lookAt(center);
-
-  renderer.render(scene, camera);
-  vis.forEach(([o, v]) => (o.visible = v));
-}
-
-/* ============ Offscreen thumbnails (sistema sólido) ============ */
-
-function buildOffscreenForThumbnails(core, assetToMeshes) {
-  if (!core.robot) {
-    return {
-      thumbnail: async () => null,
-      destroy() {},
-    };
-  }
-
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-  const OFF_W = 640;
-  const OFF_H = 480;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = OFF_W;
-  canvas.height = OFF_H;
-
-  const renderer = new THREE.WebGLRenderer({
-    canvas,
-    antialias: true,
-    preserveDrawingBuffer: true,
-  });
-  renderer.setSize(OFF_W, OFF_H, false);
-
-  // Match main renderer for consistent look
-  if (core.renderer) {
-    renderer.physicallyCorrectLights =
-      core.renderer.physicallyCorrectLights ?? true;
-    renderer.toneMapping = core.renderer.toneMapping;
-    renderer.toneMappingExposure =
-      core.renderer.toneMappingExposure ?? 1.0;
-
-    if ("outputColorSpace" in renderer) {
-      renderer.outputColorSpace =
-        core.renderer.outputColorSpace ?? THREE.SRGBColorSpace;
-    } else {
-      renderer.outputEncoding =
-        core.renderer.outputEncoding ?? THREE.sRGBEncoding;
-    }
-
-    renderer.shadowMap.enabled =
-      core.renderer.shadowMap?.enabled ?? false;
-    renderer.shadowMap.type =
-      core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
-  }
-
-  const scene = new THREE.Scene();
-  scene.background =
-    core.scene?.background ?? new THREE.Color(0xffffff);
-  scene.environment = core.scene?.environment ?? null;
-
-  const amb = new THREE.AmbientLight(0xffffff, 0.95);
-  const dir = new THREE.DirectionalLight(0xffffff, 1.1);
-  dir.position.set(2.5, 2.5, 2.5);
-  scene.add(amb, dir);
-
-  const camera = new THREE.PerspectiveCamera(
-    60,
-    OFF_W / OFF_H,
-    0.01,
-    10000
-  );
-
-  // Clone robot
-  const robotClone = core.robot.clone(true);
-  scene.add(robotClone);
-
-  robotClone.traverse((o) => {
-    if (o.isMesh && o.material) {
-      if (Array.isArray(o.material)) {
-        o.material = o.material.map((m) => m.clone());
-      } else {
-        o.material = o.material.clone();
-      }
-      o.material.needsUpdate = true;
-      o.castShadow = renderer.shadowMap.enabled;
-      o.receiveShadow = renderer.shadowMap.enabled;
-    }
-  });
-
-  // Map assetKey → meshes en el clon (asumiendo __assetKey seteado en load)
-  const cloneAssetToMeshes = new Map();
-  robotClone.traverse((o) => {
-    const k = o?.userData?.__assetKey;
-    if (k && o.isMesh && o.geometry) {
-      const arr = cloneAssetToMeshes.get(k) || [];
-      arr.push(o);
-      cloneAssetToMeshes.set(k, arr);
-    }
-  });
-
-  const ready = (async () => {
-    //await sleep(10);
-    await new Promise((r) =>
-      requestAnimationFrame(() =>
-        requestAnimationFrame(r)
-      )
-    );
-    renderer.render(scene, camera);
-  })();
-
-  function snapshotAsset(assetKey) {
-    const meshes = cloneAssetToMeshes.get(assetKey) || [];
-    if (!meshes.length) return null;
-
-    const vis = [];
-    robotClone.traverse((o) => {
-      if (o.isMesh && o.geometry) vis.push([o, o.visible]);
-    });
-
-    for (const [m] of vis) m.visible = false;
-    for (const m of meshes) m.visible = true;
-
-    const box = new THREE.Box3();
-    const tmp = new THREE.Box3();
-    let has = false;
-
-    for (const m of meshes) {
-      tmp.setFromObject(m);
-      if (!has) {
-        box.copy(tmp);
-        has = true;
-      } else {
-        box.union(tmp);
-      }
-    }
-
-    if (!has) {
-      vis.forEach(([o, v]) => (o.visible = v));
-      return null;
-    }
-
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = maxDim * 2.0;
-
-    camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far = Math.max(maxDim * 1000, 1000);
-    camera.updateProjectionMatrix();
-
-    const az = Math.PI * 0.25;
-    const el = Math.PI * 0.18;
-    const dirV = new THREE.Vector3(
-      Math.cos(el) * Math.cos(az),
-      Math.sin(el),
-      Math.cos(el) * Math.sin(az)
-    ).multiplyScalar(dist);
-
-    camera.position.copy(center.clone().add(dirV));
-    camera.lookAt(center);
-
-    renderer.render(scene, camera);
-    const url = renderer.domElement.toDataURL("image/png");
-
-    vis.forEach(([o, v]) => (o.visible = v));
-
-    return url;
-  }
-
-  return {
-    thumbnail: async (assetKey) => {
-      try {
-        await ready;
-        //await sleep(1.5);
-        return snapshotAsset(assetKey);
       } catch (e) {
-        console.warn("[Thumbnails] error:", e);
-        return null;
+        console.warn(
+          "[Components] Error en batch describe_component_images:",
+          e
+        );
       }
-    },
-    destroy: () => {
-      try { renderer.dispose(); } catch (_) {}
-      try { scene.clear(); } catch (_) {}
-    },
-  };
+    }
+
+    app.descriptionsReady = true;
+
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("urdf-descriptions-ready", {
+          detail: { count: Object.keys(app.componentDescriptions || {}).length },
+        })
+      );
+    }
+
+    console.debug(
+      "[Components] Descripciones completadas:",
+      Object.keys(app.componentDescriptions || {}).length
+    );
+  })();
 }
 
 /* ------------------------- Click Sound ------------------------- */
@@ -530,7 +575,12 @@ function installClickSound(dataURL) {
   let buf = null;
 
   async function ensure() {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!ctx) {
+      const AC =
+        window.AudioContext || window.webkitAudioContext || null;
+      if (!AC) return;
+      ctx = new AC();
+    }
     if (!buf) {
       const resp = await fetch(dataURL);
       const arr = await resp.arrayBuffer();
@@ -538,17 +588,17 @@ function installClickSound(dataURL) {
     }
   }
 
-  function play() {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === "suspended") ctx.resume();
-    if (!buf) {
-      ensure().then(play).catch(() => {});
-      return;
+  async function play() {
+    try {
+      await ensure();
+      if (!ctx || !buf) return;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+    } catch (_) {
+      // ignore
     }
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
-    try { src.start(); } catch (_) {}
   }
 
   window.__urdf_click__ = play;
