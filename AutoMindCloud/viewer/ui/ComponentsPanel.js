@@ -1,373 +1,273 @@
-// /viewer/ui/ComponentsPanel.js
-// Panel de componentes: lista + thumbnails + descripción incremental.
-/* global document */
+// ComponentsPanel.js
+// Panel lateral con la lista de componentes y detalle con descripción.
 
-export function createComponentsPanel(app, theme) {
-  if (!app) throw new Error('[ComponentsPanel] Missing app');
+import { THEME } from "../Theme.js";
 
-  // Normaliza theme
-  theme = theme || {};
-  const stroke = theme.stroke || (theme.colors && theme.colors.stroke) || '#d7e7e7';
-  const teal = (theme.colors && theme.colors.teal) || '#0ea5a6';
-  const tealSoft = (theme.colors && theme.colors.tealSoft) || teal;
-  const tealFaint = (theme.colors && theme.colors.tealFaint) || 'rgba(14,165,166,0.06)';
-  const text = (theme.colors && theme.colors.text) || '#0b3b3c';
-  const textMuted = (theme.colors && theme.colors.textMuted) || '#577e7f';
-  const shadow = (theme.shadows && (theme.shadows.md || theme.shadows.sm)) || '0 8px 24px rgba(0,0,0,0.12)';
-  const fontUI = (theme.fonts && theme.fonts.ui) || "Inter, system-ui, -apple-system, sans-serif";
-
-  // ---------- DOM ----------
-  const ui = {
-    root: document.createElement('div'),
-    btn: document.createElement('button'),
-    panel: document.createElement('div'),
-    header: document.createElement('div'),
-    title: document.createElement('div'),
-    close: document.createElement('button'),
-    listWrap: document.createElement('div'),
-    list: document.createElement('div'),
-    details: document.createElement('div'),
-    detailsTitle: document.createElement('div'),
-    detailsBody: document.createElement('div')
+export function createComponentsPanel(app, theme = THEME) {
+  const state = {
+    isOpen: false,
   };
 
-  // root
-  Object.assign(ui.root.style, {
-    position: 'fixed',
-    right: '16px',
-    top: '16px',
-    zIndex: 10010,
-    fontFamily: fontUI,
-    pointerEvents: 'none'
-  });
+  const root = document.createElement("div");
+  root.style.position = "fixed";
+  root.style.left = "0";
+  root.style.top = "0";
+  root.style.bottom = "0";
+  root.style.width = "260px";
+  root.style.background = theme.bgPanel;
+  root.style.borderRight = `1px solid ${theme.borderSoft}`;
+  root.style.boxShadow = "2px 0 12px rgba(0,0,0,0.08)";
+  root.style.display = "none";
+  root.style.zIndex = "20";
+  root.style.padding = "8px";
+  root.style.boxSizing = "border-box";
+  root.style.fontFamily = theme.font;
+  root.style.color = theme.fg;
+  root.style.overflow = "hidden";
 
-  // toggle button
-  ui.btn.textContent = 'Components';
-  Object.assign(ui.btn.style, {
-    padding: '8px 14px',
-    borderRadius: '999px',
-    border: `1px solid ${stroke}`,
-    background: '#ffffff',
-    color: text,
-    boxShadow: shadow,
-    cursor: 'pointer',
-    fontSize: '13px',
-    fontWeight: 600,
-    pointerEvents: 'auto',
-    marginBottom: '8px',
-    transition: 'all 0.14s ease'
-  });
-  ui.btn.addEventListener('mouseenter', () => {
-    ui.btn.style.transform = 'translateY(-1px)';
-    ui.btn.style.background = tealFaint;
-    ui.btn.style.borderColor = tealSoft;
-  });
-  ui.btn.addEventListener('mouseleave', () => {
-    ui.btn.style.transform = 'none';
-    ui.btn.style.background = '#ffffff';
-    ui.btn.style.borderColor = stroke;
-  });
+  const header = document.createElement("div");
+  header.textContent = "Componentes";
+  header.style.fontWeight = "600";
+  header.style.marginBottom = "6px";
+  header.style.fontSize = "14px";
 
-  // panel
-  Object.assign(ui.panel.style, {
-    width: '360px',
-    maxHeight: '75vh',
-    background: '#ffffff',
-    borderRadius: '18px',
-    border: `1px solid ${stroke}`,
-    boxShadow: shadow,
-    padding: '14px',
-    display: 'none',
-    flexDirection: 'column',
-    gap: '8px',
-    pointerEvents: 'auto',
-  });
+  const listWrap = document.createElement("div");
+  listWrap.style.position = "absolute";
+  listWrap.style.left = "8px";
+  listWrap.style.right = "8px";
+  listWrap.style.top = "26px";
+  listWrap.style.bottom = "90px";
+  listWrap.style.overflowY = "auto";
+  listWrap.style.borderRadius = "8px";
+  listWrap.style.border = `1px solid ${theme.borderSoft}`;
+  listWrap.style.background = theme.bgSubtle;
 
-  // header
-  Object.assign(ui.header.style, {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: '8px',
-    marginBottom: '4px'
-  });
-  ui.title.textContent = 'Componentes';
-  Object.assign(ui.title.style, {
-    fontSize: '14px',
-    fontWeight: 700,
-    color: text
-  });
-  ui.close.textContent = '×';
-  Object.assign(ui.close.style, {
-    border: 'none',
-    background: 'transparent',
-    cursor: 'pointer',
-    fontSize: '18px',
-    lineHeight: '18px',
-    color: textMuted
-  });
+  const list = document.createElement("div");
+  list.style.display = "flex";
+  list.style.flexDirection = "column";
+  list.style.gap = "4px";
+  list.style.padding = "4px";
+  listWrap.appendChild(list);
 
-  // list
-  Object.assign(ui.listWrap.style, {
-    overflowY: 'auto',
-    flex: '1 1 auto',
-    paddingRight: '4px'
-  });
-  Object.assign(ui.list.style, {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px'
-  });
+  const details = document.createElement("div");
+  details.style.position = "absolute";
+  details.style.left = "8px";
+  details.style.right = "8px";
+  details.style.bottom = "8px";
+  details.style.height = "76px";
+  details.style.borderRadius = "8px";
+  details.style.border = `1px solid ${theme.borderSoft}`;
+  details.style.background = theme.bgSubtle;
+  details.style.padding = "6px";
+  details.style.boxSizing = "border-box";
+  details.style.display = "flex";
+  details.style.flexDirection = "column";
+  details.style.fontSize = "11px";
+  details.style.gap = "2px";
 
-  // details
-  Object.assign(ui.details.style, {
-    marginTop: '6px',
-    padding: '8px',
-    borderRadius: '12px',
-    border: `1px solid ${stroke}`,
-    background: '#f7fbfb',
-    display: 'none'
-  });
-  Object.assign(ui.detailsTitle.style, {
-    fontSize: '13px',
-    fontWeight: 600,
-    marginBottom: '4px',
-    color: text
-  });
-  Object.assign(ui.detailsBody.style, {
-    fontSize: '12px',
-    color: textMuted,
-    whiteSpace: 'pre-wrap'
-  });
+  const detailsTitle = document.createElement("div");
+  detailsTitle.style.fontWeight = "600";
+  detailsTitle.style.fontSize = "11px";
+  detailsTitle.style.color = theme.accent;
 
-  ui.details.appendChild(ui.detailsTitle);
-  ui.details.appendChild(ui.detailsBody);
+  const detailsText = document.createElement("div");
+  detailsText.style.flex = "1";
+  detailsText.style.overflow = "auto";
+  detailsText.style.lineHeight = "1.25";
 
-  ui.header.appendChild(ui.title);
-  ui.header.appendChild(ui.close);
-  ui.listWrap.appendChild(ui.list);
-  ui.panel.appendChild(ui.header);
-  ui.panel.appendChild(ui.listWrap);
-  ui.panel.appendChild(ui.details);
-  ui.root.appendChild(ui.btn);
-  ui.root.appendChild(ui.panel);
+  details.appendChild(detailsTitle);
+  details.appendChild(detailsText);
 
-  document.body.appendChild(ui.root);
+  root.appendChild(header);
+  root.appendChild(listWrap);
+  root.appendChild(details);
 
-  // ---------- Estado ----------
-  let open = false;
-  let built = false;
-  let disposed = false;
-  let lastShown = null;
+  document.body.appendChild(root);
 
-  function set(v) {
-    open = !!v;
-    ui.panel.style.display = open ? 'flex' : 'none';
+  function open() {
+    state.isOpen = true;
+    root.style.display = "block";
+    refresh();
   }
-  function openPanel() { set(true); }
-  function closePanel() { set(false); }
 
-  ui.btn.addEventListener('click', () => {
-    set(!open);
-    if (open) maybeBuild();
-  });
-  ui.close.addEventListener('click', () => set(false));
+  function close() {
+    state.isOpen = false;
+    root.style.display = "none";
+  }
 
-  // ---------- Render list ----------
-  async function renderList() {
-    if (disposed) return;
-    ui.list.innerHTML = '';
+  function toggle() {
+    state.isOpen ? close() : open();
+  }
 
-    const assetsApi = app.assets;
-    if (!assetsApi || typeof assetsApi.list !== 'function') {
-      const p = document.createElement('div');
-      p.textContent = 'No hay datos de componentes.';
-      p.style.fontSize = '12px';
-      p.style.color = textMuted;
-      ui.list.appendChild(p);
+  function set(isOpen) {
+    isOpen ? open() : close();
+  }
+
+  function clearList() {
+    while (list.firstChild) list.removeChild(list.firstChild);
+  }
+
+  function getComponentDescription(assetKey) {
+    if (!app || !app.componentDescriptions) return "";
+    return app.componentDescriptions[assetKey] || "";
+  }
+
+  function showDetails(ent) {
+    if (!ent) {
+      detailsTitle.textContent = "";
+      detailsText.textContent = "";
       return;
     }
+    const title =
+      ent.base ||
+      ent.assetKey ||
+      ent.key ||
+      (typeof ent === "string" ? ent : "");
+    detailsTitle.textContent = title || "";
 
-    const entries = await assetsApi.list();
-    if (!entries || !entries.length) {
-      const p = document.createElement('div');
-      p.textContent = 'No se detectaron componentes aún.';
-      p.style.fontSize = '12px';
-      p.style.color = textMuted;
-      ui.list.appendChild(p);
-      return;
-    }
-
-    entries.forEach((ent, index) => {
-      const row = document.createElement('div');
-      Object.assign(row.style, {
-        display: 'grid',
-        gridTemplateColumns: '112px 1fr',
-        gap: '10px',
-        alignItems: 'center',
-        padding: '8px',
-        borderRadius: '12px',
-        border: `1px solid ${stroke}`,
-        background: '#ffffff',
-        cursor: 'pointer',
-        transition: 'transform .08s ease, box-shadow .12s ease, background-color .12s ease, border-color .12s ease'
-      });
-
-      const thumbWrap = document.createElement('div');
-      Object.assign(thumbWrap.style, {
-        width: '112px',
-        height: '84px',
-        borderRadius: '10px',
-        background: '#f7fbfb',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        overflow: 'hidden',
-        border: `1px solid ${stroke}`
-      });
-
-      const img = document.createElement('img');
-      Object.assign(img.style, {
-        width: '100%',
-        height: '100%',
-        objectFit: 'contain',
-      });
-
-      (async () => {
-        try {
-          const url = assetsApi.thumbnail
-            ? await assetsApi.thumbnail(ent.assetKey)
-            : null;
-          if (url) img.src = url;
-          else {
-            img.style.display = 'none';
-            thumbWrap.textContent = 'Sin vista previa';
-            thumbWrap.style.fontSize = '10px';
-            thumbWrap.style.color = textMuted;
-          }
-        } catch {
-          img.style.display = 'none';
-          thumbWrap.textContent = 'Sin vista previa';
-          thumbWrap.style.fontSize = '10px';
-          thumbWrap.style.color = textMuted;
-        }
-      })();
-
-      thumbWrap.appendChild(img);
-
-      const meta = document.createElement('div');
-      const title = document.createElement('div');
-      title.textContent = ent.base || ent.assetKey || 'Componente';
-      Object.assign(title.style, {
-        fontSize: '13px',
-        fontWeight: 600,
-        color: text,
-        marginBottom: '2px'
-      });
-
-      const small = document.createElement('div');
-      small.textContent = `${ent.count || 1} mesh • ${ent.ext || ''}`.trim();
-      Object.assign(small.style, {
-        fontSize: '10px',
-        color: textMuted
-      });
-
-      meta.appendChild(title);
-      meta.appendChild(small);
-
-      row.appendChild(thumbWrap);
-      row.appendChild(meta);
-      ui.list.appendChild(row);
-
-      row.addEventListener('mouseenter', () => {
-        row.style.transform = 'translateY(-1px) scale(1.02)';
-        row.style.background = tealFaint;
-        row.style.borderColor = tealSoft;
-      });
-      row.addEventListener('mouseleave', () => {
-        row.style.transform = 'none';
-        row.style.background = '#ffffff';
-        row.style.borderColor = stroke;
-      });
-
-      row.addEventListener('click', () => {
-        try { app.isolate && app.isolate.asset && app.isolate.asset(ent.assetKey); } catch (_) {}
-        showDetails(ent, index);
-        set(true);
-      });
-    });
+    const key = ent.assetKey || ent.key || title;
+    const desc = getComponentDescription(key);
+    detailsText.textContent =
+      desc && desc.trim()
+        ? desc.trim()
+        : "Descripción en generación…";
   }
 
-  async function maybeBuild() {
-    if (disposed || built) return;
-    built = true;
-    await renderList();
-  }
+  function buildRow(ent) {
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.gap = "6px";
+    row.style.padding = "4px";
+    row.style.borderRadius = "6px";
+    row.style.cursor = "pointer";
+    row.style.transition = "all 0.14s ease";
 
-  function showDetails(ent, _index) {
-    lastShown = ent;
-    const getDesc = app.getComponentDescription;
-    let textContent = '';
+    row.onmouseenter = () => {
+      row.style.background = theme.bgHover;
+      row.style.transform = "translateX(2px)";
+    };
+    row.onmouseleave = () => {
+      row.style.background = "transparent";
+      row.style.transform = "translateX(0)";
+    };
 
-    if (typeof getDesc === 'function') {
-      textContent = getDesc(ent.assetKey) || '';
-    }
+    const thumb = document.createElement("div");
+    thumb.style.width = "34px";
+    thumb.style.height = "24px";
+    thumb.style.borderRadius = "4px";
+    thumb.style.background = theme.bgSoft;
+    thumb.style.flexShrink = "0";
+    thumb.style.overflow = "hidden";
 
-    if (!textContent) {
-      if (app.descriptionsReady) {
-        textContent = 'Sin descripción generada.';
-      } else {
-        textContent = 'Generando descripción…';
+    if (app && app.assets && typeof app.assets.thumbnail === "function") {
+      const url =
+        app.assets.thumbnail(ent.assetKey || ent.key || ent.base) || null;
+      if (url) {
+        const img = document.createElement("img");
+        img.src = url;
+        img.style.width = "100%";
+        img.style.height = "100%";
+        img.style.objectFit = "cover";
+        thumb.appendChild(img);
       }
     }
 
-    ui.detailsTitle.textContent = ent.base || ent.assetKey;
-    ui.detailsBody.textContent = textContent;
-    ui.details.style.display = 'block';
+    const label = document.createElement("div");
+    label.style.flex = "1";
+    label.style.fontSize = "11px";
+    label.style.whiteSpace = "nowrap";
+    label.style.overflow = "hidden";
+    label.style.textOverflow = "ellipsis";
+    label.textContent =
+      ent.base || ent.assetKey || ent.key || "(sin nombre)";
+
+    row.appendChild(thumb);
+    row.appendChild(label);
+
+    row.onclick = () => {
+      showDetails(ent);
+      if (app && typeof app.focusComponent === "function") {
+        app.focusComponent(ent.assetKey || ent.key || ent.base);
+      }
+    };
+
+    return row;
   }
 
-  function hideDetails() {
-    lastShown = null;
-    ui.details.style.display = 'none';
-    ui.detailsTitle.textContent = '';
-    ui.detailsBody.textContent = '';
-  }
+  function refresh() {
+    if (!state.isOpen) return;
+    clearList();
 
-  async function refresh() {
-    if (disposed) return;
-    await renderList();
+    if (!app || !app.assets || typeof app.assets.list !== "function") {
+      const msg = document.createElement("div");
+      msg.textContent = "Sin datos de componentes.";
+      msg.style.fontSize = "10px";
+      msg.style.opacity = "0.7";
+      msg.style.padding = "6px";
+      list.appendChild(msg);
+      return;
+    }
+
+    const items = app.assets.list() || [];
+    if (!items.length) {
+      const msg = document.createElement("div");
+      msg.textContent = "Sin componentes detectados.";
+      msg.style.fontSize = "10px";
+      msg.style.opacity = "0.7";
+      msg.style.padding = "6px";
+      list.appendChild(msg);
+      return;
+    }
+
+    items.forEach((ent) => {
+      list.appendChild(buildRow(ent));
+    });
   }
 
   function destroy() {
-    disposed = True;
+    if (root && root.parentNode) {
+      root.parentNode.removeChild(root);
+    }
   }
 
-  // incremental descriptions desde JS
+  // 💡 NUEVO: actualizar descripciones incrementalmente (mini-lotes)
   function updateDescriptions(partial) {
-    if (!partial || typeof partial !== 'object') return;
-    if (!lastShown) return;
-    const txt = partial[lastShown.assetKey];
-    if (typeof txt === 'string' && txt.trim()) {
-      ui.detailsBody.textContent = txt.trim();
+    if (!partial || typeof partial !== "object") return;
+    if (!app.componentDescriptions) app.componentDescriptions = {};
+
+    for (const k of Object.keys(partial)) {
+      const v = partial[k];
+      app.componentDescriptions[k] = (v || "").toString();
     }
+
+    // Si hay un componente seleccionado, refrescamos su detalle
+    const currentTitle = detailsTitle.textContent || "";
+    if (!currentTitle) return;
+
+    const items =
+      (app.assets && typeof app.assets.list === "function"
+        ? app.assets.list()
+        : []) || [];
+
+    const current =
+      items.find(
+        (ent) =>
+          ent.assetKey === currentTitle ||
+          ent.key === currentTitle ||
+          ent.base === currentTitle
+      ) || null;
+
+    if (current) showDetails(current);
   }
 
-  // Hotkey 'c'
-  function onHotkeyC(e) {
-    const tag = (e.target && e.target.tagName) || '';
-    const t = tag.toLowerCase();
-    if (t === 'input' || t === 'textarea' || t === 'select' || e.isComposing) return;
-    if (e.key === 'c' || e.key === 'C' || e.code === 'KeyC') {
-      e.preventDefault();
-      set(!open);
-      if (open) maybeBuild();
-    }
-  }
-  document.addEventListener('keydown', onHotkeyC, true);
-
-  // Inicial
-  set(false);
-  maybeBuild();
-
-  return { open: openPanel, close: closePanel, set, refresh, destroy, updateDescriptions };
+  return {
+    open,
+    close,
+    toggle,
+    set,
+    refresh,
+    destroy,
+    updateDescriptions, // 👈 importante para mini-lotes
+  };
 }
