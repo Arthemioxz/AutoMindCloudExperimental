@@ -22,24 +22,18 @@ export function render(opts = {}) {
     autoResize = true,
   } = opts;
 
-  // Core viewer
   const core = createViewer({
     container,
     background,
     pixelRatio,
   });
 
-  // Asset DB desde meshDB (b64)
   const assetDB = buildAssetDB(meshDB);
   const loadMeshCb = createLoadMeshCb(assetDB);
-
-  // Cargar URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // Mapa assetKey -> [meshes]
   const assetToMeshes = buildAssetToMeshes(robot);
 
-  // Interacción selección / drag
   const selection = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -49,10 +43,8 @@ export function render(opts = {}) {
     selectMode,
   });
 
-  // Offscreen para thumbnails centrados en cada componente
   const off = buildOffscreenForThumbnails(core, assetToMeshes);
 
-  // App público que consumen ToolsDock / ComponentsPanel
   const app = {
     ...core,
     robot,
@@ -76,26 +68,21 @@ export function render(opts = {}) {
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions;
       if (!src || !app.descriptionsReady) {
-        // El panel decide si muestra "Cargando..."
         return "";
       }
 
-      // Cuando viene como diccionario { key: desc }
       if (!Array.isArray(src) && typeof src === "object") {
-        // 1) clave exacta
-        if (src[assetKey]) return src[assetKey];
+        const exact = src[assetKey];
+        if (exact) return exact;
 
-        // 2) misma base sin ruta
         const clean = String(assetKey || "").split("?")[0].split("#")[0];
         const base = clean.split("/").pop();
         if (src[base]) return src[base];
 
-        // 3) sin extensión
         const baseNoExt = base.split(".")[0];
         if (src[baseNoExt]) return src[baseNoExt];
       }
 
-      // Cuando viene como lista y tenemos índice estable
       if (Array.isArray(src) && typeof index === "number") {
         return src[index] || "";
       }
@@ -104,7 +91,6 @@ export function render(opts = {}) {
     },
   };
 
-  // UI
   const theme = THEME || {};
   createToolsDock(app, theme);
   createComponentsPanel(app, theme);
@@ -121,8 +107,11 @@ export function render(opts = {}) {
     });
   }
 
-  // Bridge con Colab para descripciones (usa thumbnails grandes, comprime a 5KB solo para API)
   setupColabDescriptions(app, assetToMeshes, off);
+
+  if (typeof window !== "undefined") {
+    window.URDFViewer = { render };
+  }
 
   return app;
 }
@@ -202,9 +191,7 @@ function frameMeshes(core, meshes) {
 
   const box = new THREE.Box3();
   const tmp = new THREE.Box3();
-  const visBackup = [];
 
-  // Usar solo los meshes de ese componente
   for (const m of meshes) {
     if (!m.isMesh || !m.geometry) continue;
     tmp.setFromObject(m);
@@ -235,7 +222,6 @@ function frameMeshes(core, meshes) {
   camera.position.copy(center.clone().add(dirV));
   camera.lookAt(center);
 
-  // Render único para ajuste
   if (renderer && scene) {
     renderer.render(scene, camera);
   }
@@ -319,7 +305,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     camera.far = Math.max(maxDim * 40, dist * 3);
     camera.updateProjectionMatrix();
 
-    // Mostrar solo esos meshes
     const vis = [];
     scene.traverse((o) => {
       if (o.isMesh && o.geometry) {
@@ -332,6 +317,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     renderer.render(scene, camera);
 
     const url = canvas.toDataURL("image/png");
+
     for (const [o, v] of vis) o.visible = v;
 
     await sleep(10);
@@ -392,7 +378,6 @@ function compressForAPI5KB(dataURL, targetKB = 5) {
         ctx.drawImage(img, 0, 0, w, h);
       };
 
-      // Primer límite: máximo 160px en el lado más largo
       const maxDim = 160;
       const maxSide = Math.max(w, h);
       if (maxSide > maxDim) {
@@ -413,28 +398,39 @@ function compressForAPI5KB(dataURL, targetKB = 5) {
 
         q *= 0.7;
         if (q < 0.18) {
-          // Si ya bajamos mucha calidad, reducimos resolución y reseteamos q
           shrinkTo(0.7);
           q = 0.9;
         }
         best = canvas.toDataURL("image/jpeg", q);
       }
 
+      const finalSize = estimateBytesFromDataURL(best);
+      console.log(
+        "[Compress5KB] Resultado:",
+        finalSize,
+        "bytes (~",
+        (finalSize / 1024).toFixed(2),
+        "KB )"
+      );
+
       resolve(best);
     };
 
-    img.onerror = () => resolve(null);
+    img.onerror = () => {
+      console.warn("[Compress5KB] Error al cargar imagen para comprimir.");
+      resolve(null);
+    };
+
     img.src = dataURL;
   });
 }
 
-/* ============ Bridge Colab: mini-lotes con 5KB ============ */
+/* ============ Bridge Colab: mini-lotes con logs ============ */
 
 function normalizeDescribeResult(result) {
   if (!result) return {};
   const d = result.data || result;
 
-  // Caso dict directo
   if (d && typeof d === "object" && !Array.isArray(d)) {
     if (d["application/json"] && typeof d["application/json"] === "object") {
       return d["application/json"];
@@ -442,7 +438,6 @@ function normalizeDescribeResult(result) {
     return d;
   }
 
-  // Array con objeto dentro
   if (Array.isArray(d) && d.length) {
     const first = d[0];
     if (first && typeof first === "object" && !Array.isArray(first)) {
@@ -450,7 +445,6 @@ function normalizeDescribeResult(result) {
     }
   }
 
-  // String JSON
   if (typeof d === "string") {
     try {
       return JSON.parse(d);
@@ -470,14 +464,14 @@ function setupColabDescriptions(app, assetToMeshes, off) {
     !window.google.colab.kernel ||
     typeof window.google.colab.kernel.invokeFunction !== "function"
   ) {
-    console.debug("[Components] Colab bridge no disponible; sin descripciones.");
+    console.debug("[Describe] Colab bridge no disponible; sin descripciones.");
     app.descriptionsReady = true;
     return;
   }
 
   const items = listAssets(assetToMeshes);
   if (!items.length) {
-    console.debug("[Components] No hay assets para describir.");
+    console.debug("[Describe] No hay assets para describir.");
     app.descriptionsReady = true;
     return;
   }
@@ -487,16 +481,13 @@ function setupColabDescriptions(app, assetToMeshes, off) {
   (async () => {
     const entries = [];
 
-    // Generar thumbnails + versión 5KB para API
     for (const ent of items) {
       try {
         const url = await off.thumbnail(ent.assetKey);
         if (!url) continue;
 
-        // Para el panel de componentes:
-        ent.thumbURL = url;
+        ent.thumbURL = url; // para ComponentsPanel (full calidad)
 
-        // Para la API: versión comprimida a ~5KB
         const small = await compressForAPI5KB(url, 5);
         if (!small) continue;
 
@@ -504,20 +495,31 @@ function setupColabDescriptions(app, assetToMeshes, off) {
         const b64 = (parts[1] || "").trim();
         if (!b64) continue;
 
+        const sizeBytes = Math.floor((b64.length * 3) / 4);
         entries.push({ key: ent.assetKey, image_b64: b64 });
+
+        console.log(
+          "[DescribePrep] Listo para API:",
+          ent.assetKey,
+          "=>",
+          sizeBytes,
+          "bytes (~",
+          (sizeBytes / 1024).toFixed(2),
+          "KB )"
+        );
       } catch (e) {
-        console.warn("[Components] Error generando entrada para API:", e);
+        console.warn("[DescribePrep] Error generando entrada para API:", e);
       }
     }
 
     if (!entries.length) {
-      console.debug("[Components] No se generaron capturas para describir.");
+      console.debug("[Describe] No se generaron capturas para describir.");
       app.descriptionsReady = true;
       return;
     }
 
     console.debug(
-      `[Components] Enviando ${entries.length} imágenes (<=5KB) en mini-lotes a Colab...`
+      `[Describe] Enviando ${entries.length} imágenes en mini-lotes a Colab callback...`
     );
 
     const batchSize = 8;
@@ -525,16 +527,38 @@ function setupColabDescriptions(app, assetToMeshes, off) {
 
     for (let i = 0; i < entries.length; i += batchSize) {
       const batch = entries.slice(i, i + batchSize);
+
+      // ===== LOG en consola: qué se envía a la API (resumen) =====
+      const payloadPreview = batch.map((e) => ({
+        key: e.key,
+        bytes: Math.floor((e.image_b64.length * 3) / 4),
+      }));
+      console.log(
+        `[DescribeBatch] Batch ${
+          i / batchSize + 1
+        } -> payload a API (via Colab):`,
+        payloadPreview
+      );
+
       try {
         const result = await invoke("describe_component_images", [batch], {});
+        console.log(
+          `[DescribeBatch] Raw result batch ${i / batchSize + 1}:`,
+          result
+        );
+
         const map = normalizeDescribeResult(result) || {};
+        console.log(
+          `[DescribeBatch] Parsed map batch ${i / batchSize + 1}:`,
+          map
+        );
+
         Object.assign(allDescs, map);
         app.componentDescriptions = {
           ...(app.componentDescriptions || {}),
           ...allDescs,
         };
 
-        // Notificación incremental
         if (typeof window !== "undefined") {
           window.dispatchEvent(
             new CustomEvent("urdf-descriptions-partial", {
@@ -544,7 +568,9 @@ function setupColabDescriptions(app, assetToMeshes, off) {
         }
       } catch (e) {
         console.warn(
-          "[Components] Error en batch describe_component_images:",
+          `[DescribeBatch] Error en batch ${
+            i / batchSize + 1
+          } describe_component_images:`,
           e
         );
       }
@@ -561,7 +587,7 @@ function setupColabDescriptions(app, assetToMeshes, off) {
     }
 
     console.debug(
-      "[Components] Descripciones completadas:",
+      "[Describe] Descripciones finalizadas. Total claves:",
       Object.keys(app.componentDescriptions || {}).length
     );
   })();
@@ -596,16 +622,8 @@ function installClickSound(dataURL) {
       src.buffer = buf;
       src.connect(ctx.destination);
       src.start(0);
-    } catch (_) {
-      // ignore
-    }
+    } catch (_) {}
   }
 
   window.__urdf_click__ = play;
-}
-
-/* --------------------- Global UMD-style hook -------------------- */
-
-if (typeof window !== "undefined") {
-  window.URDFViewer = { render };
 }
