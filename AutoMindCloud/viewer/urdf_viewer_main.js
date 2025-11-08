@@ -1,386 +1,552 @@
-// /viewer/urdf_viewer_main.js
-// Entrypoint that composes ViewerCore + AssetDB + Selection & Drag + UI (Tools & Components)
+// urdf_viewer_main.js
+// Entrypoint que compone ViewerCore + AssetDB + Interaction + UI
+// con thumbnails correctos por assetKey en Iso View y IA opt-in.
 
-import { THEME } from './Theme.js'; 
-import { createViewer } from './core/ViewerCore.js';
-import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
-import { attachInteraction } from './interaction/SelectionAndDrag.js';
-import { createToolsDock } from './ui/ToolsDock.js';
-import { createComponentsPanel } from './ui/ComponentsPanel.js';
+/* global THREE */
 
-/**
- * Public entry: render the URDF viewer.
- * @param {Object} opts
- * @param {HTMLElement} opts.container
- * @param {string} opts.urdfContent              — URDF string
- * @param {Object.<string,string>} opts.meshDB   — key → base64
- * @param {'link'|'mesh'} [opts.selectMode='link']
- * @param {number|null} [opts.background=THEME.bgCanvas]
- * @param {string|null} [opts.clickAudioDataURL] — optional UI SFX (not required)
- */
+import { THEME } from "./Theme.js";
+import { createViewer } from "./core/ViewerCore.js";
+import { buildAssetDB, createLoadMeshCb } from "./core/AssetDB.js";
+import { attachInteraction } from "./interaction/SelectionAndDrag.js";
+import { createToolsDock } from "./ui/ToolsDock.js";
+import { createComponentsPanel } from "./ui/ComponentsPanel.js";
+
 export function render(opts = {}) {
   const {
     container,
-    urdfContent = '',
+    urdfContent = "",
     meshDB = {},
-    selectMode = 'link',
+    selectMode = "link",
     background = THEME.bgCanvas || 0xffffff,
-    clickAudioDataURL = null
+    clickAudioDataURL = null,
+    IA_Widgets = false, // ✅ opt-in
   } = opts;
 
   // 1) Core viewer
   const core = createViewer({ container, background });
 
-  // 2) Asset DB + loadMeshCb with onMeshTag hook to index meshes by assetKey
+  // 2) Asset DB + hook assetKey -> meshes
   const assetDB = buildAssetDB(meshDB);
-  const assetToMeshes = new Map(); // assetKey -> Mesh[]
+  const assetToMeshes = new Map();
+
   const loadMeshCb = createLoadMeshCb(assetDB, {
     onMeshTag(obj, assetKey) {
-      // Collect every mesh produced under this assetKey
       const list = assetToMeshes.get(assetKey) || [];
       obj.traverse((o) => {
-        if (o && o.isMesh && o.geometry) list.push(o);
+        if (o && o.isMesh && o.geometry) {
+          list.push(o);
+          o.userData = o.userData || {};
+          if (!o.userData.__assetKey) o.userData.__assetKey = assetKey;
+        }
       });
-      assetToMeshes.set(assetKey, list);
-    }
+      if (list.length) assetToMeshes.set(assetKey, list);
+    },
   });
-  
 
-  // 3) Load URDF (this triggers tagging via `onMeshTag`)
+  // 3) Cargar URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // 4) Build an offscreen renderer for thumbnails (after robot exists)
-  const off = buildOffscreenForThumbnails(core, assetToMeshes);
+  // Fallback: reconstruir assetToMeshes desde userData si está vacío
+  if (robot && !assetToMeshes.size) {
+    rebuildAssetMapFromRobot(robot, assetToMeshes);
+  }
 
-  // 5) Interaction (hover, select, drag joints, key 'i')
+  // 4) Thumbnails Iso View basados en el robot REAL (no antes de tiempo)
+  const thumbs = buildIsoThumbnailSystem(core, robot, assetToMeshes);
+
+  // 5) Interacción
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
     renderer: core.renderer,
     controls: core.controls,
     robot,
-    selectMode
+    selectMode,
   });
 
-  // 6) Facade “app” that is passed to UI components
+  // 6) Facade app
   const app = {
-    // Expose core bits
     ...core,
     robot,
+    IA_Widgets,
 
-    // --- Assets adapter for ComponentsPanel ---
     assets: {
       list: () => listAssets(assetToMeshes),
-      thumbnail: (assetKey) => off?.thumbnail(assetKey)
+      thumbnail: (assetKey) => thumbs.thumbnail(assetKey),
     },
 
-    // --- Isolate / restore ---
     isolate: {
       asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey),
-      clear: () => showAll(core)
+      clear: () => showAll(core),
     },
 
-    // --- Show all ---
     showAll: () => showAll(core),
 
-    // Optional: open tools externally
-    openTools(open = true) { tools.set(!!open); }
+    openTools(open = true) {
+      tools.set(!!open);
+    },
+
+    componentDescriptions: {},
+
+    getComponentDescription(assetKey, index) {
+      const src = app.componentDescriptions;
+      if (!src) return "";
+
+      if (!Array.isArray(src) && typeof src === "object") {
+        if (src[assetKey]) return src[assetKey];
+        const base = (assetKey || "").split("/").pop().split(".")[0];
+        if (src[base]) return src[base];
+      }
+
+      if (Array.isArray(src) && typeof index === "number") {
+        return src[index] || "";
+      }
+
+      return "";
+    },
   };
 
-  // 7) UI modules
+  // 7) UI
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // Optional click SFX for UI (kept minimal; UI modules do not depend on it)
+  // 8) Sonido opcional
   if (clickAudioDataURL) {
-    try { installClickSound(clickAudioDataURL); } catch (_) {}
+    try {
+      installClickSound(clickAudioDataURL);
+    } catch (_) {}
   }
 
-  // Public destroy
+  // 9) IA opcional
+  if (IA_Widgets) {
+    bootstrapComponentDescriptions(app, assetToMeshes, thumbs);
+  }
+
+  // 10) Destroy
   const destroy = () => {
     try { comps.destroy(); } catch (_) {}
     try { tools.destroy(); } catch (_) {}
     try { inter.destroy(); } catch (_) {}
-    try { off?.destroy?.(); } catch (_) {}
+    try { thumbs.destroy(); } catch (_) {}
     try { core.destroy(); } catch (_) {}
   };
 
   return { ...app, destroy };
 }
 
-/* ---------------------------- Helpers ---------------------------- */
+/* ====================================================================== */
+/* Helpers: asset map, lista, aislamiento, frame                          */
+/* ====================================================================== */
 
-function listAssets(assetToMeshes) {
-  // Returns: [{ assetKey, base, ext, count }]
-  const items = [];
-  assetToMeshes.forEach((meshes, assetKey) => {
-    if (!meshes || meshes.length === 0) return;
-    const { base, ext } = splitName(assetKey);
-    items.push({ assetKey, base, ext, count: meshes.length });
+function rebuildAssetMapFromRobot(robot, assetToMeshes) {
+  const tmp = new Map();
+  robot.traverse((o) => {
+    if (o && o.isMesh && o.geometry) {
+      const k =
+        (o.userData &&
+          (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) ||
+        null;
+      if (!k) return;
+      const arr = tmp.get(k) || [];
+      arr.push(o);
+      tmp.set(k, arr);
+    }
   });
-  // Sort by base name, naturally
-  items.sort((a, b) => a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }));
-  return items;
+  tmp.forEach((arr, k) => {
+    if (arr && arr.length) assetToMeshes.set(k, arr);
+  });
 }
 
-function splitName(key) {
-  const clean = String(key || '').split('?')[0].split('#')[0];
-  const base = clean.split('/').pop();
-  const dot = base.lastIndexOf('.');
-  return {
-    base: dot >= 0 ? base.slice(0, dot) : base,
-    ext: dot >= 0 ? base.slice(dot + 1).toLowerCase() : ''
-  };
+function listAssets(assetToMeshes) {
+  const out = [];
+  assetToMeshes.forEach((meshes, assetKey) => {
+    if (!meshes || !meshes.length) return;
+    const clean = String(assetKey || "").split("?")[0].split("#")[0];
+    const baseFull = clean.split("/").pop();
+    const dot = baseFull.lastIndexOf(".");
+    const base = dot >= 0 ? baseFull.slice(0, dot) : baseFull;
+    const ext = dot >= 0 ? baseFull.slice(dot + 1).toLowerCase() : "";
+    out.push({ assetKey, base, ext, count: meshes.length });
+  });
+  out.sort((a, b) =>
+    a.base.localeCompare(b.base, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    })
+  );
+  return out;
 }
 
 function isolateAsset(core, assetToMeshes, assetKey) {
   const meshes = assetToMeshes.get(assetKey) || [];
-  // Hide everything
-  if (core.robot) {
-    core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = false; });
-  }
-  // Show only these meshes
-  meshes.forEach(m => { m.visible = true; });
-
-  // Frame selection
+  if (!core.robot) return;
+  core.robot.traverse((o) => {
+    if (o.isMesh && o.geometry) o.visible = false;
+  });
+  meshes.forEach((m) => (m.visible = true));
   frameMeshes(core, meshes);
 }
 
 function showAll(core) {
-  if (core.robot) {
-    core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = true; });
-    core.fitAndCenter(core.robot, 1.06);
-  }
+  if (!core.robot) return;
+  core.robot.traverse((o) => {
+    if (o.isMesh && o.geometry) o.visible = true;
+  });
+  if (core.fitAndCenter) core.fitAndCenter(core.robot, 1.06);
 }
 
 function frameMeshes(core, meshes) {
-  if (!meshes || meshes.length === 0) return;
+  if (!meshes || !meshes.length || !core.camera) return;
+  const { camera, renderer, scene } = core;
+
   const box = new THREE.Box3();
   const tmp = new THREE.Box3();
   let has = false;
-  meshes.forEach(m => {
-    if (!m) return;
-    tmp.setFromObject(m);
-    if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
-  });
-  if (!has) return;
-  const center = box.getCenter(new THREE.Vector3());
-  const size   = box.getSize(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z) || 1;
 
-  const cam = core.camera, ctrl = core.controls;
-  if (cam.isPerspectiveCamera) {
-    const fov = (cam.fov || 60) * Math.PI / 180;
-    const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
-    cam.near = Math.max(maxDim / 1000, 0.001);
-    cam.far = Math.max(maxDim * 1500, 1500);
-    cam.updateProjectionMatrix();
-    const dir = new THREE.Vector3(1, 0.7, 1).normalize();
-    cam.position.copy(center.clone().add(dir.multiplyScalar(dist)));
-  } else {
-    cam.left = -maxDim; cam.right = maxDim; cam.top = maxDim; cam.bottom = -maxDim;
-    cam.near = Math.max(maxDim / 1000, 0.001); cam.far = Math.max(maxDim * 1500, 1500);
-    cam.updateProjectionMatrix();
-    cam.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
+  for (const m of meshes) {
+    tmp.setFromObject(m);
+    if (!has) {
+      box.copy(tmp);
+      has = true;
+    } else {
+      box.union(tmp);
+    }
   }
-  ctrl.target.copy(center);
-  ctrl.update();
+  if (!has) return;
+
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const dist = maxDim * 2.0;
+
+  camera.near = Math.max(maxDim / 1000, 0.001);
+  camera.far = Math.max(maxDim * 1000, 1000);
+  camera.updateProjectionMatrix();
+
+  // Iso view
+  const az = Math.PI * 0.25; // 45°
+  const el = Math.PI * 0.3;  // ~30°
+  const dirV = new THREE.Vector3(
+    Math.cos(el) * Math.cos(az),
+    Math.sin(el),
+    Math.cos(el) * Math.sin(az)
+  ).multiplyScalar(dist);
+
+  camera.position.copy(center.clone().add(dirV));
+  camera.lookAt(center);
+
+  renderer.render(scene, camera);
 }
 
-/* --------------------- Offscreen thumbnails --------------------- */
+/* ====================================================================== */
+/* Thumbnails: Iso View preciso por assetKey                              */
+/* ====================================================================== */
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// --- Offscreen thumbnails with lighting-safe wait + renderer parity ---
-function buildOffscreenForThumbnails(core, assetToMeshes) {
-  if (!core.robot) return null;
-
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-  // Offscreen renderer & scene
-  const OFF_W = 640, OFF_H = 480;
-  const canvas = document.createElement('canvas');
-  canvas.width = OFF_W; canvas.height = OFF_H;
-
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(OFF_W, OFF_H, false);
-
-  // Match main renderer for identical colors/textures
-  if (core?.renderer) {
-    renderer.physicallyCorrectLights = core.renderer.physicallyCorrectLights ?? true;
-    renderer.toneMapping = core.renderer.toneMapping;
-    renderer.toneMappingExposure = core.renderer.toneMappingExposure ?? 1.0;
-    if ('outputColorSpace' in renderer) {
-      renderer.outputColorSpace = core.renderer.outputColorSpace ?? THREE.SRGBColorSpace;
-    } else {
-      renderer.outputEncoding = core.renderer.outputEncoding ?? THREE.sRGBEncoding;
-    }
-    renderer.shadowMap.enabled = core.renderer.shadowMap?.enabled ?? false;
-    renderer.shadowMap.type = core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
+function buildIsoThumbnailSystem(core, robot, assetToMeshes) {
+  if (!robot || typeof THREE === "undefined") {
+    return {
+      async thumbnail() { return null; },
+      destroy() {},
+    };
   }
 
-  const scene = new THREE.Scene();
-  // Use the same bg/env if available to preserve appearance
-  scene.background = core?.scene?.background ?? new THREE.Color(0xffffff);
-  scene.environment = core?.scene?.environment ?? null;
+  const WIDTH = 420;
+  const HEIGHT = 320;
 
-  // Soft key + fill so assets aren’t flat even without env
-  const amb = new THREE.AmbientLight(0xffffff, 0.95);
-  const dir = new THREE.DirectionalLight(0xffffff, 1.1); dir.position.set(2.5, 2.5, 2.5);
-  scene.add(amb, dir);
+  const canvas = document.createElement("canvas");
+  canvas.width = WIDTH;
+  canvas.height = HEIGHT;
 
-  const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
-
-  // Clone the whole robot to isolate assets per snapshot
-  const robotClone = core.robot.clone(true);
-  scene.add(robotClone);
-
-  // Ensure materials recompile under offscreen renderer
-  robotClone.traverse(o => {
-    if (o.isMesh && o.material) {
-      if (Array.isArray(o.material)) o.material = o.material.map(m => m.clone());
-      else o.material = o.material.clone();
-      o.material.needsUpdate = true;
-      o.castShadow = renderer.shadowMap.enabled;
-      o.receiveShadow = renderer.shadowMap.enabled;
-    }
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    preserveDrawingBuffer: true,
   });
+  renderer.setSize(WIDTH, HEIGHT, false);
 
-  // Map assetKey → meshes[] in the clone (using __assetKey tags)
-  const cloneAssetToMeshes = new Map();
-  robotClone.traverse(o => {
-    const k = o?.userData?.__assetKey;
-    if (k && o.isMesh && o.geometry) {
-      const arr = cloneAssetToMeshes.get(k) || [];
-      arr.push(o); cloneAssetToMeshes.set(k, arr);
+  // Heredar configuración del renderer principal
+  if (core.renderer) {
+    renderer.toneMapping = core.renderer.toneMapping;
+    renderer.toneMappingExposure = core.renderer.toneMappingExposure;
+    renderer.physicallyCorrectLights =
+      core.renderer.physicallyCorrectLights ?? true;
+
+    if ("outputColorSpace" in renderer && "outputColorSpace" in core.renderer) {
+      renderer.outputColorSpace = core.renderer.outputColorSpace;
+    } else if ("outputEncoding" in renderer && "outputEncoding" in core.renderer) {
+      renderer.outputEncoding = core.renderer.outputEncoding;
     }
-  });
 
-  // Waiter: give lighting/materials time to settle (1s + 2 RAF frames)
-  const ready = (async () => {
-    await sleep(1000); // <-- main guard against “black” first frame
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-    // prime one render so shaders/IBL compile before first snapshot
-    renderer.render(scene, camera);
-  })();
+    renderer.shadowMap.enabled = core.renderer.shadowMap?.enabled ?? false;
+    renderer.shadowMap.type =
+      core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
+  }
 
-  function snapshotAsset(assetKey) {
-    const meshes = cloneAssetToMeshes.get(assetKey) || [];
-    if (!meshes.length) return null;
+  const cache = new Map();
 
-    // Toggle visibility: only keep target asset
-    const vis = [];
-    robotClone.traverse(o => { if (o.isMesh && o.geometry) vis.push([o, o.visible]); });
-    for (const [m] of vis) m.visible = false;
-    for (const m of meshes) m.visible = true;
+  async function captureIso(assetKey) {
+    if (!assetKey) return null;
 
-    // Fit camera to these meshes
-    const box = new THREE.Box3();
-    const tmp = new THREE.Box3();
-    let has = false;
-    for (const m of meshes) {
-      tmp.setFromObject(m);
-      if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
+    const keyNorm = String(assetKey);
+
+    // Nueva escena limpia por thumbnail
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+    scene.environment = core.scene ? core.scene.environment : null;
+
+    // Luces suaves
+    const amb = new THREE.AmbientLight(0xffffff, 0.9);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.3);
+    dir.position.set(3, 4, 5);
+    scene.add(amb, dir);
+
+    const group = new THREE.Group();
+    scene.add(group);
+
+    let any = false;
+
+    // 1) Clonar desde el robot REAL todas las instancias con ese assetKey
+    robot.traverse((o) => {
+      if (!o.isMesh || !o.geometry) return;
+
+      const k =
+        (o.userData &&
+          (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) ||
+        null;
+
+      if (k === keyNorm) {
+        const clone = o.clone();
+        if (Array.isArray(o.material)) {
+          clone.material = o.material.map((m) => m.clone());
+        } else if (o.material) {
+          clone.material = o.material.clone();
+        }
+        clone.visible = true;
+        group.add(clone);
+        any = true;
+      }
+    });
+
+    // 2) Fallback: si no encontró por userData, usar assetToMeshes
+    if (!any && assetToMeshes && assetToMeshes.size) {
+      const arr = assetToMeshes.get(assetKey) || [];
+      arr.forEach((m) => {
+        if (!m || !m.isMesh || !m.geometry) return;
+        const clone = m.clone();
+        if (Array.isArray(m.material)) {
+          clone.material = m.material.map((mt) => mt.clone());
+        } else if (m.material) {
+          clone.material = m.material.clone();
+        }
+        clone.visible = true;
+        group.add(clone);
+        any = true;
+      });
     }
-    if (!has) { vis.forEach(([o, v]) => o.visible = v); return null; }
 
+    if (!any) return null;
+
+    // 3) Bounding box del grupo
+    const box = new THREE.Box3().setFromObject(group);
     const center = box.getCenter(new THREE.Vector3());
-    const size   = box.getSize(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist   = maxDim * 2.0;
+    const dist = maxDim * 2.2;
 
-    camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far  = Math.max(maxDim * 1000, 1000);
-    camera.updateProjectionMatrix();
+    // 4) Cámara en Iso View fija
+    const camera = new THREE.PerspectiveCamera(
+      55,
+      WIDTH / HEIGHT,
+      Math.max(maxDim / 1000, 0.001),
+      Math.max(maxDim * 1000, 5000)
+    );
 
-    const az = Math.PI * 0.25, el = Math.PI * 0.18;
+    const az = Math.PI * 0.25; // 45°
+    const el = Math.PI * 0.30; // ~30°
     const dirV = new THREE.Vector3(
       Math.cos(el) * Math.cos(az),
       Math.sin(el),
       Math.cos(el) * Math.sin(az)
     ).multiplyScalar(dist);
+
     camera.position.copy(center.clone().add(dirV));
     camera.lookAt(center);
+    camera.updateProjectionMatrix();
 
+    renderer.setSize(WIDTH, HEIGHT, false);
     renderer.render(scene, camera);
-    const url = renderer.domElement.toDataURL('image/png');
 
-    // Restore visibility
-    for (const [o, v] of vis) o.visible = v;
-
-    return url;
+    return canvas.toDataURL("image/png");
   }
 
   return {
-    thumbnail: async (assetKey) => {
-      try {
-        await ready;                // ensure lights/env/materials are ready
-        await sleep(150);           // tiny per-shot cushion (helps heavy textures)
-        return snapshotAsset(assetKey);
-      } catch (_) { return null; }
+    async thumbnail(assetKey) {
+      if (cache.has(assetKey)) return cache.get(assetKey);
+      const url = await captureIso(assetKey);
+      cache.set(assetKey, url);
+      return url;
     },
-    destroy: () => {
+    destroy() {
       try { renderer.dispose(); } catch (_) {}
-      try { scene.clear(); } catch (_) {}
-    }
+      cache.clear();
+    },
   };
 }
 
+/* ====================================================================== */
+/* IA (optativa) usando thumbnails (~5KB)                                 */
+/* ====================================================================== */
 
+function bootstrapComponentDescriptions(app, assetToMeshes, thumbs) {
+  if (!app || app.IA_Widgets !== true) {
+    console.debug("[Components] IA_Widgets desactivado; no se piden descripciones.");
+    return;
+  }
 
+  const hasColab =
+    typeof window !== "undefined" &&
+    window.google &&
+    window.google.colab &&
+    window.google.colab.kernel &&
+    typeof window.google.colab.kernel.invokeFunction === "function";
 
+  if (!hasColab) {
+    console.debug("[Components] Colab bridge no disponible; sin IA.");
+    return;
+  }
 
+  const items = listAssets(assetToMeshes);
+  if (!items.length) {
+    console.debug("[Components] No hay assets para describir.");
+    return;
+  }
 
+  (async () => {
+    const entries = [];
 
-
-
-
-
-
-/* ------------------------- Click Sound ------------------------- */
-
-function installClickSound(dataURL) {
-  if (!dataURL || typeof dataURL !== 'string') return;
-  let ctx = null, buf = null;
-  async function ensure() {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (!buf) {
-      const resp = await fetch(dataURL);
-      const arr = await resp.arrayBuffer();
-      buf = await ctx.decodeAudioData(arr);
+    for (const ent of items) {
+      try {
+        const full = await thumbs.thumbnail(ent.assetKey);
+        if (!full) continue;
+        const b64 = await makeApproxSizedBase64(full, 5);
+        if (!b64) continue;
+        entries.push({ key: ent.assetKey, image_b64: b64 });
+      } catch (e) {
+        console.warn("[Components] Error thumbnail IA", ent.assetKey, e);
+      }
     }
-  }
-  function play() {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') ctx.resume();
-    if (!buf) { ensure().then(play).catch(() => {}); return; }
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
-    try { src.start(); } catch (_) {}
-  }
-  // Minimal global hook you can call from UI buttons if you want SFX
-  window.__urdf_click__ = play;
+
+    console.debug(
+      `[Components] Enviando ${entries.length} thumbnails (~5KB) a Colab para IA.`
+    );
+    if (!entries.length) return;
+
+    try {
+      const res = await window.google.colab.kernel.invokeFunction(
+        "describe_component_images",
+        [entries],
+        {}
+      );
+      const map = extractDescMap(res);
+      console.debug("[Components] Mapa IA:", map);
+
+      if (map && typeof map === "object") {
+        app.componentDescriptions = map;
+        if (typeof window !== "undefined") {
+          window.COMPONENT_DESCRIPTIONS = map;
+        }
+      } else {
+        console.warn("[Components] Respuesta IA sin mapa utilizable.");
+      }
+    } catch (err) {
+      console.error("[Components] Error invokeFunction:", err);
+    }
+  })();
 }
 
-/* --------------------- Global UMD-style hook -------------------- */
+function extractDescMap(res) {
+  if (!res) return {};
+  const data = res.data || res;
+  if (data["application/json"] && typeof data["application/json"] === "object") {
+    return data["application/json"];
+  }
+  if (Array.isArray(data) && data.length && typeof data[0] === "object") {
+    return data[0];
+  }
+  if (typeof data === "object") return data;
+  return {};
+}
 
-if (typeof window !== 'undefined') {
-  window.URDFViewer = { render };
+async function makeApproxSizedBase64(dataURL, targetKB = 5) {
+  try {
+    const maxBytes = targetKB * 1024;
+    const resp = await fetch(dataURL);
+    const blob = await resp.blob();
+
+    const img = document.createElement("img");
+    const u = URL.createObjectURL(blob);
+    await new Promise((res, rej) => {
+      img.onload = () => res();
+      img.onerror = (e) => rej(e);
+      img.src = u;
+    });
+
+    const ratio = Math.min(1, Math.max(0.05, maxBytes / (blob.size || maxBytes)));
+    const scale = Math.sqrt(ratio);
+    const w = Math.max(32, Math.floor(img.width * scale));
+    const h = Math.max(32, Math.floor(img.height * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    URL.revokeObjectURL(u);
+
+    let best = "";
+    let q = 0.92;
+    for (let i = 0; i < 8; i++) {
+      const qq = Math.max(0.4, Math.min(0.96, q));
+      const out = canvas.toDataURL("image/jpeg", qq);
+      const b64 = out.split(",")[1] || "";
+      if (!b64) break;
+      best = b64;
+      const bytes = Math.floor((b64.length * 3) / 4);
+      if (bytes <= maxBytes) break;
+      q *= 0.7;
+    }
+    return best || null;
+  } catch (e) {
+    console.warn("[makeApproxSizedBase64] Error", e);
+    return null;
+  }
+}
+
+/* ====================================================================== */
+/* Click sound opcional + hook global                                     */
+/* ====================================================================== */
+
+function installClickSound(dataURL) {
+  try {
+    const audio = new Audio(dataURL);
+    const play = () => {
+      try {
+        audio.currentTime = 0;
+        audio.play().catch(() => {});
+      } catch (_) {}
+    };
+    window.__urdf_click__ = play;
+  } catch (_) {}
+}
+
+if (typeof window !== "undefined") {
+  window.URDFViewer = window.URDFViewer || {};
+  window.URDFViewer.render = (opts) => {
+    const app = render(opts);
+    try {
+      window.URDFViewer.__app = app;
+    } catch (_) {}
+    return app;
+  };
 }
