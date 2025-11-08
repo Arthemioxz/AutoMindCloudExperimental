@@ -146,20 +146,14 @@ export function createComponentsPanel(app, theme) {
       : null) || document.body;
   host.appendChild(ui.root);
 
-  // -------- estados internos --------
-
   let open = false;
   let building = false;
   let disposed = false;
   const CLOSED_TX = 520;
 
-  // componente seleccionado actualmente (para refrescar cuando llegue IA)
   let currentEnt = null;
   let currentIndex = null;
 
-  // -------- estilos / interacciones --------
-
-  // Hover botón principal
   ui.btn.addEventListener("mouseenter", () => {
     ui.btn.style.transform = "translateY(-1px) scale(1.02)";
     ui.btn.style.background = theme.tealFaint;
@@ -171,7 +165,6 @@ export function createComponentsPanel(app, theme) {
     ui.btn.style.borderColor = theme.stroke;
   });
 
-  // Hover Show all
   ui.showAllBtn.addEventListener("mouseenter", () => {
     ui.showAllBtn.style.transform = "translateY(-1px) scale(1.02)";
     ui.showAllBtn.style.background = theme.tealFaint;
@@ -214,8 +207,6 @@ export function createComponentsPanel(app, theme) {
     set(!open);
     if (open) maybeBuild();
   });
-
-  // -------- render de lista --------
 
   async function maybeBuild() {
     if (building || disposed) return;
@@ -280,7 +271,6 @@ export function createComponentsPanel(app, theme) {
       row.appendChild(meta);
       ui.list.appendChild(row);
 
-      // Hover fila
       row.addEventListener("mouseenter", () => {
         row.style.transform = "translateY(-1px) scale(1.02)";
         row.style.background = theme.tealFaint;
@@ -292,7 +282,6 @@ export function createComponentsPanel(app, theme) {
         row.style.borderColor = theme.stroke;
       });
 
-      // CLICK: aislar + mostrar descripción
       row.addEventListener("click", () => {
         console.debug("[ComponentsPanel] Click en", ent.assetKey);
         try { app.isolate.asset(ent.assetKey); } catch (_) {}
@@ -302,7 +291,6 @@ export function createComponentsPanel(app, theme) {
         set(true);
       });
 
-      // Thumbnail async
       (async () => {
         try {
           const url = await app.assets.thumbnail?.(ent.assetKey);
@@ -315,12 +303,9 @@ export function createComponentsPanel(app, theme) {
     });
   }
 
-  // -------- detalles / descripción --------
-
   function resolveDescription(ent, index) {
     let text = "";
 
-    // 1) app.getComponentDescription
     try {
       if (typeof app.getComponentDescription === "function") {
         text = app.getComponentDescription(ent.assetKey, index) || "";
@@ -329,7 +314,6 @@ export function createComponentsPanel(app, theme) {
       text = "";
     }
 
-    // 2) Fallback: mapa directo
     if (!text && app.componentDescriptions) {
       const src = app.componentDescriptions;
       if (src[ent.assetKey]) {
@@ -368,7 +352,6 @@ export function createComponentsPanel(app, theme) {
     currentIndex = null;
   }
 
-  // Cuando llega IA, refrescar descripción del seleccionado (si hay)
   function refreshCurrentDetailsFromIA() {
     if (!currentEnt && currentIndex == null) return;
     const txt = resolveDescription(currentEnt, currentIndex);
@@ -380,8 +363,6 @@ export function createComponentsPanel(app, theme) {
       );
     }
   }
-
-  // -------- integración con IA: evento + pequeño poll --------
 
   function onIAReady(ev) {
     console.debug(
@@ -409,11 +390,9 @@ export function createComponentsPanel(app, theme) {
       clearInterval(pollTimer);
     }
     if (pollCount > 20) {
-      clearInterval(pollTimer); // ~10s
+      clearInterval(pollTimer);
     }
   }, 500);
-
-  // -------- API pública del panel --------
 
   async function refresh() {
     if (disposed) return;
@@ -430,7 +409,6 @@ export function createComponentsPanel(app, theme) {
     try { ui.root.remove(); } catch (_) {}
   }
 
-  // Hotkey 'c' para abrir/cerrar
   function onHotkeyC(e) {
     const tag = (e.target && e.target.tagName) || "";
     const t = tag.toLowerCase();
@@ -445,14 +423,11 @@ export function createComponentsPanel(app, theme) {
 
   document.addEventListener("keydown", onHotkeyC, true);
 
-  // Inicial
   set(false);
   maybeBuild();
 
   return { open: openPanel, close: closePanel, set, refresh, destroy };
 }
-
-/* ----- Helpers ----- */
 
 function applyStyles(el, styles) {
   Object.assign(el.style, styles);
