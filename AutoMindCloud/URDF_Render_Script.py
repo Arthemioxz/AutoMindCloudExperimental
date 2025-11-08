@@ -1,10 +1,13 @@
 # ==========================================================
 # URDF_Render_Script.py
-# - Descarga URDF desde Google Drive
-# - Renderiza viewer con urdf_viewer_main.js
-# - IA_Widgets:
-#     True  -> Thumbnails + IA + descripciones
-#     False -> Solo thumbnails en el UI, sin IA (costo 0)
+# - Descarga URDF desde Google Drive (opcional)
+# - Construye meshDB
+# - Renderiza viewer via urdf_viewer_main.js
+# - Integra IA opcional usando IA_Widgets:
+#     IA_Widgets = False -> NO llamadas IA, solo thumbnails UI
+#     IA_Widgets = True  -> Usa thumbnails existentes, llama IA,
+#                          llena app.componentDescriptions y dispara
+#                          ia_descriptions_ready (para ComponentsPanel.js)
 # ==========================================================
 
 import os
@@ -39,7 +42,9 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
         resp = requests.get(gdrive_url, stream=True)
         if resp.status_code != 200:
-            raise RuntimeError(f"Error HTTP {resp.status_code} al descargar (Drive).")
+            raise RuntimeError(
+                f"Error HTTP {resp.status_code} al descargar (Drive)."
+            )
 
         zip_path = f"/content/{Output_Name}.zip"
         with open(zip_path, "wb") as f:
@@ -54,6 +59,7 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
         print(f"[Download] Extraído en: {extract_path}")
         return extract_path
+
     except Exception as e:
         print("[Download] Error al descargar:", e)
         raise
@@ -72,8 +78,9 @@ def _find_urdf_file(folder_path: str) -> str:
 
 def _build_mesh_db(folder_path: str):
     """
-    Construye un meshDB sencillo:
+    Construye un meshDB básico:
       { "rel/path/to/mesh.ext": "rel/path/to/mesh.ext" }
+    El sistema antiguo/AssetDB se encarga del resto (thumbs, etc).
     """
     mesh_db = {}
     for root, _, files in os.walk(folder_path):
@@ -109,9 +116,9 @@ def _register_describe_callback(api_base: str):
                 "prompt": (
                     "Eres un sistema experto en robótica. Para cada imagen de componente, "
                     "devuelve una descripción corta, directa y técnica. "
-                    "No comiences con 'La imagen muestra', 'La pieza', "
-                    "ni 'Este componente'. Solo la descripción concisa. "
-                    "Formato: {\"descriptions\": {\"assetKey\": \"texto\"}}."
+                    "No comiences con 'La imagen muestra', 'La pieza' ni 'Este componente'. "
+                    "Solo la descripción. "
+                    "Formato JSON exacto: {\"descriptions\": {\"assetKey\": \"texto\"}}."
                 ),
                 "entries": entries,
             }
@@ -181,8 +188,8 @@ def URDF_Render(
 ):
     """
     IA_Widgets:
-      True  -> thumbnails + IA + descripciones en UI
-      False -> thumbnails en UI, sin llamadas IA
+      True  -> Usa thumbnails existentes + IA → app.componentDescriptions + evento ia_descriptions_ready
+      False -> NO IA, solo thumbnails locales en ComponentsPanel (costo 0)
     """
     if not os.path.isdir(folder_path):
         raise NotADirectoryError(folder_path)
@@ -196,10 +203,10 @@ def URDF_Render(
     if IA_Widgets:
         _register_describe_callback(api_base)
 
-    enable_ia = "true" if IA_Widgets else "false"
+    enable_ia_js = "true" if IA_Widgets else "false"
 
     js = f"""
-<div id="urdf-viewer" style="width:100%; height:600px; position:relative; border-radius:8px; overflow:hidden; background:#111111;"></div>
+<div id="urdf-viewer" style="width:100%; height:600px; position:relative; border-radius:12px; overflow:hidden; background:#111111;"></div>
 
 <script type="module">
   import {{ render }} from "https://cdn.jsdelivr.net/gh/{repo}@{branch}/{compFile}";
@@ -211,28 +218,95 @@ def URDF_Render(
     urdfContent: {json.dumps(urdf_xml)},
     meshDB: {json.dumps(mesh_db)},
     selectMode: {json.dumps(select_mode)},
-    background: {hex(background)},
-    enableIA: {enable_ia}
+    background: {hex(background)}
   }});
 
-  // Siempre generamos thumbnails para el UI (no cuestan tokens).
-  (async () => {{
-    try {{
-      if (!app || !app.captureComponentThumbnails || !app.setComponentThumbnails) {{
-        console.error("[Thumbs] API de thumbnails no disponible en app.");
-        return;
-      }}
+  if (!app) {{
+    console.error("[URDF_Render] 'render' no devolvió app.");
+  }} else {{
+    console.log("[URDF_Render] Viewer inicializado. IA_Widgets = {enable_ia_js}");
 
-      const thumbs = await app.captureComponentThumbnails();
-      console.log("[Thumbs] Capturados:", thumbs?.length);
-      app.setComponentThumbnails(thumbs);
+    // IA desactivada: no hacemos nada extra, ComponentsPanel usa app.assets.thumbnail.
+    if (!({enable_ia_js})) {{
+      console.log("[URDF_Render] IA_Widgets = false → sin llamadas IA. Solo thumbnails locales.");
+      return;
+    }}
 
-      if ({enable_ia}) {{
-        // Solo si IA_Widgets=True mandamos a la IA
-        const entries = thumbs.map(t => ({{
-          assetKey: t.assetKey,
-          image_b64: t.image_b64
-        }}));
+    // IA activada: usar thumbnails existentes para mandar a Colab.
+    (async () => {{
+      try {{
+        if (!app.assets || typeof app.assets.list !== "function" || typeof app.assets.thumbnail !== "function") {{
+          console.error("[IA] app.assets.list/thumbnail no disponibles. No se puede hacer pipeline IA.");
+          return;
+        }}
+
+        let items = await app.assets.list();
+        if (!Array.isArray(items)) {{
+          console.warn("[IA] app.assets.list() no devolvió array:", items);
+          items = [];
+        }}
+
+        if (!items.length) {{
+          console.warn("[IA] Sin items en app.assets.list(). Nada que describir.");
+          return;
+        }}
+
+        async function urlToBase64(url) {{
+          if (!url) return null;
+          if (url.startsWith("data:image")) {{
+            return url.replace(/^data:image\\/[^;]+;base64,/, "");
+          }}
+          const resp = await fetch(url);
+          const blob = await resp.blob();
+          return await new Promise((resolve, reject) => {{
+            const reader = new FileReader();
+            reader.onloadend = () => {{
+              const res = reader.result || "";
+              const b64 = String(res).replace(/^data:image\\/[^;]+;base64,/, "");
+              resolve(b64);
+            }};
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          }});
+        }}
+
+        const entries = [];
+        for (const ent of items) {{
+          const assetKey =
+            ent.assetKey ||
+            ent.key ||
+            ent.path ||
+            (ent.base
+              ? (ent.ext ? ent.base + "." + ent.ext : ent.base)
+              : null);
+
+          if (!assetKey) continue;
+
+          let thumbUrl = null;
+          try {{
+            thumbUrl = await app.assets.thumbnail(assetKey);
+          }} catch (err) {{
+            console.warn("[IA] Error obteniendo thumbnail para", assetKey, err);
+          }}
+          if (!thumbUrl) continue;
+
+          let image_b64 = null;
+          try {{
+            image_b64 = await urlToBase64(thumbUrl);
+          }} catch (err) {{
+            console.warn("[IA] Error convirtiendo thumbnail a base64 para", assetKey, err);
+          }}
+          if (!image_b64) continue;
+
+          entries.push({{ assetKey, image_b64 }});
+        }}
+
+        console.log("[IA] Entradas preparadas para IA:", entries.length);
+
+        if (!entries.length) {{
+          console.warn("[IA] No se generaron entries válidas. Abort IA.");
+          return;
+        }}
 
         const resp = await google.colab.kernel.invokeFunction(
           "describe_component_images",
@@ -243,20 +317,53 @@ def URDF_Render(
         console.log("[IA] Respuesta cruda Colab:", resp);
 
         const mapping = (resp && resp.data && resp.data[0]) ? resp.data[0] : {{}};
-        console.log("[IA] Mapeo procesado:", mapping);
-
-        if (mapping && Object.keys(mapping).length) {{
-          app.setComponentDescriptions(mapping);
-        }} else {{
-          console.warn("[IA] Sin descripciones utilizables desde callback.");
+        if (!mapping || typeof mapping !== "object" || !Object.keys(mapping).length) {{
+          console.warn("[IA] Mapping vacío o inválido:", mapping);
+          return;
         }}
-      }} else {{
-        console.log("[IA] IA_Widgets=False → No se llama a la IA (solo thumbnails locales).");
+
+        // Inyectar en app para que ComponentsPanel.js lo use
+        app.componentDescriptions = app.componentDescriptions || {{}};
+
+        for (const [k, v] of Object.entries(mapping)) {{
+          if (typeof v === "string" && v.trim()) {{
+            app.componentDescriptions[String(k)] = v.trim();
+          }}
+        }}
+
+        if (typeof app.getComponentDescription !== "function") {{
+          app.getComponentDescription = (assetKey, index) => {{
+            const direct = app.componentDescriptions[assetKey];
+            if (direct) return direct;
+            const base = String(assetKey || "").split("/").pop().split("?")[0].split("#")[0];
+            const dot = base.lastIndexOf(".");
+            const bare = dot >= 0 ? base.slice(0, dot) : base;
+            return (
+              app.componentDescriptions[base] ||
+              app.componentDescriptions[bare] ||
+              ""
+            );
+          }};
+        }}
+
+        console.log(
+          "[IA] Descripciones aplicadas:",
+          Object.keys(app.componentDescriptions).length
+        );
+
+        // Disparar evento global para tu ComponentsPanel.js original
+        window.dispatchEvent(
+          new CustomEvent("ia_descriptions_ready", {{
+            detail: {{
+              count: Object.keys(app.componentDescriptions).length,
+            }},
+          }})
+        );
+      }} catch (err) {{
+        console.error("[IA] Error en pipeline IA:", err);
       }}
-    }} catch (err) {{
-      console.error("[Bootstrap] Error en pipeline thumbnails/IA:", err);
-    }}
-  }})();
+    }})();
+  }}
 </script>
 """
     return HTML(js)
