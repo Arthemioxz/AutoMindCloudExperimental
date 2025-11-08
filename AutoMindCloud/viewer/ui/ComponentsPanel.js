@@ -1,19 +1,28 @@
-// ComponentsPanel.js
-// Lista de componentes + frame de descripción al hacer click.
-// Integra IA:
-//  - Usa app.getComponentDescription(assetKey, index) / app.componentDescriptions.
-//  - Actualiza descripción al hacer click.
-//  - Si la IA llega después, refresca automáticamente el detalle actual
-//    al recibir el evento 'ia_descriptions_ready'.
+// /viewer/ui/ComponentsPanel.js
+// Panel lateral de componentes + detalle con descripción IA.
 
 export function createComponentsPanel(app, theme) {
-  if (!app || !app.assets || !app.isolate || !app.showAll) {
+  if (
+    !app ||
+    !app.getComponents ||
+    !app.isolate ||
+    !app.showAll ||
+    !app.getDescription ||
+    !app.on
+  ) {
     throw new Error("[ComponentsPanel] Missing required app APIs");
   }
 
+  const host =
+    (app.core && app.core.container) ||
+    document.getElementById("urdf-viewer") ||
+    document.body;
+
+  host.style.position = host.style.position || "relative";
+
   const ui = {
     root: document.createElement("div"),
-    btn: document.createElement("button"),
+    toggleBtn: document.createElement("button"),
     panel: document.createElement("div"),
     header: document.createElement("div"),
     title: document.createElement("div"),
@@ -24,504 +33,187 @@ export function createComponentsPanel(app, theme) {
     list: document.createElement("div"),
   };
 
-  const css = {
-    root: {
-      position: "absolute",
-      left: "0",
-      top: "0",
-      width: "100%",
-      height: "100%",
-      pointerEvents: "none",
-      zIndex: "9999",
-      fontFamily:
-        "Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-    },
-    btn: {
-      position: "absolute",
-      left: "14px",
-      bottom: "14px",
-      padding: "8px 12px",
-      borderRadius: "12px",
-      border: `1px solid ${theme.stroke}`,
-      background: theme.bgPanel,
-      color: theme.text,
-      fontWeight: "700",
-      cursor: "pointer",
-      boxShadow: theme.shadow,
-      pointerEvents: "auto",
-      transition: "all .12s ease",
-    },
-    panel: {
-      position: "absolute",
-      right: "14px",
-      bottom: "14px",
-      width: "440px",
-      maxHeight: "72%",
-      background: theme.bgPanel,
-      border: `1px solid ${theme.stroke}`,
-      boxShadow: theme.shadow,
-      borderRadius: "18px",
-      overflow: "hidden",
-      display: "block",
-      pointerEvents: "auto",
-      willChange: "transform, opacity",
-      transition:
-        "transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease",
-      transform: "translateX(520px)",
-      opacity: "0",
-    },
-    header: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: "8px",
-      padding: "10px 12px",
-      borderBottom: `1px solid ${theme.stroke}`,
-      background: theme.tealFaint,
-    },
-    title: { fontWeight: "800", color: theme.text, fontSize: "14px" },
-    showAllBtn: {
-      padding: "6px 10px",
-      borderRadius: "10px",
-      border: `1px solid ${theme.stroke}`,
-      background: theme.bgPanel,
-      fontWeight: "700",
-      cursor: "pointer",
-      fontSize: "11px",
-      transition: "all .12s ease",
-    },
-    details: {
-      display: "none",
-      padding: "10px 12px",
-      borderBottom: `1px solid ${theme.stroke}`,
-      background: "#ffffff",
-    },
-    detailsTitle: {
-      fontWeight: "800",
-      fontSize: "13px",
-      marginBottom: "4px",
-      color: theme.text,
-    },
-    detailsBody: {
-      fontSize: "12px",
-      lineHeight: "1.5",
-      color: theme.textMuted,
-      whiteSpace: "pre-wrap",
-    },
-    list: {
-      overflowY: "auto",
-      maxHeight: "calc(72vh - 52px)",
-      padding: "10px",
-    },
+  // ===== Root =====
+  ui.root.style.position = "absolute";
+  ui.root.style.left = "0";
+  ui.root.style.top = "0";
+  ui.root.style.height = "100%";
+  ui.root.style.pointerEvents = "none";
+  ui.root.style.zIndex = "30";
+
+  // ===== Toggle Button =====
+  ui.toggleBtn.textContent = "Components";
+  ui.toggleBtn.style.position = "absolute";
+  ui.toggleBtn.style.left = "10px";
+  ui.toggleBtn.style.top = "10px";
+  ui.toggleBtn.style.padding = "6px 10px";
+  ui.toggleBtn.style.fontSize = "11px";
+  ui.toggleBtn.style.borderRadius = "6px";
+  ui.toggleBtn.style.border = "none";
+  ui.toggleBtn.style.cursor = "pointer";
+  ui.toggleBtn.style.pointerEvents = "auto";
+  ui.toggleBtn.style.background =
+    (theme && theme.panelBg) || "rgba(10,10,10,0.9)";
+  ui.toggleBtn.style.color = (theme && theme.textSoft) || "#eee";
+
+  let panelVisible = true;
+  ui.toggleBtn.onclick = () => {
+    panelVisible = !panelVisible;
+    ui.panel.style.display = panelVisible ? "flex" : "none";
   };
 
-  applyStyles(ui.root, css.root);
-  applyStyles(ui.btn, css.btn);
-  applyStyles(ui.panel, css.panel);
-  applyStyles(ui.header, css.header);
-  applyStyles(ui.title, css.title);
-  applyStyles(ui.showAllBtn, css.showAllBtn);
-  applyStyles(ui.details, css.details);
-  applyStyles(ui.detailsTitle, css.detailsTitle);
-  applyStyles(ui.detailsBody, css.detailsBody);
-  applyStyles(ui.list, css.list);
+  // ===== Panel =====
+  ui.panel.style.position = "absolute";
+  ui.panel.style.left = "10px";
+  ui.panel.style.top = "40px";
+  ui.panel.style.bottom = "10px";
+  ui.panel.style.width = "260px";
+  ui.panel.style.display = "flex";
+  ui.panel.style.flexDirection = "column";
+  ui.panel.style.gap = "6px";
+  ui.panel.style.padding = "8px";
+  ui.panel.style.borderRadius = "10px";
+  ui.panel.style.background =
+    (theme && theme.panelBg) || "rgba(8,8,8,0.96)";
+  ui.panel.style.backdropFilter = "blur(6px)";
+  ui.panel.style.boxShadow = "0 8px 18px rgba(0,0,0,0.5)";
+  ui.panel.style.pointerEvents = "auto";
+  ui.panel.style.overflow = "hidden";
 
-  ui.btn.textContent = "Components";
-  ui.title.textContent = "Components";
+  // ===== Header =====
+  ui.header.style.display = "flex";
+  ui.header.style.alignItems = "center";
+  ui.header.style.justifyContent = "space-between";
+  ui.header.style.gap = "6px";
+
+  ui.title.textContent = "Componentes";
+  ui.title.style.fontSize = "12px";
+  ui.title.style.fontWeight = "600";
+  ui.title.style.color = (theme && theme.textStrong) || "#ffffff";
+
   ui.showAllBtn.textContent = "Show all";
+  ui.showAllBtn.style.fontSize = "10px";
+  ui.showAllBtn.style.padding = "4px 8px";
+  ui.showAllBtn.style.border = "none";
+  ui.showAllBtn.style.borderRadius = "6px";
+  ui.showAllBtn.style.cursor = "pointer";
+  ui.showAllBtn.style.background =
+    (theme && theme.accentBg) || "#18a0fb";
+  ui.showAllBtn.style.color = "#000";
+  ui.showAllBtn.onclick = () => {
+    app.showAll();
+  };
 
-  ui.header.appendChild(ui.title);
-  ui.header.appendChild(ui.showAllBtn);
-  ui.details.appendChild(ui.detailsTitle);
-  ui.details.appendChild(ui.detailsBody);
-  ui.panel.appendChild(ui.header);
-  ui.panel.appendChild(ui.details);
-  ui.panel.appendChild(ui.list);
-  ui.root.appendChild(ui.panel);
-  ui.root.appendChild(ui.btn);
+  // ===== Detalle =====
+  ui.details.style.flex = "0 0 auto";
+  ui.details.style.padding = "6px";
+  ui.details.style.borderRadius = "6px";
+  ui.details.style.background = "rgba(0,0,0,0.65)";
+  ui.details.style.border = "1px solid rgba(255,255,255,0.06)";
+  ui.details.style.minHeight = "70px";
 
-  const host =
-    (app.renderer && app.renderer.domElement
-      ? app.renderer.domElement.parentElement
-      : null) || document.body;
-  host.appendChild(ui.root);
+  ui.detailsTitle.style.fontSize = "11px";
+  ui.detailsTitle.style.fontWeight = "600";
+  ui.detailsTitle.style.color = (theme && theme.textStrong) || "#ffffff";
+  ui.detailsTitle.dataset.key = "";
 
-  // -------- estados internos --------
+  ui.detailsBody.style.marginTop = "4px";
+  ui.detailsBody.style.fontSize = "10px";
+  ui.detailsBody.style.lineHeight = "1.4";
+  ui.detailsBody.style.color = (theme && theme.textSoft) || "#cccccc";
+  ui.detailsBody.textContent = "Selecciona un componente para ver su descripción.";
 
-  let open = false;
-  let building = false;
-  let disposed = false;
-  const CLOSED_TX = 520;
+  // ===== Lista =====
+  ui.list.style.flex = "1 1 auto";
+  ui.list.style.marginTop = "4px";
+  ui.list.style.overflowY = "auto";
+  ui.list.style.display = "flex";
+  ui.list.style.flexDirection = "column";
+  ui.list.style.gap = "2px";
 
-  // componente seleccionado actualmente (para refrescar cuando llegue IA)
-  let currentEnt = null;
-  let currentIndex = null;
+  function renderList() {
+    const comps = app.getComponents();
+    ui.list.innerHTML = "";
 
-  // -------- estilos / interacciones --------
-
-  // Hover botón principal
-  ui.btn.addEventListener("mouseenter", () => {
-    ui.btn.style.transform = "translateY(-1px) scale(1.02)";
-    ui.btn.style.background = theme.tealFaint;
-    ui.btn.style.borderColor = theme.tealSoft ?? theme.teal;
-  });
-  ui.btn.addEventListener("mouseleave", () => {
-    ui.btn.style.transform = "none";
-    ui.btn.style.background = theme.bgPanel;
-    ui.btn.style.borderColor = theme.stroke;
-  });
-
-  // Hover Show all
-  ui.showAllBtn.addEventListener("mouseenter", () => {
-    ui.showAllBtn.style.transform = "translateY(-1px) scale(1.02)";
-    ui.showAllBtn.style.background = theme.tealFaint;
-    ui.showAllBtn.style.borderColor = theme.tealSoft ?? theme.teal;
-  });
-  ui.showAllBtn.addEventListener("mouseleave", () => {
-    ui.showAllBtn.style.transform = "none";
-    ui.showAllBtn.style.background = theme.bgPanel;
-    ui.showAllBtn.style.borderColor = theme.stroke;
-  });
-
-  ui.showAllBtn.addEventListener("click", () => {
-    try {
-      app.showAll();
-    } catch (_) {}
-    hideDetails();
-  });
-
-  function set(isOpen) {
-    open = !!isOpen;
-    if (open) {
-      ui.panel.style.opacity = "1";
-      ui.panel.style.transform = "translateX(0)";
-      ui.panel.style.pointerEvents = "auto";
-    } else {
-      ui.panel.style.opacity = "0";
-      ui.panel.style.transform = `translateX(${CLOSED_TX}px)`;
-      ui.panel.style.pointerEvents = "none";
-    }
-  }
-
-  function openPanel() {
-    set(true);
-    maybeBuild();
-  }
-
-  function closePanel() {
-    set(false);
-  }
-
-  ui.btn.addEventListener("click", () => {
-    set(!open);
-    if (open) maybeBuild();
-  });
-
-  // -------- render de lista --------
-
-  async function maybeBuild() {
-    if (building || disposed) return;
-    building = true;
-    try {
-      await renderList();
-    } finally {
-      building = false;
-    }
-  }
-
-  async function renderList() {
-    clearElement(ui.list);
-
-    let items = [];
-    try {
-      const res = app.assets.list?.();
-      items = Array.isArray(res) ? res : await res;
-    } catch {
-      items = [];
-    }
-
-    if (!items.length) {
-      const empty = document.createElement("div");
-      empty.textContent = "No components with visual geometry found.";
-      empty.style.color = theme.textMuted;
-      empty.style.fontWeight = "600";
-      empty.style.padding = "8px 2px";
-      ui.list.appendChild(empty);
-      return;
-    }
-
-    items.forEach((ent, index) => {
+    comps.forEach((comp) => {
       const row = document.createElement("div");
-      applyStyles(row, rowStyles(theme));
+      row.textContent = comp.label || comp.key;
+      row.style.padding = "4px 6px";
+      row.style.borderRadius = "4px";
+      row.style.fontSize = "10px";
+      row.style.cursor = "pointer";
+      row.style.color = (theme && theme.textSoft) || "#cccccc";
+      row.style.background = "transparent";
+      row.style.transition = "all 0.15s ease";
 
-      const img = document.createElement("img");
-      applyStyles(img, thumbStyles(theme));
-      img.alt = ent.base;
-      img.loading = "lazy";
-
-      const meta = document.createElement("div");
-
-      const title = document.createElement("div");
-      title.textContent = ent.base;
-      title.style.fontWeight = "700";
-      title.style.fontSize = "14px";
-      title.style.color = theme.text;
-
-      const small = document.createElement("div");
-      small.textContent = `.${ent.ext || "asset"} • ${ent.count} instance${
-        ent.count > 1 ? "s" : ""
-      }`;
-      small.style.color = theme.textMuted;
-      small.style.fontSize = "12px";
-      small.style.marginTop = "2px";
-
-      meta.appendChild(title);
-      meta.appendChild(small);
-
-      row.appendChild(img);
-      row.appendChild(meta);
-      ui.list.appendChild(row);
-
-      // Hover fila
-      row.addEventListener("mouseenter", () => {
-        row.style.transform = "translateY(-1px) scale(1.02)";
-        row.style.background = theme.tealFaint;
-        row.style.borderColor = theme.tealSoft ?? theme.teal;
-      });
-      row.addEventListener("mouseleave", () => {
-        row.style.transform = "none";
-        row.style.background = "#fff";
-        row.style.borderColor = theme.stroke;
-      });
-
-      // CLICK: aislar + mostrar descripción
-      row.addEventListener("click", () => {
-        console.debug("[ComponentsPanel] Click en", ent.assetKey);
-        try {
-          app.isolate.asset(ent.assetKey);
-        } catch (_) {}
-        currentEnt = ent;
-        currentIndex = index;
-        showDetails(ent, index);
-        set(true);
-      });
-
-      // Thumbnail async (UI: sin compresión)
-      (async () => {
-        try {
-          const url = await app.assets.thumbnail?.(ent.assetKey);
-          if (url) img.src = url;
-          else img.replaceWith(makeThumbFallback(ent.base, theme));
-        } catch {
-          img.replaceWith(makeThumbFallback(ent.base, theme));
+      row.onmouseenter = () => {
+        row.style.background = "rgba(24,160,251,0.18)";
+        row.style.color = "#ffffff";
+      };
+      row.onmouseleave = () => {
+        if (ui.detailsTitle.dataset.key === comp.key) {
+          row.style.background = "rgba(24,160,251,0.24)";
+          row.style.color = "#ffffff";
+        } else {
+          row.style.background = "transparent";
+          row.style.color = (theme && theme.textSoft) || "#cccccc";
         }
-      })();
+      };
+
+      row.onclick = () => {
+        // Visual
+        Array.from(ui.list.children).forEach((c) => {
+          c.style.background = "transparent";
+          c.style.color = (theme && theme.textSoft) || "#cccccc";
+        });
+        row.style.background = "rgba(24,160,251,0.24)";
+        row.style.color = "#ffffff";
+
+        // Acción
+        ui.detailsTitle.textContent = comp.label || comp.key;
+        ui.detailsTitle.dataset.key = comp.key;
+
+        const desc = app.getDescription(comp.key);
+        ui.detailsBody.textContent =
+          (desc && desc.trim()) || "Sin descripción aún. (Se llenará al terminar el análisis IA)";
+
+        app.isolate(comp.key);
+      };
+
+      ui.list.appendChild(row);
     });
   }
 
-  // -------- detalles / descripción --------
-
-  function resolveDescription(ent, index) {
-    let text = "";
-
-    try {
-      if (typeof app.getComponentDescription === "function") {
-        text = app.getComponentDescription(ent.assetKey, index) || "";
-      }
-    } catch (_) {
-      text = "";
-    }
-
-    if (!text && app.componentDescriptions) {
-      const src = app.componentDescriptions;
-      if (src[ent.assetKey]) {
-        text = src[ent.assetKey];
-      } else {
-        const base = basenameNoExt(ent.assetKey);
-        if (src[base]) text = src[base];
+  // Actualizar descripción cuando lleguen nuevas desde IA
+  app.on("descriptionsUpdated", () => {
+    const currentKey = ui.detailsTitle.dataset.key;
+    if (currentKey) {
+      const d = app.getDescription(currentKey);
+      if (d && d.trim()) {
+        ui.detailsBody.textContent = d.trim();
       }
     }
+  });
 
-    return text;
-  }
+  // Montaje DOM
+  ui.header.appendChild(ui.title);
+  ui.header.appendChild(ui.showAllBtn);
 
-  function showDetails(ent, index) {
-    if (disposed) return;
+  ui.details.appendChild(ui.detailsTitle);
+  ui.details.appendChild(ui.detailsBody);
 
-    let text = resolveDescription(ent, index);
-    if (!text) {
-      text = "Sin descripción generada para esta pieza.";
-      console.debug(
-        "[ComponentsPanel] No se encontró descripción para",
-        ent.assetKey
-      );
-    }
+  ui.panel.appendChild(ui.header);
+  ui.panel.appendChild(ui.details);
+  ui.panel.appendChild(ui.list);
 
-    ui.detailsTitle.textContent = ent.base;
-    ui.detailsBody.textContent = text;
-    ui.details.style.display = "block";
+  ui.root.appendChild(ui.toggleBtn);
+  ui.root.appendChild(ui.panel);
 
-    console.debug("[ComponentsPanel] showDetails:", ent.assetKey, "=>", text);
-  }
-
-  function hideDetails() {
-    ui.details.style.display = "none";
-    ui.detailsTitle.textContent = "";
-    ui.detailsBody.textContent = "";
-    currentEnt = null;
-    currentIndex = null;
-  }
-
-  // Cuando llega IA, refrescar descripción del seleccionado (si hay)
-  function refreshCurrentDetailsFromIA() {
-    if (!currentEnt && currentIndex == null) return;
-    const txt = resolveDescription(currentEnt, currentIndex);
-    if (txt && txt !== ui.detailsBody.textContent) {
-      ui.detailsBody.textContent = txt;
-      console.debug(
-        "[ComponentsPanel][IA] Detalle actualizado tras IA para",
-        currentEnt.assetKey
-      );
-    }
-  }
-
-  // -------- integración IA: evento + pequeño poll --------
-
-  function onIAReady(ev) {
-    console.debug(
-      "[ComponentsPanel][IA] ia_descriptions_ready",
-      ev && ev.detail
-    );
-    refreshCurrentDetailsFromIA();
-  }
-
-  window.addEventListener("ia_descriptions_ready", onIAReady);
-
-  let pollCount = 0;
-  const pollTimer = setInterval(() => {
-    if (disposed) {
-      clearInterval(pollTimer);
-      return;
-    }
-    pollCount += 1;
-    if (
-      app.componentDescriptions &&
-      Object.keys(app.componentDescriptions).length > 0
-    ) {
-      console.debug("[ComponentsPanel][IA] Descripciones detectadas por poll");
-      refreshCurrentDetailsFromIA();
-      clearInterval(pollTimer);
-    }
-    if (pollCount > 20) {
-      clearInterval(pollTimer); // ~10s
-    }
-  }, 500);
-
-  // -------- API pública --------
-
-  async function refresh() {
-    if (disposed) return;
-    await renderList();
-  }
-
-  function destroy() {
-    disposed = true;
-    try {
-      document.removeEventListener("keydown", onHotkeyC, true);
-    } catch (_) {}
-    try {
-      window.removeEventListener("ia_descriptions_ready", onIAReady);
-    } catch (_) {}
-    clearInterval(pollTimer);
-    try {
-      ui.btn.remove();
-    } catch (_) {}
-    try {
-      ui.panel.remove();
-    } catch (_) {}
-    try {
-      ui.root.remove();
-    } catch (_) {}
-  }
-
-  // Hotkey 'c' para abrir/cerrar
-  function onHotkeyC(e) {
-    const tag = (e.target && e.target.tagName) || "";
-    const t = tag.toLowerCase();
-    if (t === "input" || t === "textarea" || t === "select" || e.isComposing)
-      return;
-    if (e.key === "c" || e.key === "C" || e.code === "KeyC") {
-      e.preventDefault();
-      set(!open);
-      if (open) maybeBuild();
-    }
-  }
-
-  document.addEventListener("keydown", onHotkeyC, true);
+  host.appendChild(ui.root);
 
   // Inicial
-  set(false);
-  maybeBuild();
+  renderList();
 
-  return { open: openPanel, close: closePanel, set, refresh, destroy };
-}
-
-/* ----- Helpers ----- */
-
-function applyStyles(el, styles) {
-  Object.assign(el.style, styles);
-}
-
-function clearElement(el) {
-  while (el.firstChild) el.removeChild(el.firstChild);
-}
-
-function basenameNoExt(p) {
-  const q = String(p || "").split("/").pop().split("?")[0].split("#")[0];
-  const dot = q.lastIndexOf(".");
-  return dot >= 0 ? q.slice(0, dot) : q;
-}
-
-function rowStyles(theme) {
-  return {
-    display: "grid",
-    gridTemplateColumns: "128px 1fr",
-    gap: "12px",
-    alignItems: "center",
-    padding: "10px",
-    borderRadius: "12px",
-    border: `1px solid ${theme.stroke}`,
-    marginBottom: "10px",
-    background: "#fff",
-    cursor: "pointer",
-    transition: "transform .08s ease, box-shadow .12s ease",
-  };
-}
-
-function thumbStyles(theme) {
-  return {
-    width: "128px",
-    height: "96px",
-    objectFit: "contain",
-    background: "#f7fbfb",
-    borderRadius: "10px",
-    border: `1px solid ${theme.stroke}`,
-  };
-}
-
-function makeThumbFallback(label, theme) {
-  const wrap = document.createElement("div");
-  wrap.style.width = "128px";
-  wrap.style.height = "96px";
-  wrap.style.display = "flex";
-  wrap.style.alignItems = "center";
-  wrap.style.justifyContent = "center";
-  wrap.style.background = "#f7fbfb";
-  wrap.style.border = `1px solid ${theme.stroke}`;
-  wrap.style.borderRadius = "10px";
-  wrap.style.fontSize = "11px";
-  wrap.style.color = theme.textMuted;
-  wrap.style.textAlign = "center";
-  wrap.textContent = label || "—";
-  return wrap;
+  console.log("[ComponentsPanel] Listo.");
+  return ui;
 }
