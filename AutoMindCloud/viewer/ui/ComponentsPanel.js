@@ -1,5 +1,10 @@
 // ComponentsPanel.js
 // Lista de componentes + frame de descripción al hacer click.
+// Integra IA:
+//  - Usa app.getComponentDescription(assetKey, index) / app.componentDescriptions.
+//  - Actualiza descripción al hacer click.
+//  - Si la IA llega después, refresca automáticamente el detalle actual
+//    al recibir el evento 'ia_descriptions_ready'.
 
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll) {
@@ -141,6 +146,19 @@ export function createComponentsPanel(app, theme) {
       : null) || document.body;
   host.appendChild(ui.root);
 
+  // -------- estados internos --------
+
+  let open = false;
+  let building = false;
+  let disposed = false;
+  const CLOSED_TX = 520;
+
+  // componente seleccionado actualmente (para refrescar cuando llegue IA)
+  let currentEnt = null;
+  let currentIndex = null;
+
+  // -------- estilos / interacciones --------
+
   // Hover botón principal
   ui.btn.addEventListener("mouseenter", () => {
     ui.btn.style.transform = "translateY(-1px) scale(1.02)";
@@ -170,11 +188,6 @@ export function createComponentsPanel(app, theme) {
     hideDetails();
   });
 
-  let open = false;
-  let building = false;
-  let disposed = false;
-  const CLOSED_TX = 520;
-
   function set(isOpen) {
     open = !!isOpen;
     if (open) {
@@ -201,6 +214,8 @@ export function createComponentsPanel(app, theme) {
     set(!open);
     if (open) maybeBuild();
   });
+
+  // -------- render de lista --------
 
   async function maybeBuild() {
     if (building || disposed) return;
@@ -277,15 +292,17 @@ export function createComponentsPanel(app, theme) {
         row.style.borderColor = theme.stroke;
       });
 
-      // CLICK: aislar + mostrar frame de descripción
+      // CLICK: aislar + mostrar descripción
       row.addEventListener("click", () => {
         console.debug("[ComponentsPanel] Click en", ent.assetKey);
         try { app.isolate.asset(ent.assetKey); } catch (_) {}
+        currentEnt = ent;
+        currentIndex = index;
         showDetails(ent, index);
         set(true);
       });
 
-      // Thumbnail
+      // Thumbnail async
       (async () => {
         try {
           const url = await app.assets.thumbnail?.(ent.assetKey);
@@ -298,10 +315,12 @@ export function createComponentsPanel(app, theme) {
     });
   }
 
-  function showDetails(ent, index) {
-    if (disposed) return;
+  // -------- detalles / descripción --------
 
+  function resolveDescription(ent, index) {
     let text = "";
+
+    // 1) app.getComponentDescription
     try {
       if (typeof app.getComponentDescription === "function") {
         text = app.getComponentDescription(ent.assetKey, index) || "";
@@ -310,40 +329,91 @@ export function createComponentsPanel(app, theme) {
       text = "";
     }
 
+    // 2) Fallback: mapa directo
     if (!text && app.componentDescriptions) {
       const src = app.componentDescriptions;
-      if (src[ent.assetKey]) text = src[ent.assetKey];
-      else {
+      if (src[ent.assetKey]) {
+        text = src[ent.assetKey];
+      } else {
         const base = basenameNoExt(ent.assetKey);
         if (src[base]) text = src[base];
       }
     }
 
+    return text;
+  }
+
+  function showDetails(ent, index) {
+    if (disposed) return;
+
+    let text = resolveDescription(ent, index);
+
     if (!text) {
       text = "Sin descripción generada para esta pieza.";
-      console.debug(
-        "[ComponentsPanel] No se encontró descripción para",
-        ent.assetKey
-      );
+      console.debug("[ComponentsPanel] No se encontró descripción para", ent.assetKey);
     }
 
     ui.detailsTitle.textContent = ent.base;
     ui.detailsBody.textContent = text;
     ui.details.style.display = "block";
 
-    console.debug(
-      "[ComponentsPanel] showDetails:",
-      ent.assetKey,
-      "=>",
-      text
-    );
+    console.debug("[ComponentsPanel] showDetails:", ent.assetKey, "=>", text);
   }
 
   function hideDetails() {
     ui.details.style.display = "none";
     ui.detailsTitle.textContent = "";
     ui.detailsBody.textContent = "";
+    currentEnt = null;
+    currentIndex = null;
   }
+
+  // Cuando llega IA, refrescar descripción del seleccionado (si hay)
+  function refreshCurrentDetailsFromIA() {
+    if (!currentEnt && currentIndex == null) return;
+    const txt = resolveDescription(currentEnt, currentIndex);
+    if (txt && txt !== ui.detailsBody.textContent) {
+      ui.detailsBody.textContent = txt;
+      console.debug(
+        "[ComponentsPanel][IA] Detalle actualizado tras IA para",
+        currentEnt.assetKey
+      );
+    }
+  }
+
+  // -------- integración con IA: evento + pequeño poll --------
+
+  function onIAReady(ev) {
+    console.debug(
+      "[ComponentsPanel][IA] ia_descriptions_ready",
+      ev && ev.detail
+    );
+    refreshCurrentDetailsFromIA();
+  }
+
+  window.addEventListener("ia_descriptions_ready", onIAReady);
+
+  let pollCount = 0;
+  const pollTimer = setInterval(() => {
+    if (disposed) {
+      clearInterval(pollTimer);
+      return;
+    }
+    pollCount += 1;
+    if (
+      app.componentDescriptions &&
+      Object.keys(app.componentDescriptions).length > 0
+    ) {
+      console.debug("[ComponentsPanel][IA] Descripciones detectadas por poll");
+      refreshCurrentDetailsFromIA();
+      clearInterval(pollTimer);
+    }
+    if (pollCount > 20) {
+      clearInterval(pollTimer); // ~10s
+    }
+  }, 500);
+
+  // -------- API pública del panel --------
 
   async function refresh() {
     if (disposed) return;
@@ -353,12 +423,14 @@ export function createComponentsPanel(app, theme) {
   function destroy() {
     disposed = true;
     try { document.removeEventListener("keydown", onHotkeyC, true); } catch (_) {}
+    try { window.removeEventListener("ia_descriptions_ready", onIAReady); } catch (_) {}
+    clearInterval(pollTimer);
     try { ui.btn.remove(); } catch (_) {}
     try { ui.panel.remove(); } catch (_) {}
     try { ui.root.remove(); } catch (_) {}
   }
 
-  // Hotkey 'c'
+  // Hotkey 'c' para abrir/cerrar
   function onHotkeyC(e) {
     const tag = (e.target && e.target.tagName) || "";
     const t = tag.toLowerCase();
