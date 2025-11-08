@@ -189,21 +189,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
               images.append({"image_b64": img_b64, "mime": "image/png"})
 
               # Prompt con contexto fuerte
-              prompt = (
-                  "Eres un modelo experto en robótica y diseño mecánico.\n"
-                  "Analiza un único componente de un robot industrial usando:\n"
-                  "- Si está presente, una imagen isométrica del robot completo como contexto global.\n"
-                  "- La imagen específica del componente actual.\n"
-                  "- La secuencia ordenada de nombres de archivo de todos los componentes renderizados.\n"
-                  f"Secuencia de nombres: {sequence_str}\n"
-                  f"Componente actual: nombre de archivo '{name}' (índice {idx}).\n"
-                  "Responde SOLO con una descripción concisa, técnica y determinante del componente actual:\n"
-                  "- Tipo de componente / elemento mecánico.\n"
-                  "- Función mecánica principal.\n"
-                  "- Zona aproximada del robot donde se ubica.\n"
-                  "- Tipo de unión o movimiento que sugiere (si aplica).\n"
-                  "NO uses frases como 'En esta imagen se muestra' ni 'La pieza es'.\n"
-                  "Máximo 8 frases. Responde en español."
+              prompt = ("Explica que es cada componente precisamente en no más de 8 párrafos en Español, formal tipo robotico, sin empezar con frases como 'la imagen muestra' 'la pieza es', etc..."
               )
 
               payload = {
