@@ -1,19 +1,15 @@
 // /viewer/urdf_viewer_main.js
-// Entrypoint moderno + thumbnails del script viejo + IA opt-in con logs.
+// Viewer moderno + thumbnails del script estable + IA opt-in con logs.
 //
-// - ComponentsPanel usa thumbnails generados con un renderer offscreen:
-//     * copia configuración del renderer principal (evita negros).
-//     * clona el robot, aísla SOLO el assetKey pedido (todas sus instancias).
-//     * render en vista isométrica.
-// - IA_Widgets:
-//     * si IA_Widgets = true -> genera thumbnails comprimidos (~5KB) y llama
-//       a google.colab.kernel.invokeFunction('describe_component_images', ...).
-//     * si IA_Widgets = false -> NO llama a la API.
-// - Se añaden logs detallados para depuración.
-//
-// Requiere:
-//   - URDF_Render_Script.py registrando describe_component_images cuando
-//     IA_Widgets=True.
+// - Cada thumbnail:
+//     * Se genera con un renderer offscreen.
+//     * Clona el robot con materiales reales.
+//     * Aísla SOLO el assetKey objetivo (todas las instancias).
+//     * Vista isométrica. Sin robot completo, sin imágenes negras.
+// - IA_Widgets (optativo):
+//     * IA_Widgets = true  -> usa google.colab.kernel.invokeFunction('describe_component_images', ...)
+//     * IA_Widgets = false -> no se llama a la API.
+// - Todos los pasos clave tienen logs vía debugLog(), además guardados en window.URDF_DEBUG_LOGS.
 
 import { THEME } from './Theme.js';
 import { createViewer } from './core/ViewerCore.js';
@@ -22,7 +18,25 @@ import { attachInteraction } from './interaction/SelectionAndDrag.js';
 import { createToolsDock } from './ui/ToolsDock.js';
 import { createComponentsPanel } from './ui/ComponentsPanel.js';
 
-export let Base64Images = []; // compat: PNG base64 sin header
+export let Base64Images = [];
+
+/* ========================= Debug helper ========================= */
+
+function debugLog(...args) {
+  try {
+    // consola del iframe
+    console.log('[URDF_DEBUG]', ...args);
+  } catch (_) {}
+  try {
+    // buffer accesible desde fuera:
+    if (typeof window !== 'undefined') {
+      window.URDF_DEBUG_LOGS = window.URDF_DEBUG_LOGS || [];
+      window.URDF_DEBUG_LOGS.push(args);
+    }
+  } catch (_) {}
+}
+
+/* ============================ Render ============================ */
 
 export function render(opts = {}) {
   const {
@@ -32,17 +46,17 @@ export function render(opts = {}) {
     selectMode = 'link',
     background = THEME.bgCanvas || 0xffffff,
     clickAudioDataURL = null,
-    IA_Widgets = false, // ✅ opt-in IA
+    IA_Widgets = false,
   } = opts;
 
-  console.log('[URDF] render() init', { selectMode, background, IA_Widgets });
+  debugLog('render() init', { selectMode, background, IA_Widgets });
 
   // 1) Core viewer
   const core = createViewer({ container, background });
 
-  // 2) Asset DB + onMeshTag: index por assetKey
+  // 2) Asset DB + indexado
   const assetDB = buildAssetDB(meshDB);
-  const assetToMeshes = new Map(); // assetKey -> [Mesh]
+  const assetToMeshes = new Map(); // assetKey -> Mesh[]
 
   const loadMeshCb = createLoadMeshCb(assetDB, {
     onMeshTag(obj, assetKey) {
@@ -58,35 +72,32 @@ export function render(opts = {}) {
           o.userData.__assetKey = assetKey;
         }
       });
-    }
+    },
   });
 
-  // 3) Cargar URDF (triggers onMeshTag)
+  // 3) Cargar URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
-  console.log('[URDF] Robot loaded', { hasRobot: !!robot });
+  debugLog('Robot loaded', { hasRobot: !!robot });
 
-  // Fallback si por algún motivo no se llenó el mapa
   if (robot && !assetToMeshes.size) {
-    console.warn('[URDF] assetToMeshes vacío tras load; reconstruyendo desde userData');
+    debugLog('assetToMeshes vacío, reconstruyendo desde userData');
     rebuildAssetMapFromRobot(robot, assetToMeshes);
   }
 
-  console.log('[URDF] assetToMeshes keys', Array.from(assetToMeshes.keys()));
+  debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
 
-  // 4) Offscreen thumbnails (usa robot actual, evita negros)
+  // 4) Thumbnails (renderer offscreen)
   const off = buildOffscreenForThumbnails(core);
-  if (!off) {
-    console.warn('[Thumbs] Offscreen builder no disponible (no robot)');
-  }
+  if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
 
-  // 5) Interacción escena principal
+  // 5) Interacción
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
     renderer: core.renderer,
     controls: core.controls,
     robot,
-    selectMode
+    selectMode,
   });
 
   // 6) Facade app para UI
@@ -130,7 +141,6 @@ export function render(opts = {}) {
       return '';
     },
 
-    // Compat: llena Base64Images con todos los componentes
     async collectAllThumbnails() {
       const items = app.assets.list();
       Base64Images.length = 0;
@@ -141,11 +151,11 @@ export function render(opts = {}) {
           const base64 = url.split(',')[1] || '';
           if (base64) Base64Images.push(base64);
         } catch (e) {
-          console.warn('[Thumbs] Error en collectAllThumbnails', it.assetKey, e);
+          debugLog('collectAllThumbnails error', it.assetKey, String(e));
         }
       }
       if (typeof window !== 'undefined') window.Base64Images = Base64Images;
-      console.log('[Thumbs] collectAllThumbnails done', { count: Base64Images.length });
+      debugLog('collectAllThumbnails done', { count: Base64Images.length });
       return Base64Images;
     },
   };
@@ -156,26 +166,24 @@ export function render(opts = {}) {
 
   // 8) SFX opcional
   if (clickAudioDataURL) {
-    try { installClickSound(clickAudioDataURL); } catch (e) {
-      console.warn('[SFX] Error installClickSound', e);
-    }
+    try { installClickSound(clickAudioDataURL); }
+    catch (e) { debugLog('installClickSound error', String(e)); }
   }
 
-  // 9) IA (solo si IA_Widgets = true)
+  // 9) IA opt-in
   if (IA_Widgets) {
-    console.log('[IA] IA_Widgets=true, inicializando bootstrapComponentDescriptions');
+    debugLog('[IA] IA_Widgets=true → bootstrap IA');
     bootstrapComponentDescriptions(app, assetToMeshes, off);
   } else {
-    console.log('[IA] IA_Widgets=false, IA deshabilitada');
+    debugLog('[IA] IA_Widgets=false → sin IA');
   }
 
-  // 10) Exponer instancia para debugging
+  // 10) expose
   if (typeof window !== 'undefined') {
     window.URDFViewer = window.URDFViewer || {};
     try { window.URDFViewer.__app = app; } catch (_) {}
   }
 
-  // destroy público
   const destroy = () => {
     try { comps.destroy(); } catch (_) {}
     try { tools.destroy(); } catch (_) {}
@@ -187,7 +195,7 @@ export function render(opts = {}) {
   return { ...app, destroy };
 }
 
-/* ====================== Helpers: assets / isolate ====================== */
+/* ======================= Helpers: assets / isolate ======================= */
 
 function rebuildAssetMapFromRobot(robot, assetToMeshes) {
   const tmp = new Map();
@@ -216,7 +224,7 @@ function listAssets(assetToMeshes) {
     items.push({ assetKey, base, ext, count: meshes.length });
   });
   items.sort((a, b) =>
-    a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' })
+    a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }),
   );
   return items;
 }
@@ -256,7 +264,7 @@ function frameMeshes(core, meshes) {
     tmp.setFromObject(m);
     if (!has) {
       box.copy(tmp);
-      has = true;
+      has = true;       // <- importante: JS, no "True"
     } else {
       box.union(tmp);
     }
@@ -296,13 +304,14 @@ function frameMeshes(core, meshes) {
   }
 }
 
-/* ================= Offscreen thumbnails (aislado, sin negros) ================ */
+/* ============= Offscreen thumbnails: componente aislado ============= */
 
 function buildOffscreenForThumbnails(core) {
   if (!core.robot) return null;
 
   const OFF_W = 640;
   const OFF_H = 480;
+
   const canvas = document.createElement('canvas');
   canvas.width = OFF_W;
   canvas.height = OFF_H;
@@ -314,7 +323,7 @@ function buildOffscreenForThumbnails(core) {
   });
   renderer.setSize(OFF_W, OFF_H, false);
 
-  // Copiar configuración del renderer principal (clave para colores correctos)
+  // Igualar configuración de renderer principal (evita negros)
   if (core.renderer) {
     renderer.physicallyCorrectLights = core.renderer.physicallyCorrectLights ?? true;
     renderer.toneMapping = core.renderer.toneMapping;
@@ -346,7 +355,7 @@ function buildOffscreenForThumbnails(core) {
   const ready = (async () => {
     await sleep(400);
     renderer.render(baseScene, camera);
-    console.log('[Thumbs] Offscreen primed');
+    debugLog('[Thumbs] Offscreen primed');
   })();
 
   function buildCloneAndMap() {
@@ -385,26 +394,25 @@ function buildOffscreenForThumbnails(core) {
     const { scene, robotClone, cloneMap } = buildCloneAndMap();
     const meshes = cloneMap.get(assetKey) || [];
     if (!meshes.length) {
-      console.warn('[Thumbs] snapshotAsset sin meshes para', assetKey);
+      debugLog('[Thumbs] snapshotAsset sin meshes para', assetKey);
       return null;
     }
 
-    // Ocultar todo menos el assetKey
     robotClone.traverse(o => {
       if (o.isMesh && o.geometry) o.visible = false;
     });
     meshes.forEach(m => { m.visible = true; });
 
-    // Box del componente aislado
     const box = new THREE.Box3();
     const tmp = new THREE.Box3();
     let has = false;
     meshes.forEach(m => {
       tmp.setFromObject(m);
-      if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
+      if (!has) { box.copy(tmp); has = true; }
+      else box.union(tmp);
     });
     if (!has) {
-      console.warn('[Thumbs] snapshotAsset box vacío para', assetKey);
+      debugLog('[Thumbs] snapshotAsset box vacío para', assetKey);
       return null;
     }
 
@@ -417,7 +425,6 @@ function buildOffscreenForThumbnails(core) {
     camera.far  = Math.max(maxDim * 1000, 1000);
     camera.updateProjectionMatrix();
 
-    // Iso view
     const az = Math.PI * 0.25;
     const el = Math.PI * 0.20;
     const dirV = new THREE.Vector3(
@@ -425,6 +432,7 @@ function buildOffscreenForThumbnails(core) {
       Math.sin(el),
       Math.cos(el) * Math.sin(az)
     ).multiplyScalar(dist);
+
     camera.position.copy(center.clone().add(dirV));
     camera.lookAt(center);
 
@@ -439,10 +447,10 @@ function buildOffscreenForThumbnails(core) {
       try {
         await ready;
         const url = snapshotAsset(assetKey);
-        console.log('[Thumbs] thumbnail', assetKey, !!url);
+        debugLog('[Thumbs] thumbnail', assetKey, !!url);
         return url;
       } catch (e) {
-        console.error('[Thumbs] Error thumbnail', assetKey, e);
+        debugLog('[Thumbs] Error thumbnail', assetKey, String(e));
         return null;
       }
     },
@@ -456,10 +464,10 @@ function buildOffscreenForThumbnails(core) {
 /* ================= IA opt-in: describe_component_images ================= */
 
 function bootstrapComponentDescriptions(app, assetToMeshes, off) {
-  console.log('[IA] bootstrapComponentDescriptions start');
+  debugLog('[IA] bootstrapComponentDescriptions start');
 
   if (!off || typeof off.thumbnail !== 'function') {
-    console.warn('[IA] Offscreen thumbnails no disponible; cancelando IA.');
+    debugLog('[IA] Offscreen no disponible; cancelando IA');
     return;
   }
 
@@ -470,13 +478,12 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     window.google.colab.kernel &&
     typeof window.google.colab.kernel.invokeFunction === 'function';
 
-  console.log('[IA] Colab bridge?', hasColab);
+  debugLog('[IA] Colab bridge?', hasColab);
 
   if (!hasColab) return;
 
   const items = listAssets(assetToMeshes);
-  console.log('[IA] Componentes a describir:', items.length);
-
+  debugLog('[IA] Componentes a describir', items.length);
   if (!items.length) return;
 
   (async () => {
@@ -490,34 +497,38 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
           if (!b64) continue;
           entries.push({ key: ent.assetKey, image_b64: b64 });
         } catch (e) {
-          console.warn('[IA] Error generando thumb para', ent.assetKey, e);
+          debugLog('[IA] Error thumb IA', ent.assetKey, String(e));
         }
       }
 
-      console.log('[IA] entries generadas:', entries.length);
+      debugLog('[IA] entries generadas', entries.length);
       if (!entries.length) return;
 
-      const res = await window.google.colab.kernel.invokeFunction(
-        'describe_component_images',
-        [entries],
-        {}
-      );
-      console.log('[IA] invokeFunction result:', res);
+      let res;
+      try {
+        res = await window.google.colab.kernel.invokeFunction(
+          'describe_component_images',
+          [entries],
+          {}
+        );
+        debugLog('[IA] invokeFunction OK', res);
+      } catch (e) {
+        debugLog('[IA] invokeFunction error', String(e));
+        return;
+      }
 
       const map = extractDescMap(res);
-      console.log('[IA] parsed map:', map);
+      debugLog('[IA] parsed map', map);
 
       if (map && typeof map === 'object') {
         app.componentDescriptions = map;
-        if (typeof window !== 'undefined') {
-          window.COMPONENT_DESCRIPTIONS = map;
-        }
-        console.log('[IA] Descripciones IA aplicadas.');
+        if (typeof window !== 'undefined') window.COMPONENT_DESCRIPTIONS = map;
+        debugLog('[IA] Descripciones IA aplicadas');
       } else {
-        console.warn('[IA] Respuesta IA sin mapa utilizable.');
+        debugLog('[IA] Respuesta IA sin mapa utilizable');
       }
     } catch (err) {
-      console.error('[IA] Error en bootstrapComponentDescriptions:', err);
+      debugLog('[IA] Error en bootstrapComponentDescriptions', String(err));
     }
   })();
 }
@@ -565,33 +576,29 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
     ctx.drawImage(img, 0, 0, w, h);
     URL.revokeObjectURL(u);
 
-    let best = '';
-    let q = 0.92;
-    for (let i = 0; i < 8; i++) {
-      const out = canvas.toDataURL('image/jpeg', Math.max(0.4, Math.min(0.96, q)));
-      const b64 = out.split(',')[1] || '';
-      if (!b64) break;
-      best = b64;
-      const bytes = Math.floor((b64.length * 3) / 4);
-      if (bytes <= maxBytes) break;
-      q *= 0.7;
-    }
-    console.log('[IA] makeApproxSizedBase64 bytes ~', best.length * 0.75);
-    return best || null;
+    // PNG para que coincida con el mime usado en Python
+    const out = canvas.toDataURL('image/png');
+    const b64 = out.split(',')[1] || '';
+    if (!b64) return null;
+
+    debugLog('[IA] makeApproxSizedBase64 bytes ~', Math.floor(b64.length * 3 / 4));
+    return b64;
   } catch (e) {
-    console.warn('[IA] makeApproxSizedBase64 error', e);
+    debugLog('[IA] makeApproxSizedBase64 error', String(e));
     return null;
   }
 }
 
-/* ================= Click sound + hook global ================= */
+/* ================= Click sound + global hook ================= */
 
 function installClickSound(dataURL) {
   if (!dataURL || typeof dataURL !== 'string') return;
   let ctx = null, buf = null;
+
   async function ensure() {
     if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (!buf) {
@@ -600,6 +607,7 @@ function installClickSound(dataURL) {
       buf = await ctx.decodeAudioData(arr);
     }
   }
+
   function play() {
     if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (ctx.state === 'suspended') ctx.resume();
@@ -609,10 +617,9 @@ function installClickSound(dataURL) {
     src.connect(ctx.destination);
     try { src.start(); } catch (_) {}
   }
+
   window.__urdf_click__ = play;
 }
-
-/* ================= Global hook ================= */
 
 if (typeof window !== 'undefined') {
   window.URDFViewer = window.URDFViewer || {};
