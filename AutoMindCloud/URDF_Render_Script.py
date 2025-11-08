@@ -198,7 +198,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   f"Componente actual: archivo '{name}' (índice {idx}).\n"
                   "Explica qué componente es y cuál es su función con la máxima precisión técnica posible, "
                   "manteniendo un estilo formal, directo y robótico. "
-                  "Evita completamente expresiones como 'En esta imagen se muestra', 'La pieza es', "
+                  "Evita completamente expresiones como 'En esta imagen se muestra', 'La pieza es', 'el componente identificado como ->componente<-'"
                   "'Se observa', 'Podemos ver' o similares. "
                   "No repitas la consigna ni agregues comentarios sobre el análisis. "
                   "Responde únicamente sobre el componente actual en español, sin enumerar, en un máximo de 5 frases."
