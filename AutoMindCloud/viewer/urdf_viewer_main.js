@@ -1,6 +1,6 @@
-// /viewer/urdf_viewer_main.js
-// URDF viewer + thumbnails + IA integration.
-// Auto-saves IA descriptions (only) once they are applied.
+// urdf_viewer_main.js
+// URDF viewer + thumbnails + IA integration + auto-save descriptions.
+// Usa meshDB embebido (sin pedir .dae por HTTP) y guarda SOLO descripciones IA.
 
 import { THEME } from './Theme.js';
 import { createViewer } from './core/ViewerCore.js';
@@ -30,17 +30,19 @@ export function render(opts = {}) {
     background = THEME.bgCanvas || 0xffffff,
     clickAudioDataURL = null,
     IA_Widgets = false,
-    saveCallbackName = null, // "persist.saveURDFDescriptions"
+    saveCallbackName = null, // ej: "persist.saveURDFDescriptions"
   } = opts;
 
   debugLog('render() init', { selectMode, background, IA_Widgets, saveCallbackName });
 
+  // 1) Viewer base
   const core = createViewer({ container, background });
 
+  // 2) AssetDB + loadMeshCb + mapeo assetKey -> meshes
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map();
 
-  createLoadMeshCb(assetDB, {
+  const loadMeshCb = createLoadMeshCb(assetDB, {
     onMeshTag(obj, assetKey) {
       const list = assetToMeshes.get(assetKey) || [];
       obj.traverse((o) => {
@@ -54,17 +56,21 @@ export function render(opts = {}) {
     },
   });
 
-  const robot = core.loadURDF(urdfContent, {});
+  // 3) Cargar URDF usando loadMeshCb (IMPORTANTE)
+  const robot = core.loadURDF(urdfContent, { loadMeshCb });
   debugLog('Robot loaded', { hasRobot: !!robot });
 
+  // Si por alguna razón no se llenó assetToMeshes, intentamos reconstruir
   if (robot && !assetToMeshes.size) {
     rebuildAssetMapFromRobot(robot, assetToMeshes);
     debugLog('assetToMeshes rebuilt', Array.from(assetToMeshes.keys()));
   }
 
+  // 4) Thumbnails offscreen
   const off = buildOffscreenForThumbnails(core);
   if (!off) debugLog('Offscreen thumbnails not available');
 
+  // 5) Interacción selección / orbit
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -74,6 +80,7 @@ export function render(opts = {}) {
     selectMode,
   });
 
+  // 6) API pública del viewer
   const app = {
     ...core,
     robot,
@@ -140,14 +147,17 @@ export function render(opts = {}) {
     },
   };
 
+  // 7) UI
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
+  // 8) Click SFX opcional
   if (clickAudioDataURL) {
     try { installClickSound(clickAudioDataURL); }
     catch (e) { debugLog('installClickSound error', String(e)); }
   }
 
+  // 9) IA: describir componentes + autosave
   if (IA_Widgets) {
     debugLog('[IA] IA_Widgets=true → bootstrap IA');
     bootstrapComponentDescriptions(app, assetToMeshes, off);
@@ -155,6 +165,7 @@ export function render(opts = {}) {
     debugLog('[IA] IA_Widgets=false → IA disabled');
   }
 
+  // 10) Exponer en window para debugging
   if (typeof window !== 'undefined') {
     window.URDFViewer = window.URDFViewer || {};
     try { window.URDFViewer.__app = app; } catch (_) {}
@@ -171,7 +182,7 @@ export function render(opts = {}) {
   return { ...app, destroy };
 }
 
-/* ---------- Helpers ---------- */
+/* ---------- Helpers: assets ---------- */
 
 function rebuildAssetMapFromRobot(robot, assetToMeshes) {
   const tmp = new Map();
@@ -216,6 +227,8 @@ function splitName(key) {
     ext: dot >= 0 ? base.slice(dot + 1).toLowerCase() : '',
   };
 }
+
+/* ---------- Helpers: aislar / mostrar ---------- */
 
 function isolateAsset(core, assetToMeshes, assetKey) {
   const meshes = assetToMeshes.get(assetKey) || [];
@@ -445,7 +458,7 @@ function buildOffscreenForThumbnails(core) {
   };
 }
 
-/* ---------- IA bootstrap & autosave ---------- */
+/* ---------- IA bootstrap + auto-save ---------- */
 
 function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   debugLog('[IA] bootstrapComponentDescriptions start');
@@ -455,14 +468,16 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     return;
   }
 
-  const kernel = (
+  const kernel =
     typeof window !== 'undefined' &&
     window.google &&
     window.google.colab &&
-    window.google.colab.kernel
-  ) ? window.google.colab.kernel : null;
+    window.google.colab.kernel &&
+    window.google.colab.kernel.invokeFunction
+      ? window.google.colab.kernel
+      : null;
 
-  if (!kernel || typeof kernel.invokeFunction !== 'function') {
+  if (!kernel) {
     debugLog('[IA] No Colab kernel; abort IA');
     return;
   }
@@ -560,17 +575,13 @@ function parseMaybePythonDict(raw) {
   return null;
 }
 
-/**
- * Apply IA descriptions to app and AUTO-SAVE via saveCallbackName.
- * Only description map is sent; no viewer state.
- */
 function applyIaDescriptionsAndAutoSave(app, map, kernel) {
   if (!map || typeof map !== 'object') return;
 
-  const store = (app.componentDescriptions =
+  const store =
     app.componentDescriptions && typeof app.componentDescriptions === 'object'
       ? app.componentDescriptions
-      : {});
+      : (app.componentDescriptions = {});
 
   for (const [k, v] of Object.entries(map)) {
     if (typeof v === 'string' && v.trim()) {
@@ -578,7 +589,6 @@ function applyIaDescriptionsAndAutoSave(app, map, kernel) {
     }
   }
 
-  // Patch getComponentDescription once
   if (!app.__patchedGetComponentDescription) {
     const orig = app.getComponentDescription
       ? app.getComponentDescription.bind(app)
@@ -609,7 +619,6 @@ function applyIaDescriptionsAndAutoSave(app, map, kernel) {
     app.__patchedGetComponentDescription = true;
   }
 
-  // Notificar UI
   const detail = { map: app.componentDescriptions };
   if (typeof app.emit === 'function') {
     try { app.emit('ia_descriptions_ready', detail); } catch (_) {}
@@ -624,7 +633,6 @@ function applyIaDescriptionsAndAutoSave(app, map, kernel) {
 
   debugLog('[IA] Descriptions applied', Object.keys(app.componentDescriptions).length);
 
-  // Auto-save
   const cbName = app.saveCallbackName;
   if (!cbName || !kernel || typeof kernel.invokeFunction !== 'function') {
     debugLog('[IA] Autosave skipped (no callback/kernel)');
@@ -655,7 +663,7 @@ function applyIaDescriptionsAndAutoSave(app, map, kernel) {
     });
 }
 
-/* ---------- Size reduction for IA thumbnails ---------- */
+/* ---------- IA thumbnails: reduce tamaño ---------- */
 
 async function makeApproxSizedBase64(dataURL, targetKB = 5) {
   try {
@@ -700,7 +708,7 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
   }
 }
 
-/* ---------- Click sound ---------- */
+/* ---------- Click sound opcional ---------- */
 
 function installClickSound(dataURL) {
   if (!dataURL || typeof dataURL !== 'string') return;
@@ -732,7 +740,7 @@ function installClickSound(dataURL) {
   window.__urdf_click__ = play;
 }
 
-/* ---------- Global helper ---------- */
+/* ---------- Helper global ---------- */
 
 if (typeof window !== 'undefined') {
   window.URDFViewer = window.URDFViewer || {};
