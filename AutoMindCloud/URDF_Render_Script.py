@@ -196,12 +196,12 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   "y la secuencia ordenada de nombres de todos los componentes renderizados.\n"
                   f"Secuencia de nombres: {sequence_str}\n"
                   f"Componente actual: archivo '{name}' (índice {idx}).\n"
-                  "Explica qué componente es y cuál es su función con la máxima precisión técnica posible, "
+                  "Explica qué es y cuál es su función con la máxima precisión técnica posible, "
                   "manteniendo un estilo formal, directo y robótico. "
-                  "Evita completamente expresiones como 'En esta imagen se muestra', 'La pieza es', 'el componente identificado como ->componente<-'"
+                  "No uses expresiones como 'En esta imagen se muestra', 'La pieza es', 'El componente...'"
                   "'Se observa', 'Podemos ver' o similares. "
                   "No repitas la consigna ni agregues comentarios sobre el análisis. "
-                  "Responde únicamente sobre el componente actual en español, sin enumerar, en un máximo de 3 frases."
+                  "responde con un máximo de 2 frases."
               )
 
               payload = {
