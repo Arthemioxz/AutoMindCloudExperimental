@@ -1,8 +1,10 @@
+#We do not need requirements and Docker because we are going to update all to work in the last version in Google Colab
 #sympy
 #gdown
 #cascadio
 #trimesh
 #cadquery
+
 
 
 
