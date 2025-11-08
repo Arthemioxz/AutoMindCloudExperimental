@@ -201,7 +201,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   "Evita completamente expresiones como 'En esta imagen se muestra', 'La pieza es', "
                   "'Se observa', 'Podemos ver' o similares. "
                   "No repitas la consigna ni agregues comentarios sobre el análisis. "
-                  "Responde únicamente sobre el componente actual en español, sin enumerar, en un máximo de ocho frases."
+                  "Responde únicamente sobre el componente actual en español, sin enumerar, en un máximo de 5 frases."
               )
 
               payload = {
