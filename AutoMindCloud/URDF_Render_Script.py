@@ -10,19 +10,12 @@
 #   - Busca /urdf y /meshes dentro de folder_path.
 #   - Construye un meshDB embebido (base64) para el viewer JS.
 #   - Renderiza un viewer HTML fullscreen para Colab.
-#   - (Opcional) registra callbacks para integración IA:
-#       * "describe_component_images": JS -> IA -> descripciones.
-#       * "save_component_descriptions": JS -> Python; guarda SOLO descripciones.
-#
-# IMPORTANTE:
-#   - Si NO pasas IA_Widgets=True:
-#       * No se registran callbacks.
-#       * No se envía ninguna imagen a ninguna API.
-#       * Solo funciona el viewer + panel de componentes "local".
-#
-#   - "save_component_descriptions" SOLO guarda el mapa de descripciones IA
-#     (por ejemplo en /content/component_descriptions.json).
-#     No guarda posición/cámara/pose del robot.
+#   - (Opcional, IA_Widgets=True):
+#       * Registra "describe_component_images" para que JS pida descripciones vía API externa.
+#       * Registra "persist.saveURDFDescriptions" AL ESTILO Board_Script:
+#           - Solo se llama cuando JS lo invoca explícitamente.
+#           - Guarda SOLO las descripciones IA en JSON.
+#           - NO guarda cámara / pose / estado del robot.
 
 import os
 import re
@@ -36,7 +29,8 @@ from IPython.display import HTML
 API_DEFAULT_BASE = "https://gpt-proxy-github-619255898589.us-central1.run.app"
 API_INFER_PATH = "/infer"
 
-_COLAB_CALLBACK_REGISTERED = False
+_COLAB_DESCRIBE_REGISTERED = False
+_SAVE_DESC_CB_NAME = None
 
 
 def Download_URDF(Drive_Link, Output_Name="Model"):
@@ -78,19 +72,13 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
     return final_dir
 
 
-def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120):
+def _register_describe_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120):
     """
-    Registra callbacks de Colab si estamos en Colab:
-
-    - describe_component_images(entries) -> { assetKey: desc }
-      (llamado desde JS para pedir IA)
-
-    - save_component_descriptions(desc_map) -> True/False
-      (llamado desde JS SOLO cuando ya tiene el mapa final de IA
-       y quiere guardarlo en Python; NO guarda posición del robot).
+    Registra el callback 'describe_component_images' si estamos en Colab.
+    Recibe thumbnails ~5KB en base64 y devuelve { assetKey: descripcion }.
     """
-    global _COLAB_CALLBACK_REGISTERED
-    if _COLAB_CALLBACK_REGISTERED:
+    global _COLAB_DESCRIBE_REGISTERED
+    if _COLAB_DESCRIBE_REGISTERED:
         return
 
     try:
@@ -99,13 +87,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         api_base = api_base.rstrip("/")
         infer_url = api_base + API_INFER_PATH
 
-        # ---------- IA: describir imágenes de componentes ----------
-
         def _describe_component_images(entries):
-            """
-            entries: [{ "key": assetKey, "image_b64": "..." }, ...]
-            Devuelve dict { assetKey: "descripcion" }.
-            """
             try:
                 n = len(entries)
             except TypeError:
@@ -117,7 +99,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 return {}
 
             results = {}
-
             for item in entries:
                 if not isinstance(item, dict):
                     continue
@@ -151,7 +132,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
 
                 txt = (r.text or "").strip()
                 try:
-                    # Por si viene como string JSON con comillas
                     if txt.startswith('"') and txt.endswith('"'):
                         txt = json.loads(txt)
                 except Exception:
@@ -159,58 +139,86 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
 
                 results[key] = txt or ""
 
-            print(f"[Colab] describe_component_images: devueltas {len(results)} descripciones.")
+            print(
+                f"[Colab] describe_component_images: devueltas {len(results)} descripciones."
+            )
             return results
 
-        # ---------- Guardado: SOLO descripciones IA ----------
-
-        def _save_component_descriptions(desc_map):
-            """
-            Llamado desde JS cuando IA ya terminó y se aplicaron las
-            descripciones. Guarda **solo** ese mapa, sin pose/cámara.
-
-            desc_map: dict con claves de componente y descripción en texto.
-            """
-            try:
-                if not isinstance(desc_map, dict):
-                    print(
-                        "[Colab] save_component_descriptions: payload no es dict, recibido:",
-                        type(desc_map),
-                    )
-                    return False
-
-                safe = {
-                    str(k): str(v).strip()
-                    for k, v in desc_map.items()
-                    if isinstance(v, (str, int, float)) and str(v).strip()
-                }
-
-                path = "/content/component_descriptions.json"
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(safe, f, ensure_ascii=False, indent=2)
-
-                print(
-                    f"[Colab] ✅ Descripciones IA guardadas en {path} ({len(safe)} ítems)."
-                )
-                print(
-                    "[Colab] (Solo descripciones guardadas; ningún dato de cámara/pose)."
-                )
-                return True
-            except Exception as e:
-                print(f"[Colab] Error al guardar descripciones IA: {e}")
-                return False
-
-        # Registrar ambos callbacks (se usan sólo si IA_Widgets=True en URDF_Render)
         output.register_callback("describe_component_images", _describe_component_images)
-        output.register_callback("save_component_descriptions", _save_component_descriptions)
-
-        _COLAB_CALLBACK_REGISTERED = True
-        print("[Colab] ✅ Callbacks IA registrados (describe_component_images + save_component_descriptions).")
+        _COLAB_DESCRIBE_REGISTERED = True
+        print("[Colab] ✅ Callback 'describe_component_images' registrado (IA_Widgets=True).")
 
     except Exception as e:
         print(
-            f"[Colab] (Opcional) No se pudieron registrar callbacks IA: {e}"
+            f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}"
         )
+
+
+def _ensure_save_descriptions_callback():
+    """
+    Registra y devuelve el nombre del callback de guardado:
+        persist.saveURDFDescriptions
+
+    Patrón tipo Board_Script:
+      - Se llama SOLO cuando JS lo invoca.
+      - Recibe un dict { assetKey: descripcion }.
+      - Guarda JSON en /content/urdf_component_descriptions.json.
+      - No guarda cámara / pose / nada extra.
+    """
+    global _SAVE_DESC_CB_NAME
+
+    if _SAVE_DESC_CB_NAME:
+        return _SAVE_DESC_CB_NAME
+
+    try:
+        from google.colab import output  # type: ignore
+    except Exception as e:
+        print("[Colab] No se pudo importar google.colab.output para saveURDFDescriptions:", e)
+        return ""
+
+    cb_name = "persist.saveURDFDescriptions"
+
+    def _cb(desc_map):
+        try:
+            if not isinstance(desc_map, dict):
+                print(
+                    "[Colab] saveURDFDescriptions: payload no es dict, recibido:",
+                    type(desc_map),
+                )
+                return {"ok": False, "error": "payload_not_dict"}
+
+            safe = {
+                str(k): str(v).strip()
+                for k, v in desc_map.items()
+                if isinstance(v, (str, int, float)) and str(v).strip()
+            }
+
+            path = "/content/urdf_component_descriptions.json"
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(safe, f, ensure_ascii=False, indent=2)
+
+            print(
+                f"[Colab] ✅ Guardadas {len(safe)} descripciones IA en {path}."
+            )
+            print(
+                "[Colab] (Solo descripciones IA; NO se guarda pose/cámara del robot)."
+            )
+            return {"ok": True, "count": len(safe), "path": path}
+        except Exception as e:
+            print(f"[Colab] Error al guardar descripciones IA: {e}")
+            return {"ok": False, "error": str(e)}
+
+    try:
+        output.register_callback(cb_name, _cb)
+        _SAVE_DESC_CB_NAME = cb_name
+        print(
+            f"[Colab] ✅ Callback '{cb_name}' registrado (guardar solo descripciones IA)."
+        )
+    except Exception as e:
+        print(f"[Colab] No se pudo registrar callback {cb_name}: {e}")
+        return ""
+
+    return _SAVE_DESC_CB_NAME
 
 
 def URDF_Render(
@@ -231,21 +239,17 @@ def URDF_Render(
         * Inserta meshDB embedido.
         * Muestra viewer + ToolsDock + ComponentsPanel.
     - Si IA_Widgets=True:
-        * Registra callbacks IA.
-        * El JS enviará thumbnails (~5KB) a describe_component_images.
-        * Cuando IA termine, JS llamará save_component_descriptions
-          para guardar SOLO las descripciones IA.
-    - Si IA_Widgets=False:
-        * No se registran callbacks IA.
-        * No hay tráfico a ninguna API.
-
-    Ejemplos:
-        URDF_Render("URDFModel")
-        URDF_Render("URDFModel", IA_Widgets=True)
+        * Registra 'describe_component_images'.
+        * Registra 'persist.saveURDFDescriptions'.
+        * Pasa el nombre del callback a JS como saveCallbackName.
+        * JS SOLO guardará al invocar manualmente saveDescriptions()
+          (por botón o por código), igual que Board_Script.
     """
 
+    save_cb_name = ""
     if IA_Widgets:
-        _register_colab_callback(api_base=api_base)
+        _register_describe_callback(api_base=api_base)
+        save_cb_name = _ensure_save_descriptions_callback()
 
     # --- Buscar directorios urdf / meshes ---
 
@@ -283,7 +287,7 @@ def URDF_Render(
     )
 
     urdf_raw = ""
-    mesh_refs = []
+    mesh_refs: list[str] = []
 
     for upath in urdf_files:
         try:
@@ -322,8 +326,8 @@ def URDF_Render(
         by_rel[rel] = path
         by_base[os.path.basename(path).lower()] = path
 
-    _cache = {}
-    mesh_db = {}
+    _cache: dict[str, str] = {}
+    mesh_db: dict[str, str] = {}
 
     def b64(path: str) -> str:
         if path not in _cache:
@@ -369,10 +373,10 @@ def URDF_Render(
     mesh_js = json.dumps(mesh_db)
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
-
     ia_js = "true" if IA_Widgets else "false"
+    save_cb_js = json.dumps(save_cb_name or "")
 
-    # --- HTML + JS (usa urdf_viewer_main.js del repo) ---
+    # --- HTML + JS ---
 
     html = f"""<!doctype html>
 <html lang="en">
@@ -402,6 +406,7 @@ def URDF_Render(
       padding-right: env(safe-area-inset-right);
       padding-bottom: env(safe-area-inset-bottom);
       padding-left: env(safe-area-inset-left);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     }}
     #app {{
       position:fixed;
@@ -425,6 +430,23 @@ def URDF_Render(
       max-height:40px;
       display:block;
     }}
+    #save-ia-btn {{
+      position:fixed;
+      left:14px;
+      bottom:10px;
+      z-index:20;
+      padding:6px 10px;
+      border-radius:8px;
+      border:1px solid #cbd5f5;
+      background:#ffffffcc;
+      backdrop-filter: blur(6px);
+      font-size:12px;
+      display:none;
+      cursor:pointer;
+    }}
+    #save-ia-btn span {{
+      opacity:0.8;
+    }}
   </style>
 </head>
 <body>
@@ -432,6 +454,9 @@ def URDF_Render(
   <div class="badge">
     <img src="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png" alt="AutoMind"/>
   </div>
+  <button id="save-ia-btn" title="Guardar solo descripciones IA (JSON)">
+    💾 <span>Save IA descriptions</span>
+  </button>
 
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
@@ -459,7 +484,6 @@ def URDF_Render(
         document.body?.scrollHeight || 0
       );
 
-      // Usar el máximo entre viewport, scrollHeight y 600px.
       return Math.max(viewportH, docScrollH, 600);
     }}
 
@@ -489,7 +513,6 @@ def URDF_Render(
       }});
     }}
 
-    // Primera fijación (por si Colab arranca con un iframe muy bajo)
     setTimeout(setColabFrameHeight, 60);
 
     const repo     = {json.dumps(repo)};
@@ -514,6 +537,7 @@ def URDF_Render(
     const SELECT_MODE = {sel_js};
     const BACKGROUND  = {bg_js};
     const IA_WIDGETS  = {ia_js};
+    const SAVE_DESC_CALLBACK = {save_cb_js};
 
     const opts = {{
       container: document.getElementById('app'),
@@ -523,7 +547,8 @@ def URDF_Render(
       background: BACKGROUND,
       pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
       autoResize: true,
-      IA_Widgets: IA_WIDGETS
+      IA_Widgets: IA_WIDGETS,
+      saveCallbackName: SAVE_DESC_CALLBACK || null,
     }};
 
     let mod = null;
@@ -571,6 +596,36 @@ def URDF_Render(
         onResize();
         setColabFrameHeight();
       }}, 500);
+
+      // Botón estilo Board: guardar SOLO descripciones IA a demanda
+      const btn = document.getElementById('save-ia-btn');
+      if (IA_WIDGETS && SAVE_DESC_CALLBACK && btn) {{
+        btn.style.display = 'inline-flex';
+        btn.addEventListener('click', async () => {{
+          try {{
+            if (!window.URDFViewer || !window.URDFViewer.__app) {{
+              alert('Viewer todavía no está listo.');
+              return;
+            }}
+            const res = await window.URDFViewer.__app.saveDescriptions();
+            console.log('[URDF] saveDescriptions()', res);
+            if (res && res.ok) {{
+              btn.innerHTML = '✅ Guardado';
+              setTimeout(() => {{
+                btn.innerHTML = '💾 <span>Save IA descriptions</span>';
+              }}, 1500);
+            }} else {{
+              alert('No se pudo guardar. Revisa la consola.');
+            }}
+          }} catch (e) {{
+            console.error('[URDF] Error al guardar descripciones IA', e);
+            alert('Error al guardar descripciones IA. Mira la consola.');
+          }}
+        }});
+      }} else if (btn) {{
+        // Si no hay IA, ocultamos el botón
+        btn.style.display = 'none';
+      }}
     }}
   </script>
 </body>
