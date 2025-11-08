@@ -1,15 +1,9 @@
 // /viewer/urdf_viewer_main.js
-// Viewer moderno + thumbnails del script estable + IA opt-in con logs.
-//
-// - Cada thumbnail:
-//   * Renderer offscreen, robot clonado, pieza aislada, vista isométrica.
-// - IA_Widgets (optativo):
-//   * IA_Widgets = true -> usa google.colab.kernel.invokeFunction('describe_component_images', entries)
-//   * IA_Widgets = false -> no se llama a la API.
-// - Ahora además:
-//   * Envía una imagen isométrica del robot completo (__robot_iso__).
-//   * Envía para cada componente: key, name, index, image_b64.
-//   * La API en Colab usa esa info para dar contexto y mejor precisión.
+// Viewer moderno + thumbnails + IA opt-in con:
+//  - Imagen ISO del robot completo (__robot_iso__)
+//  - Nombres + orden de componentes
+//  - Reducción de thumbnails a ~5KB solo para IA
+//  - Parser robusto para el dict que llega desde Colab
 
 import { THEME } from './Theme.js';
 import { createViewer } from './core/ViewerCore.js';
@@ -52,7 +46,7 @@ export function render(opts = {}) {
   // 1) Core viewer
   const core = createViewer({ container, background });
 
-  // 2) Asset DB + indexado
+  // 2) Asset DB
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map(); // assetKey -> Mesh[]
 
@@ -84,7 +78,7 @@ export function render(opts = {}) {
 
   debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
 
-  // 4) Thumbnails (renderer offscreen)
+  // 4) Offscreen thumbnails
   const off = buildOffscreenForThumbnails(core);
   if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
 
@@ -98,7 +92,7 @@ export function render(opts = {}) {
     selectMode,
   });
 
-  // 6) Facade app para UI
+  // 6) Facade app para UI + IA
   const app = {
     ...core,
     robot,
@@ -165,7 +159,7 @@ export function render(opts = {}) {
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // 8) SFX opcional
+  // 8) Click sound opcional
   if (clickAudioDataURL) {
     try {
       installClickSound(clickAudioDataURL);
@@ -182,7 +176,7 @@ export function render(opts = {}) {
     debugLog('[IA] IA_Widgets=false → sin IA');
   }
 
-  // 10) expose
+  // 10) Expose global
   if (typeof window !== 'undefined') {
     window.URDFViewer = window.URDFViewer || {};
     try {
@@ -590,7 +584,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     try {
       const entries = [];
 
-      // 1) Imagen ISO del robot completo
+      // 1) ISO del robot completo
       if (typeof off.iso === 'function') {
         try {
           const isoUrl = await off.iso();
@@ -611,7 +605,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
         }
       }
 
-      // 2) Componentes en secuencia
+      // 2) Componentes
       let idx = 0;
       for (const ent of items) {
         try {
@@ -670,6 +664,7 @@ function extractDescMap(res) {
 
   let data = res.data ?? res;
 
+  // Caso Colab típico: data['application/json']
   if (
     data &&
     typeof data === 'object' &&
@@ -679,6 +674,7 @@ function extractDescMap(res) {
     return data['application/json'];
   }
 
+  // Caso actual: data['text/plain'] = "{'base.dae': '...'}"
   if (
     data &&
     typeof data === 'object' &&
@@ -689,11 +685,13 @@ function extractDescMap(res) {
     if (parsed) return parsed;
   }
 
+  // Si es string plano, intentar parsear igual
   if (typeof data === 'string') {
     const parsed = parseMaybePythonDict(data.trim());
     if (parsed) return parsed;
   }
 
+  // Si ya es objeto razonable, úsalo
   if (
     data &&
     typeof data === 'object' &&
@@ -703,6 +701,7 @@ function extractDescMap(res) {
     return data;
   }
 
+  // Array de objetos: tomar el primero
   if (
     Array.isArray(data) &&
     data.length &&
@@ -714,22 +713,52 @@ function extractDescMap(res) {
   return null;
 }
 
+/**
+ * ✅ Nueva versión robusta:
+ *  - Soporta dict Python: {'base.dae': '...'}
+ *  - Soporta JSON válido.
+ *  - Fallback con Function(...) sólo en este contexto controlado.
+ */
 function parseMaybePythonDict(raw) {
-  if (!raw || raw[0] !== '{' || raw[raw.length - 1] !== '}') return null;
+  if (!raw) return null;
+  raw = String(raw).trim();
+  if (!raw.startsWith('{') || !raw.endsWith('}')) return null;
 
+  // 1) Intento JSON directo
   try {
     const j = JSON.parse(raw);
     if (j && typeof j === 'object') return j;
   } catch (_) {}
 
+  // 2) Intento: reemplazar sintaxis Python -> JS y evaluar de forma controlada
   try {
-    let jsonLike = raw.replace(/'/g, '"');
-    jsonLike = jsonLike.replace(
-      /([,{]\s*)([A-Za-z0-9_./-]+)\s*:/g,
-      '$1"$2":',
-    );
-    const j2 = JSON.parse(jsonLike);
-    if (j2 && typeof j2 === 'object') return j2;
+    let expr = raw;
+
+    // Normalizar booleanos / None
+    expr = expr.replace(/\bNone\b/g, 'null');
+    expr = expr.replace(/\bTrue\b/g, 'true');
+    expr = expr.replace(/\bFalse\b/g, 'false');
+
+    // Si usa comillas simples tipo dict Python, no lo tocamos a mano campo por campo:
+    // dejamos que el motor JS lo evalue como objeto literal.
+    // Ejemplo: {'base.dae': 'texto'} es válido en new Function("return (...)").
+    const obj = new Function('return (' + expr + ')')();
+    if (obj && typeof obj === 'object') return obj;
+  } catch (_) {}
+
+  // 3) Fallback muy simple: intentar extraer pares 'k': 'v'
+  try {
+    const out = {};
+    const inner = raw.slice(1, -1);
+    const regex = /'([^']+)'\s*:\s*'([^']*)'/g;
+    let m;
+    while ((m = regex.exec(inner))) {
+      const key = m[1];
+      let val = m[2] || '';
+      val = val.replace(/\\n/g, '\n');
+      out[key] = val;
+    }
+    if (Object.keys(out).length) return out;
   } catch (_) {}
 
   return null;
