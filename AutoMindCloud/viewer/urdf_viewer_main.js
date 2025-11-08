@@ -1,59 +1,73 @@
-// urdf_viewer_main.js
-// ViewerCore + AssetDB + Interaction + UI
-// Thumbnails: componente aislado (todas sus instancias), Iso View, colores correctos.
-// IA: opt-in con IA_Widgets.
+// /viewer/urdf_viewer_main.js
+// Entrypoint: ViewerCore + AssetDB + Selection & Drag + UI (Tools & Components)
+// - Thumbnails de componentes:
+//     * usando renderer offscreen que clona el robot con materiales reales
+//     * muestra SOLO el componente (todas sus instancias) aislado, sin el robot entero
+//     * iso view, sin imágenes negras
+// - IA_Widgets (opt-in):
+//     * si true, envía thumbnails comprimidos a Colab (describe_component_images)
+//     * si false, no se hace ninguna llamada ni callback
 
 /* global THREE */
 
-import { THEME } from "./Theme.js";
-import { createViewer } from "./core/ViewerCore.js";
-import { buildAssetDB, createLoadMeshCb } from "./core/AssetDB.js";
-import { attachInteraction } from "./interaction/SelectionAndDrag.js";
-import { createToolsDock } from "./ui/ToolsDock.js";
-import { createComponentsPanel } from "./ui/ComponentsPanel.js";
+import { THEME } from './Theme.js';
+import { createViewer } from './core/ViewerCore.js';
+import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
+import { attachInteraction } from './interaction/SelectionAndDrag.js';
+import { createToolsDock } from './ui/ToolsDock.js';
+import { createComponentsPanel } from './ui/ComponentsPanel.js';
 
+export let Base64Images = []; // para compatibilidad: guarda PNG base64 (sin header)
+
+/**
+ * Public entry.
+ */
 export function render(opts = {}) {
   const {
     container,
-    urdfContent = "",
+    urdfContent = '',
     meshDB = {},
-    selectMode = "link",
+    selectMode = 'link',
     background = THEME.bgCanvas || 0xffffff,
     clickAudioDataURL = null,
-    IA_Widgets = false,
+    IA_Widgets = false,          // ✅ opt-in IA
   } = opts;
 
-  // 1) Core
+  // 1) Core viewer
   const core = createViewer({ container, background });
 
-  // 2) AssetDB + assetKey -> meshes
+  // 2) Asset DB + onMeshTag para indexar meshes
   const assetDB = buildAssetDB(meshDB);
-  const assetToMeshes = new Map();
+  const assetToMeshes = new Map(); // assetKey -> Mesh[]
 
   const loadMeshCb = createLoadMeshCb(assetDB, {
     onMeshTag(obj, assetKey) {
       const list = assetToMeshes.get(assetKey) || [];
       obj.traverse((o) => {
-        if (o && o.isMesh && o.geometry) {
-          list.push(o);
+        if (o && o.isMesh && o.geometry) list.push(o);
+      });
+      assetToMeshes.set(assetKey, list);
+
+      // tag para reconstruir luego en clones
+      obj.traverse((o) => {
+        if (o && o.isMesh) {
           o.userData = o.userData || {};
-          if (!o.userData.__assetKey) o.userData.__assetKey = assetKey;
+          o.userData.__assetKey = assetKey;
         }
       });
-      if (list.length) assetToMeshes.set(assetKey, list);
-    },
+    }
   });
 
-  // 3) Carga URDF
+  // 3) Load URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // Fallback si el hook no llenó nada
+  // fallback si no se llenó assetToMeshes
   if (robot && !assetToMeshes.size) {
     rebuildAssetMapFromRobot(robot, assetToMeshes);
   }
 
-  // 4) Sistema de thumbnails aislados
-  const thumbs = buildIsoThumbnailSystem(core, robot, assetToMeshes);
+  // 4) Offscreen thumbnails (usa lógica probada del script viejo)
+  const off = buildOffscreenForThumbnails(core);
 
   // 5) Interacción
   const inter = attachInteraction({
@@ -62,77 +76,99 @@ export function render(opts = {}) {
     renderer: core.renderer,
     controls: core.controls,
     robot,
-    selectMode,
+    selectMode
   });
 
-  // 6) Facade app
+  // 6) Facade app (para ToolsDock / ComponentsPanel)
   const app = {
     ...core,
     robot,
     IA_Widgets,
 
+    // lista + thumbnail por assetKey
     assets: {
       list: () => listAssets(assetToMeshes),
-      thumbnail: (assetKey) => thumbs.thumbnail(assetKey),
+      thumbnail: (assetKey) => off?.thumbnail(assetKey)
     },
 
     isolate: {
       asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey),
-      clear: () => showAll(core),
+      clear: () => showAll(core)
     },
 
     showAll: () => showAll(core),
 
-    openTools(open = true) {
-      tools.set(!!open);
-    },
+    openTools(open = true) { tools.set(!!open); },
 
+    // IA: descripciones por asset
     componentDescriptions: {},
-
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions;
-      if (!src) return "";
-      if (!Array.isArray(src) && typeof src === "object") {
+      if (!src) return '';
+
+      if (!Array.isArray(src) && typeof src === 'object') {
         if (src[assetKey]) return src[assetKey];
-        const base = (assetKey || "").split("/").pop().split(".")[0];
+        const base = (assetKey || '').split('/').pop().split('.')[0];
         if (src[base]) return src[base];
       }
-      if (Array.isArray(src) && typeof index === "number") {
-        return src[index] || "";
+
+      if (Array.isArray(src) && typeof index === 'number') {
+        return src[index] || '';
       }
-      return "";
+
+      return '';
     },
+
+    // compat: recolectar thumbnails en Base64Images
+    collectAllThumbnails: async () => {
+      const items = app.assets.list();
+      Base64Images.length = 0;
+      for (const it of items) {
+        try {
+          const url = await app.assets.thumbnail(it.assetKey);
+          if (!url || typeof url !== 'string') continue;
+          const base64 = url.split(',')[1] || '';
+          if (base64) Base64Images.push(base64);
+        } catch (_) {}
+      }
+      if (typeof window !== 'undefined') window.Base64Images = Base64Images;
+      return Base64Images;
+    }
   };
 
   // 7) UI
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // 8) Sonido opcional
+  // 8) Click SFX opcional
   if (clickAudioDataURL) {
-    try {
-      installClickSound(clickAudioDataURL);
-    } catch (_) {}
+    try { installClickSound(clickAudioDataURL); } catch (_) {}
   }
 
-  // 9) IA opcional
+  // 9) IA (solo si IA_Widgets = true)
   if (IA_Widgets) {
-    bootstrapComponentDescriptions(app, assetToMeshes, thumbs);
+    bootstrapComponentDescriptions(app, assetToMeshes, off);
   }
 
-  // 10) Destroy
+  // 10) Exponer en window
+  if (typeof window !== 'undefined') {
+    window.URDFViewer = window.URDFViewer || {};
+    try { window.URDFViewer.__app = app; } catch (_) {}
+  }
+
+  // destroy
   const destroy = () => {
     try { comps.destroy(); } catch (_) {}
     try { tools.destroy(); } catch (_) {}
     try { inter.destroy(); } catch (_) {}
-    try { thumbs.destroy(); } catch (_) {}
+    try { off?.destroy?.(); } catch (_) {}
     try { core.destroy(); } catch (_) {}
   };
 
   return { ...app, destroy };
 }
 
-/* ======================= Helpers: assets / isolate ===================== */
+/* =========================== Helpers =========================== */
 
 function rebuildAssetMapFromRobot(robot, assetToMeshes) {
   const tmp = new Map();
@@ -154,302 +190,292 @@ function rebuildAssetMapFromRobot(robot, assetToMeshes) {
 }
 
 function listAssets(assetToMeshes) {
-  const out = [];
+  const items = [];
   assetToMeshes.forEach((meshes, assetKey) => {
-    if (!meshes || !meshes.length) return;
-    const clean = String(assetKey || "").split("?")[0].split("#")[0];
-    const baseFull = clean.split("/").pop();
-    const dot = baseFull.lastIndexOf(".");
-    const base = dot >= 0 ? baseFull.slice(0, dot) : baseFull;
-    const ext = dot >= 0 ? baseFull.slice(dot + 1).toLowerCase() : "";
-    out.push({ assetKey, base, ext, count: meshes.length });
+    if (!meshes || meshes.length === 0) return;
+    const { base, ext } = splitName(assetKey);
+    items.push({ assetKey, base, ext, count: meshes.length });
   });
-  out.sort((a, b) =>
-    a.base.localeCompare(b.base, undefined, {
-      numeric: true,
-      sensitivity: "base",
-    })
+  items.sort((a, b) =>
+    a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' })
   );
-  return out;
+  return items;
+}
+
+function splitName(key) {
+  const clean = String(key || '').split('?')[0].split('#')[0];
+  const base = clean.split('/').pop();
+  const dot = base.lastIndexOf('.');
+  return {
+    base: dot >= 0 ? base.slice(0, dot) : base,
+    ext: dot >= 0 ? base.slice(dot + 1).toLowerCase() : ''
+  };
 }
 
 function isolateAsset(core, assetToMeshes, assetKey) {
   const meshes = assetToMeshes.get(assetKey) || [];
-  if (!core.robot) return;
-  core.robot.traverse((o) => {
-    if (o.isMesh && o.geometry) o.visible = false;
-  });
-  meshes.forEach((m) => (m.visible = true));
+  if (core.robot) {
+    core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = false; });
+  }
+  meshes.forEach(m => { m.visible = true; });
   frameMeshes(core, meshes);
 }
 
 function showAll(core) {
   if (!core.robot) return;
-  core.robot.traverse((o) => {
-    if (o.isMesh && o.geometry) o.visible = true;
-  });
+  core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = true; });
   if (core.fitAndCenter) core.fitAndCenter(core.robot, 1.06);
 }
 
 function frameMeshes(core, meshes) {
-  if (!meshes || !meshes.length || !core.camera) return;
-  const { camera, renderer, scene } = core;
-
+  if (!meshes || meshes.length === 0) return;
   const box = new THREE.Box3();
   const tmp = new THREE.Box3();
   let has = false;
-
-  for (const m of meshes) {
+  meshes.forEach(m => {
+    if (!m) return;
     tmp.setFromObject(m);
-    if (!has) {
-      box.copy(tmp);
-      has = true;
-    } else {
-      box.union(tmp);
-    }
-  }
+    if (!has) { box.copy(tmp); has = True; } else box.union(tmp);
+  });
   if (!has) return;
-
   const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3());
+  const size   = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
-  const dist = maxDim * 2.0;
 
-  camera.near = Math.max(maxDim / 1000, 0.001);
-  camera.far = Math.max(maxDim * 1000, 1000);
-  camera.updateProjectionMatrix();
+  const cam = core.camera;
+  const ctrl = core.controls;
 
-  const az = Math.PI * 0.25;
-  const el = Math.PI * 0.3;
-  const dirV = new THREE.Vector3(
-    Math.cos(el) * Math.cos(az),
-    Math.sin(el),
-    Math.cos(el) * Math.sin(az)
-  ).multiplyScalar(dist);
+  if (cam.isPerspectiveCamera) {
+    const fov = (cam.fov || 60) * Math.PI / 180;
+    const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
+    cam.near = Math.max(maxDim / 1000, 0.001);
+    cam.far = Math.max(maxDim * 1500, 1500);
+    cam.updateProjectionMatrix();
+    const dir = new THREE.Vector3(1, 0.7, 1).normalize();
+    cam.position.copy(center.clone().add(dir.multiplyScalar(dist)));
+  } else {
+    cam.left = -maxDim; cam.right = maxDim;
+    cam.top = maxDim;   cam.bottom = -maxDim;
+    cam.near = Math.max(maxDim / 1000, 0.001);
+    cam.far = Math.max(maxDim * 1500, 1500);
+    cam.updateProjectionMatrix();
+    cam.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
+  }
 
-  camera.position.copy(center.clone().add(dirV));
-  camera.lookAt(center);
-
-  renderer.render(scene, camera);
+  if (ctrl) {
+    ctrl.target.copy(center);
+    ctrl.update();
+  }
 }
 
-/* ================= Thumbs: componente aislado + Iso View ================ */
+/* ================= Offscreen thumbnails (script viejo) ================= */
 
-function buildIsoThumbnailSystem(core, robot, assetToMeshes) {
-  if (!robot || typeof THREE === "undefined") {
-    return {
-      async thumbnail() { return null; },
-      destroy() {},
-    };
-  }
+function buildOffscreenForThumbnails(core) {
+  if (!core.robot) return null;
 
-  const WIDTH = 420;
-  const HEIGHT = 320;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = WIDTH;
-  canvas.height = HEIGHT;
+  const OFF_W = 640, OFF_H = 480;
+  const canvas = document.createElement('canvas');
+  canvas.width = OFF_W;
+  canvas.height = OFF_H;
 
   const renderer = new THREE.WebGLRenderer({
     canvas,
     antialias: true,
-    preserveDrawingBuffer: true,
+    preserveDrawingBuffer: true
   });
-  renderer.setSize(WIDTH, HEIGHT, false);
-  renderer.setClearColor(0xffffff, 1);
+  renderer.setSize(OFF_W, OFF_H, false);
 
-  // Heredar configuración básica
+  // Copiar config del renderer principal (clave para evitar negros raros)
   if (core.renderer) {
+    renderer.physicallyCorrectLights = core.renderer.physicallyCorrectLights ?? true;
     renderer.toneMapping = core.renderer.toneMapping;
-    renderer.toneMappingExposure = core.renderer.toneMappingExposure;
-    renderer.physicallyCorrectLights =
-      core.renderer.physicallyCorrectLights ?? true;
-
-    if ("outputColorSpace" in renderer && "outputColorSpace" in core.renderer) {
-      renderer.outputColorSpace = core.renderer.outputColorSpace;
-    } else if ("outputEncoding" in renderer && "outputEncoding" in core.renderer) {
-      renderer.outputEncoding = core.renderer.outputEncoding;
+    renderer.toneMappingExposure = core.renderer.toneMappingExposure ?? 1.0;
+    if ('outputColorSpace' in renderer) {
+      renderer.outputColorSpace = core.renderer.outputColorSpace ?? THREE.SRGBColorSpace;
+    } else {
+      renderer.outputEncoding = core.renderer.outputEncoding ?? THREE.sRGBEncoding;
     }
-
-    renderer.shadowMap.enabled = false;
+    renderer.shadowMap.enabled = core.renderer.shadowMap?.enabled ?? false;
+    renderer.shadowMap.type = core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
   }
 
-  const cache = new Map();
+  const baseScene = new THREE.Scene();
+  baseScene.background = core.scene?.background ?? new THREE.Color(0xffffff);
+  baseScene.environment = core.scene?.environment ?? null;
 
-  function collectMeshesForKey(assetKey) {
-    const out = [];
-    const keyNorm = String(assetKey);
+  const amb = new THREE.AmbientLight(0xffffff, 0.95);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+  dir.position.set(2.5, 2.5, 2.5);
+  baseScene.add(amb, dir);
 
-    // 1) Si tenemos assetToMeshes, úsalo
-    if (assetToMeshes && assetToMeshes.size) {
-      const arr = assetToMeshes.get(assetKey);
-      if (arr && arr.length) {
-        return arr.slice();
+  const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
+
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  const ready = (async () => {
+    await sleep(400);
+    renderer.render(baseScene, camera);
+  })();
+
+  function buildCloneAndMap() {
+    const scene = baseScene.clone();
+    scene.background = baseScene.background;
+    scene.environment = baseScene.environment;
+
+    const robotClone = core.robot.clone(true);
+    scene.add(robotClone);
+
+    // Clonar materiales
+    robotClone.traverse(o => {
+      if (o.isMesh && o.material) {
+        if (Array.isArray(o.material)) {
+          o.material = o.material.map(m => m.clone());
+        } else {
+          o.material = o.material.clone();
+        }
+        o.material.needsUpdate = true;
       }
-    }
-
-    // 2) Fallback: buscar por userData
-    robot.traverse((o) => {
-      if (!o.isMesh || !o.geometry) return;
-      const k =
-        (o.userData &&
-          (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) ||
-        null;
-      if (k === keyNorm) out.push(o);
     });
 
-    return out;
+    // Re-armar mapping a partir de __assetKey
+    const cloneMap = new Map();
+    robotClone.traverse(o => {
+      const key = o?.userData?.__assetKey;
+      if (key && o.isMesh && o.geometry) {
+        const arr = cloneMap.get(key) || [];
+        arr.push(o);
+        cloneMap.set(key, arr);
+      }
+    });
+
+    return { scene, robotClone, cloneMap };
   }
 
-  async function captureIso(assetKey) {
-    const meshes = collectMeshesForKey(assetKey);
+  function snapshotAsset(assetKey) {
+    const { scene, robotClone, cloneMap } = buildCloneAndMap();
+    const meshes = cloneMap.get(assetKey) || [];
     if (!meshes.length) return null;
 
-    // Asegura matrices actualizadas
-    robot.updateWorldMatrix(true, true);
-    meshes.forEach((m) => m.updateWorldMatrix(true, false));
-
-    // Escena nueva SOLO con ese componente
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xffffff);
-
-    const amb = new THREE.AmbientLight(0xffffff, 0.9);
-    const dir = new THREE.DirectionalLight(0xffffff, 1.3);
-    dir.position.set(3, 4, 5);
-    scene.add(amb, dir);
-
-    const group = new THREE.Group();
-    scene.add(group);
-
-    // Clonar cada mesh con su transform global → componente aislado
-    for (const m of meshes) {
-      if (!m.isMesh || !m.geometry) continue;
-      const clone = m.clone();
-
-      if (Array.isArray(m.material)) {
-        clone.material = m.material.map((mt) => mt.clone());
-      } else if (m.material) {
-        clone.material = m.material.clone();
+    // Ocultar todo menos ese assetKey
+    const vis = [];
+    robotClone.traverse(o => {
+      if (o.isMesh && o.geometry) {
+        vis.push([o, o.visible]);
+        o.visible = false;
       }
+    });
+    meshes.forEach(m => { m.visible = true; });
 
-      clone.applyMatrix4(m.matrixWorld); // posición real
-      clone.visible = true;
-      group.add(clone);
-    }
+    // Box del componente aislado (todas sus instancias)
+    const box = new THREE.Box3();
+    const tmp = new THREE.Box3();
+    let has = false;
+    meshes.forEach(m => {
+      tmp.setFromObject(m);
+      if (!has) { box.copy(tmp); has = true; } else box.union(tmp);
+    });
+    if (!has) return null;
 
-    if (!group.children.length) return null;
-
-    // Bounding box del componente aislado
-    const box = new THREE.Box3().setFromObject(group);
     const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
+    const size   = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = maxDim * 2.2;
+    const dist   = maxDim * 2.0;
 
-    // Cámara Iso
-    const camera = new THREE.PerspectiveCamera(
-      55,
-      WIDTH / HEIGHT,
-      Math.max(maxDim / 1000, 0.001),
-      Math.max(maxDim * 1000, 5000)
-    );
+    camera.near = Math.max(maxDim / 1000, 0.001);
+    camera.far  = Math.max(maxDim * 1000, 1000);
+    camera.updateProjectionMatrix();
+
+    // Iso view
     const az = Math.PI * 0.25;
-    const el = Math.PI * 0.3;
+    const el = Math.PI * 0.20;
     const dirV = new THREE.Vector3(
       Math.cos(el) * Math.cos(az),
       Math.sin(el),
       Math.cos(el) * Math.sin(az)
     ).multiplyScalar(dist);
-
     camera.position.copy(center.clone().add(dirV));
     camera.lookAt(center);
-    camera.updateProjectionMatrix();
 
-    renderer.setSize(WIDTH, HEIGHT, false);
     renderer.render(scene, camera);
 
-    return canvas.toDataURL("image/png");
+    const url = canvas.toDataURL('image/png');
+    const base64 = url.split(',')[1] || '';
+    if (base64) {
+      Base64Images.push(base64);
+      if (typeof window !== 'undefined') window.Base64Images = Base64Images;
+    }
+
+    // Restaurar (no esencial: clone se descarta)
+    for (const [o, v] of vis) o.visible = v;
+
+    return url;
   }
 
   return {
-    async thumbnail(assetKey) {
-      if (cache.has(assetKey)) return cache.get(assetKey);
-      const url = await captureIso(assetKey);
-      cache.set(assetKey, url);
-      return url;
+    thumbnail: async (assetKey) => {
+      try {
+        await ready;
+        return snapshotAsset(assetKey);
+      } catch {
+        return null;
+      }
     },
-    destroy() {
+    destroy: () => {
       try { renderer.dispose(); } catch (_) {}
-      cache.clear();
-    },
+      try { baseScene.clear(); } catch (_) {}
+    }
   };
 }
 
-/* ========================== IA (optativa) ============================= */
+/* =================== IA opt-in: describe_component_images =================== */
 
-function bootstrapComponentDescriptions(app, assetToMeshes, thumbs) {
-  if (!app || app.IA_Widgets !== true) {
-    console.debug("[Components] IA_Widgets desactivado; no se piden descripciones.");
-    return;
-  }
-
+function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   const hasColab =
-    typeof window !== "undefined" &&
+    typeof window !== 'undefined' &&
     window.google &&
     window.google.colab &&
     window.google.colab.kernel &&
-    typeof window.google.colab.kernel.invokeFunction === "function";
+    typeof window.google.colab.kernel.invokeFunction === 'function';
 
   if (!hasColab) {
-    console.debug("[Components] Colab bridge no disponible; sin IA.");
+    console.debug('[Components] Colab bridge no disponible; IA deshabilitada.');
     return;
   }
 
   const items = listAssets(assetToMeshes);
-  if (!items.length) {
-    console.debug("[Components] No hay assets para describir.");
-    return;
-  }
+  if (!items.length) return;
 
   (async () => {
     const entries = [];
-
     for (const ent of items) {
       try {
-        const full = await thumbs.thumbnail(ent.assetKey);
-        if (!full) continue;
-        const b64 = await makeApproxSizedBase64(full, 5);
+        const url = await off.thumbnail(ent.assetKey);
+        if (!url) continue;
+        const b64 = await makeApproxSizedBase64(url, 5);
         if (!b64) continue;
         entries.push({ key: ent.assetKey, image_b64: b64 });
       } catch (e) {
-        console.warn("[Components] Error thumbnail IA", ent.assetKey, e);
+        console.warn('[Components] Error generando thumb IA', ent.assetKey, e);
       }
     }
 
-    console.debug(
-      `[Components] Enviando ${entries.length} thumbnails (~5KB) a Colab para IA.`
-    );
     if (!entries.length) return;
 
     try {
       const res = await window.google.colab.kernel.invokeFunction(
-        "describe_component_images",
+        'describe_component_images',
         [entries],
         {}
       );
       const map = extractDescMap(res);
-      console.debug("[Components] Mapa IA:", map);
-
-      if (map && typeof map === "object") {
+      if (map && typeof map === 'object') {
         app.componentDescriptions = map;
-        if (typeof window !== "undefined") {
+        if (typeof window !== 'undefined') {
           window.COMPONENT_DESCRIPTIONS = map;
         }
-      } else {
-        console.warn("[Components] Respuesta IA sin mapa utilizable.");
       }
     } catch (err) {
-      console.error("[Components] Error invokeFunction:", err);
+      console.error('[Components] Error invokeFunction IA:', err);
     }
   })();
 }
@@ -457,13 +483,13 @@ function bootstrapComponentDescriptions(app, assetToMeshes, thumbs) {
 function extractDescMap(res) {
   if (!res) return {};
   const data = res.data || res;
-  if (data["application/json"] && typeof data["application/json"] === "object") {
-    return data["application/json"];
+  if (data['application/json'] && typeof data['application/json'] === 'object') {
+    return data['application/json'];
   }
-  if (Array.isArray(data) && data.length && typeof data[0] === "object") {
+  if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
     return data[0];
   }
-  if (typeof data === "object") return data;
+  if (typeof data === 'object') return data;
   return {};
 }
 
@@ -473,11 +499,11 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
     const resp = await fetch(dataURL);
     const blob = await resp.blob();
 
-    const img = document.createElement("img");
+    const img = document.createElement('img');
     const u = URL.createObjectURL(blob);
     await new Promise((res, rej) => {
       img.onload = () => res();
-      img.onerror = (e) => rej(e);
+      img.onerror = rej;
       img.src = u;
     });
 
@@ -486,20 +512,18 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
     const w = Math.max(32, Math.floor(img.width * scale));
     const h = Math.max(32, Math.floor(img.height * scale));
 
-    const canvas = document.createElement("canvas");
+    const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, w, h);
+    const ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0, w, h);
     URL.revokeObjectURL(u);
 
-    let best = "";
+    let best = '';
     let q = 0.92;
     for (let i = 0; i < 8; i++) {
-      const qq = Math.max(0.4, Math.min(0.96, q));
-      const out = canvas.toDataURL("image/jpeg", qq);
-      const b64 = out.split(",")[1] || "";
+      const out = canvas.toDataURL('image/jpeg', Math.max(0.4, Math.min(0.96, q)));
+      const b64 = out.split(',')[1] || '';
       if (!b64) break;
       best = b64;
       const bytes = Math.floor((b64.length * 3) / 4);
@@ -508,33 +532,41 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
     }
     return best || null;
   } catch (e) {
-    console.warn("[makeApproxSizedBase64] Error", e);
+    console.warn('[makeApproxSizedBase64] Error', e);
     return null;
   }
 }
 
-/* ==================== Click sound + hook global ======================= */
+/* ================= Click sound + hook global ================= */
 
 function installClickSound(dataURL) {
-  try {
-    const audio = new Audio(dataURL);
-    const play = () => {
-      try {
-        audio.currentTime = 0;
-        audio.play().catch(() => {});
-      } catch (_) {}
-    };
-    window.__urdf_click__ = play;
-  } catch (_) {}
+  if (!dataURL || typeof dataURL !== 'string') return;
+  let ctx = null, buf = null;
+  async function ensure() {
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!buf) {
+      const resp = await fetch(dataURL);
+      const arr = await resp.arrayBuffer();
+      buf = await ctx.decodeAudioData(arr);
+    }
+  }
+  function play() {
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') ctx.resume();
+    if (!buf) { ensure().then(play).catch(() => {}); return; }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    try { src.start(); } catch (_) {}
+  }
+  window.__urdf_click__ = play;
 }
 
-if (typeof window !== "undefined") {
+if (typeof window !== 'undefined') {
   window.URDFViewer = window.URDFViewer || {};
   window.URDFViewer.render = (opts) => {
     const app = render(opts);
-    try {
-      window.URDFViewer.__app = app;
-    } catch (_) {}
+    try { window.URDFViewer.__app = app; } catch (_) {}
     return app;
   };
 }
