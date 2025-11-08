@@ -1,7 +1,8 @@
 #sympy
 gdown
-#cascadio
-#trimesh
+cascadio
+trimesh
 #cadquery
+
 
 
