@@ -120,12 +120,11 @@ export function render(opts = {}) {
     // Se llenará con claves normalizadas en applyIaDescriptionsToApp
     componentDescriptions: {},
 
-    // getComponentDescription será parcheado para usar claves normalizadas
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions || {};
       if (!src) return '';
 
-      // Intento directo (por compatibilidad si vienen sin normalizar)
+      // Intento directo (compatibilidad)
       if (assetKey && src[assetKey]) return src[assetKey];
 
       const baseFull = (assetKey || '').split(/[\\/]/).pop();
@@ -617,7 +616,7 @@ function extractDescMap(res) {
     if (parsed) return parsed;
   }
 
-  // 4) Si es un objeto ya "limpio" (y no es solo {text/plain: ...})
+  // 4) Si es un objeto ya "limpio"
   if (
     data &&
     typeof data === 'object' &&
@@ -657,7 +656,6 @@ function parseMaybePythonDict(raw) {
   try {
     let jsonLike = raw.replace(/'/g, '"');
 
-    // Asegura claves sin comillas (por seguridad)
     jsonLike = jsonLike.replace(
       /([,{]\s*)([A-Za-z0-9_./-]+)\s*:/g,
       '$1"$2":',
@@ -675,6 +673,7 @@ function parseMaybePythonDict(raw) {
  * - Normaliza claves a minúsculas.
  * - Parchea getComponentDescription para usar ese mapa.
  * - Emite ia_descriptions_ready.
+ * - Llama a save_component_descriptions en Colab para GUARDAR SOLO DESCRIPCIONES.
  */
 function applyIaDescriptionsToApp(app, map) {
   if (!map || typeof map !== 'object') return;
@@ -726,12 +725,14 @@ function applyIaDescriptionsToApp(app, map) {
 
   const detail = { map: app.componentDescriptions };
 
+  // Evento interno/app
   if (typeof app.emit === 'function') {
     try {
       app.emit('ia_descriptions_ready', detail);
     } catch (_) {}
   }
 
+  // Evento global para ComponentsPanel
   try {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(
@@ -744,6 +745,35 @@ function applyIaDescriptionsToApp(app, map) {
     '[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido',
     detail,
   );
+
+  // 🔴 NUEVO: guardar SOLO descripciones en Colab
+  try {
+    if (
+      typeof window !== 'undefined' &&
+      window.google &&
+      window.google.colab &&
+      window.google.colab.kernel &&
+      typeof window.google.colab.kernel.invokeFunction === 'function'
+    ) {
+      const safe = {};
+      for (const [k, v] of Object.entries(app.componentDescriptions || {})) {
+        if (typeof v === 'string' && v.trim()) {
+          safe[String(k)] = v.trim();
+        }
+      }
+
+      window.google.colab.kernel
+        .invokeFunction('save_component_descriptions', [safe], {})
+        .then((res) => {
+          debugLog('[IA] save_component_descriptions OK', res);
+        })
+        .catch((err) => {
+          debugLog('[IA] save_component_descriptions error', String(err));
+        });
+    }
+  } catch (e) {
+    debugLog('[IA] save_component_descriptions invoke error', String(e));
+  }
 }
 
 /* =================== Reducción thumbnails ~5KB =================== */
