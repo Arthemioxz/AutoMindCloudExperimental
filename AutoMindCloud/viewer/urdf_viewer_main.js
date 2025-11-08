@@ -1,15 +1,14 @@
 // /viewer/urdf_viewer_main.js
-// Viewer moderno + thumbnails del script estable + IA opt-in con logs.
+// Viewer moderno + thumbnails + IA opt-in + guardado manual de descripciones.
 //
-// - Cada thumbnail:
-//   * Se genera con un renderer offscreen.
-//   * Clona el robot con materiales reales.
-//   * Aísla SOLO el assetKey objetivo (todas las instancias).
-//   * Vista isométrica.
-// - IA_Widgets (optativo):
-//   * IA_Widgets = true -> usa google.colab.kernel.invokeFunction('describe_component_images', ...)
-//   * IA_Widgets = false -> no se llama a la API.
-// - Todos los pasos clave tienen logs vía debugLog(), además guardados en window.URDF_DEBUG_LOGS.
+// Flujo IA:
+//   - JS genera thumbnails (~5KB) de cada componente.
+//   - Llama a "describe_component_images" (Colab) para obtener descripciones.
+//   - Aplica el mapa a app.componentDescriptions.
+//   - NO guarda nada automáticamente.
+//   - Solo cuando se llama app.saveDescriptions() (o el botón "Save IA descriptions")
+//     se invoca el callback "persist.saveURDFDescriptions" enviado desde Python.
+//   - Ese callback guarda SOLO { assetKey: descripcion } en JSON.
 
 import { THEME } from './Theme.js';
 import { createViewer } from './core/ViewerCore.js';
@@ -45,9 +44,10 @@ export function render(opts = {}) {
     background = THEME.bgCanvas || 0xffffff,
     clickAudioDataURL = null,
     IA_Widgets = false,
+    saveCallbackName = null, // nombre del callback Colab tipo Board
   } = opts;
 
-  debugLog('render() init', { selectMode, background, IA_Widgets });
+  debugLog('render() init', { selectMode, background, IA_Widgets, saveCallbackName });
 
   // 1) Core viewer
   const core = createViewer({ container, background });
@@ -98,11 +98,12 @@ export function render(opts = {}) {
     selectMode,
   });
 
-  // 6) Facade app para UI
+  // 6) Facade app
   const app = {
     ...core,
     robot,
     IA_Widgets,
+    saveCallbackName: saveCallbackName || null,
     assets: {
       list: () => listAssets(assetToMeshes),
       thumbnail: (assetKey) => off?.thumbnail(assetKey),
@@ -117,14 +118,12 @@ export function render(opts = {}) {
       tools.set(!!open);
     },
 
-    // Se llenará con claves normalizadas en applyIaDescriptionsToApp
     componentDescriptions: {},
 
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions || {};
       if (!src) return '';
 
-      // Intento directo (compatibilidad)
       if (assetKey && src[assetKey]) return src[assetKey];
 
       const baseFull = (assetKey || '').split(/[\\/]/).pop();
@@ -350,7 +349,6 @@ function buildOffscreenForThumbnails(core) {
 
   renderer.setSize(OFF_W, OFF_H, false);
 
-  // Igualar configuración de renderer principal
   if (core.renderer) {
     renderer.physicallyCorrectLights =
       core.renderer.physicallyCorrectLights ?? true;
@@ -365,7 +363,8 @@ function buildOffscreenForThumbnails(core) {
     }
 
     renderer.shadowMap.enabled = core.renderer.shadowMap?.enabled ?? false;
-    renderer.shadowMap.type = core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type =
+      core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
   }
 
   const baseScene = new THREE.Scene();
@@ -537,7 +536,6 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
           const url = await off.thumbnail(ent.assetKey);
           if (!url) continue;
 
-          // Reducir a ~5KB
           const b64 = await makeApproxSizedBase64(url, 5);
           if (!b64) continue;
 
@@ -579,17 +577,14 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
 
 /**
  * Extrae un mapa assetKey -> descripción desde la respuesta
- * de google.colab.kernel.invokeFunction, manejando:
- * - {data: {"application/json": {...}}}
- * - {data: {"text/plain": "{'base.dae': '...'}"}}
- * - dicts planos ya parseados
+ * de google.colab.kernel.invokeFunction.
  */
 function extractDescMap(res) {
   if (!res) return null;
 
   let data = res.data ?? res;
 
-  // 1) Caso application/json correcto
+  // 1) application/json
   if (
     data &&
     typeof data === 'object' &&
@@ -599,7 +594,7 @@ function extractDescMap(res) {
     return data['application/json'];
   }
 
-  // 2) Caso text/plain con dict (Python o JSON)
+  // 2) text/plain con dict
   if (
     data &&
     typeof data === 'object' &&
@@ -610,23 +605,22 @@ function extractDescMap(res) {
     if (parsed) return parsed;
   }
 
-  // 3) Si data es string directa
+  // 3) string directa
   if (typeof data === 'string') {
     const parsed = parseMaybePythonDict(data.trim());
     if (parsed) return parsed;
   }
 
-  // 4) Si es un objeto ya "limpio"
+  // 4) objeto plano
   if (
     data &&
     typeof data === 'object' &&
-    !Array.isArray(data) &&
-    !(Object.keys(data).length === 1 && 'text/plain' in data)
+    !Array.isArray(data)
   ) {
     return data;
   }
 
-  // 5) Si es array con objeto dentro
+  // 5) array con objeto dentro
   if (
     Array.isArray(data) &&
     data.length &&
@@ -639,28 +633,24 @@ function extractDescMap(res) {
 }
 
 /**
- * Parsea cadenas tipo:
+ * Parsea dict tipo Python o JSON:
  *   "{'base.dae': 'Actuador ...'}"
  *   '{"base.dae": "Actuador ..."}"
  */
 function parseMaybePythonDict(raw) {
   if (!raw || raw[0] !== '{' || raw[raw.length - 1] !== '}') return null;
 
-  // 1) Intentar JSON directo
   try {
     const j = JSON.parse(raw);
     if (j && typeof j === 'object') return j;
   } catch (_) {}
 
-  // 2) Transformar dict Python -> JSON
   try {
     let jsonLike = raw.replace(/'/g, '"');
-
     jsonLike = jsonLike.replace(
       /([,{]\s*)([A-Za-z0-9_./-]+)\s*:/g,
       '$1"$2":',
     );
-
     const j2 = JSON.parse(jsonLike);
     if (j2 && typeof j2 === 'object') return j2;
   } catch (_) {}
@@ -669,11 +659,13 @@ function parseMaybePythonDict(raw) {
 }
 
 /**
- * Aplica el mapa IA al app:
- * - Normaliza claves a minúsculas.
- * - Parchea getComponentDescription para usar ese mapa.
- * - Emite ia_descriptions_ready.
- * - Llama a save_component_descriptions en Colab para GUARDAR SOLO DESCRIPCIONES.
+ * Aplica el mapa IA:
+ * - Normaliza claves.
+ * - Parcha getComponentDescription.
+ * - Define app.saveDescriptions():
+ *     * arma dict plano {key: desc}
+ *     * llama kernel.invokeFunction(saveCallbackName, [dict], {})
+ * - NO guarda automáticamente; solo cuando se llama saveDescriptions().
  */
 function applyIaDescriptionsToApp(app, map) {
   if (!map || typeof map !== 'object') return;
@@ -690,7 +682,6 @@ function applyIaDescriptionsToApp(app, map) {
     }
   }
 
-  // Parchear getComponentDescription una sola vez
   if (!app.__patchedGetComponentDescription) {
     const orig = app.getComponentDescription
       ? app.getComponentDescription.bind(app)
@@ -723,56 +714,46 @@ function applyIaDescriptionsToApp(app, map) {
     app.__patchedGetComponentDescription = true;
   }
 
-  const detail = { map: app.componentDescriptions };
+  app.__iaDescriptionsReady = true;
+  debugLog('[IA] Descripciones IA aplicadas', {
+    count: Object.keys(app.componentDescriptions).length,
+  });
 
-  // Evento interno/app
-  if (typeof app.emit === 'function') {
-    try {
-      app.emit('ia_descriptions_ready', detail);
-    } catch (_) {}
-  }
-
-  // Evento global para ComponentsPanel
-  try {
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(
-        new CustomEvent('ia_descriptions_ready', { detail }),
-      );
-    }
-  } catch (_) {}
-
-  debugLog(
-    '[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido',
-    detail,
-  );
-
-  // 🔴 NUEVO: guardar SOLO descripciones en Colab
-  try {
-    if (
-      typeof window !== 'undefined' &&
-      window.google &&
-      window.google.colab &&
-      window.google.colab.kernel &&
-      typeof window.google.colab.kernel.invokeFunction === 'function'
-    ) {
-      const safe = {};
-      for (const [k, v] of Object.entries(app.componentDescriptions || {})) {
-        if (typeof v === 'string' && v.trim()) {
-          safe[String(k)] = v.trim();
+  if (!app.saveDescriptions) {
+    app.saveDescriptions = async function () {
+      try {
+        const cbName = app.saveCallbackName;
+        if (!cbName) {
+          debugLog('[IA] saveDescriptions: sin saveCallbackName');
+          return { ok: false, error: 'no_callback' };
         }
-      }
 
-      window.google.colab.kernel
-        .invokeFunction('save_component_descriptions', [safe], {})
-        .then((res) => {
-          debugLog('[IA] save_component_descriptions OK', res);
-        })
-        .catch((err) => {
-          debugLog('[IA] save_component_descriptions error', String(err));
+        const kernel = window.google?.colab?.kernel;
+        if (!kernel || typeof kernel.invokeFunction !== 'function') {
+          debugLog('[IA] saveDescriptions: sin kernel Colab');
+          return { ok: false, error: 'no_kernel' };
+        }
+
+        const src = app.componentDescriptions || {};
+        const safe = {};
+        for (const [k, v] of Object.entries(src)) {
+          if (typeof v === 'string' && v.trim()) {
+            safe[String(k)] = v.trim();
+          }
+        }
+
+        debugLog('[IA] saveDescriptions →', cbName, {
+          count: Object.keys(safe).length,
         });
-    }
-  } catch (e) {
-    debugLog('[IA] save_component_descriptions invoke error', String(e));
+
+        const res = await kernel.invokeFunction(cbName, [safe], {});
+        debugLog('[IA] saveDescriptions: respuesta', res);
+        return res || { ok: true };
+      } catch (e) {
+        debugLog('[IA] saveDescriptions error', String(e));
+        return { ok: false, error: String(e) };
+      }
+    };
   }
 }
 
@@ -828,7 +809,7 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
   }
 }
 
-/* ================= Click sound + global hook ================= */
+/* ================= Click sound ================= */
 
 function installClickSound(dataURL) {
   if (!dataURL || typeof dataURL !== 'string') return;
@@ -870,6 +851,8 @@ function installClickSound(dataURL) {
 
   window.__urdf_click__ = play;
 }
+
+/* ================== Global helper ================== */
 
 if (typeof window !== 'undefined') {
   window.URDFViewer = window.URDFViewer || {};
