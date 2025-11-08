@@ -1,15 +1,15 @@
-// /viewer/urdf_viewer_main.js 
+// /viewer/urdf_viewer_main.js
 // Viewer moderno + thumbnails del script estable + IA opt-in con logs.
 //
 // - Cada thumbnail:
-//   * Se genera con un renderer offscreen.
-//   * Clona el robot con materiales reales.
-//   * Aísla SOLO el assetKey objetivo (todas las instancias).
-//   * Vista isométrica.
+//   * Renderer offscreen, robot clonado, pieza aislada, vista isométrica.
 // - IA_Widgets (optativo):
-//   * IA_Widgets = true -> usa google.colab.kernel.invokeFunction('describe_component_images', ...)
+//   * IA_Widgets = true -> usa google.colab.kernel.invokeFunction('describe_component_images', entries)
 //   * IA_Widgets = false -> no se llama a la API.
-// - Todos los pasos clave tienen logs vía debugLog(), además guardados en window.URDF_DEBUG_LOGS.
+// - Ahora además:
+//   * Envía una imagen isométrica del robot completo (__robot_iso__).
+//   * Envía para cada componente: key, name, index, image_b64.
+//   * La API en Colab usa esa info para dar contexto y mejor precisión.
 
 import { THEME } from './Theme.js';
 import { createViewer } from './core/ViewerCore.js';
@@ -117,15 +117,12 @@ export function render(opts = {}) {
       tools.set(!!open);
     },
 
-    // Se llenará con claves normalizadas en applyIaDescriptionsToApp
     componentDescriptions: {},
 
-    // getComponentDescription será parcheado para usar claves normalizadas
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions || {};
       if (!src) return '';
 
-      // Intento directo (por compatibilidad si vienen sin normalizar)
       if (assetKey && src[assetKey]) return src[assetKey];
 
       const baseFull = (assetKey || '').split(/[\\/]/).pop();
@@ -331,7 +328,7 @@ function frameMeshes(core, meshes) {
   }
 }
 
-/* ============= Offscreen thumbnails: componente aislado ============= */
+/* ============= Offscreen thumbnails: componente + ISO robot ============= */
 
 function buildOffscreenForThumbnails(core) {
   if (!core.robot) return null;
@@ -351,7 +348,6 @@ function buildOffscreenForThumbnails(core) {
 
   renderer.setSize(OFF_W, OFF_H, false);
 
-  // Igualar configuración de renderer principal
   if (core.renderer) {
     renderer.physicallyCorrectLights =
       core.renderer.physicallyCorrectLights ?? true;
@@ -426,6 +422,56 @@ function buildOffscreenForThumbnails(core) {
     return { scene, robotClone, cloneMap };
   }
 
+  function snapshotRobotIso() {
+    const scene = baseScene.clone();
+    scene.background = baseScene.background;
+    scene.environment = baseScene.environment;
+
+    const robotClone = core.robot.clone(true);
+    scene.add(robotClone);
+
+    robotClone.traverse((o) => {
+      if (o.isMesh && o.material) {
+        if (Array.isArray(o.material)) {
+          o.material = o.material.map((m) => m.clone());
+        } else {
+          o.material = o.material.clone();
+        }
+        o.material.needsUpdate = true;
+      }
+    });
+
+    const box = new THREE.Box3().setFromObject(robotClone);
+    if (!isFinite(box.max.x) || !isFinite(box.max.y) || !isFinite(box.max.z)) {
+      debugLog('[Thumbs] snapshotRobotIso box inválido');
+      return null;
+    }
+
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const dist = maxDim * 2.4;
+
+    camera.near = Math.max(maxDim / 1000, 0.001);
+    camera.far = Math.max(maxDim * 1500, 1500);
+    camera.updateProjectionMatrix();
+
+    const az = Math.PI * 0.28;
+    const el = Math.PI * 0.22;
+    const dirV = new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az),
+    ).multiplyScalar(dist);
+
+    camera.position.copy(center.clone().add(dirV));
+    camera.lookAt(center);
+
+    renderer.render(scene, camera);
+    const url = canvas.toDataURL('image/png');
+    return url;
+  }
+
   function snapshotAsset(assetKey) {
     const { scene, robotClone, cloneMap } = buildCloneAndMap();
     const meshes = cloneMap.get(assetKey) || [];
@@ -498,6 +544,17 @@ function buildOffscreenForThumbnails(core) {
         return null;
       }
     },
+    async iso() {
+      try {
+        await ready;
+        const url = snapshotRobotIso();
+        debugLog('[Thumbs] iso robot', !!url);
+        return url;
+      } catch (e) {
+        debugLog('[Thumbs] iso error', String(e));
+        return null;
+      }
+    },
     destroy() {
       try { renderer.dispose(); } catch (_) {}
       try { baseScene.clear(); } catch (_) {}
@@ -533,16 +590,44 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     try {
       const entries = [];
 
+      // 1) Imagen ISO del robot completo
+      if (typeof off.iso === 'function') {
+        try {
+          const isoUrl = await off.iso();
+          if (isoUrl) {
+            const isoB64 = await makeApproxSizedBase64(isoUrl, 8);
+            if (isoB64) {
+              entries.push({
+                key: '__robot_iso__',
+                name: 'robot_iso',
+                index: -1,
+                image_b64: isoB64,
+              });
+              debugLog('[IA] __robot_iso__ agregado al payload IA');
+            }
+          }
+        } catch (e) {
+          debugLog('[IA] Error generando ISO robot', String(e));
+        }
+      }
+
+      // 2) Componentes en secuencia
+      let idx = 0;
       for (const ent of items) {
         try {
           const url = await off.thumbnail(ent.assetKey);
           if (!url) continue;
 
-          // Reducir a ~5KB
           const b64 = await makeApproxSizedBase64(url, 5);
           if (!b64) continue;
 
-          entries.push({ key: ent.assetKey, image_b64: b64 });
+          entries.push({
+            key: ent.assetKey,
+            name: ent.base,
+            index: idx,
+            image_b64: b64,
+          });
+          idx += 1;
         } catch (e) {
           debugLog('[IA] Error thumb IA', ent.assetKey, String(e));
         }
@@ -578,19 +663,13 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   })();
 }
 
-/**
- * Extrae un mapa assetKey -> descripción desde la respuesta
- * de google.colab.kernel.invokeFunction, manejando:
- * - {data: {"application/json": {...}}}
- * - {data: {"text/plain": "{'base.dae': '...'}"}}
- * - dicts planos ya parseados
- */
+/* ====== extractDescMap / parseMaybePythonDict / applyIaDescriptions ===== */
+
 function extractDescMap(res) {
   if (!res) return null;
 
   let data = res.data ?? res;
 
-  // 1) Caso application/json correcto
   if (
     data &&
     typeof data === 'object' &&
@@ -600,7 +679,6 @@ function extractDescMap(res) {
     return data['application/json'];
   }
 
-  // 2) Caso text/plain con dict (Python o JSON)
   if (
     data &&
     typeof data === 'object' &&
@@ -611,13 +689,11 @@ function extractDescMap(res) {
     if (parsed) return parsed;
   }
 
-  // 3) Si data es string directa
   if (typeof data === 'string') {
     const parsed = parseMaybePythonDict(data.trim());
     if (parsed) return parsed;
   }
 
-  // 4) Si es un objeto ya "limpio" (y no es solo {text/plain: ...})
   if (
     data &&
     typeof data === 'object' &&
@@ -627,7 +703,6 @@ function extractDescMap(res) {
     return data;
   }
 
-  // 5) Si es array con objeto dentro
   if (
     Array.isArray(data) &&
     data.length &&
@@ -639,30 +714,20 @@ function extractDescMap(res) {
   return null;
 }
 
-/**
- * Parsea cadenas tipo:
- *   "{'base.dae': 'Actuador ...'}"
- *   '{"base.dae": "Actuador ..."}"
- */
 function parseMaybePythonDict(raw) {
   if (!raw || raw[0] !== '{' || raw[raw.length - 1] !== '}') return null;
 
-  // 1) Intentar JSON directo
   try {
     const j = JSON.parse(raw);
     if (j && typeof j === 'object') return j;
   } catch (_) {}
 
-  // 2) Transformar dict Python -> JSON
   try {
     let jsonLike = raw.replace(/'/g, '"');
-
-    // Asegura claves sin comillas (por seguridad)
     jsonLike = jsonLike.replace(
       /([,{]\s*)([A-Za-z0-9_./-]+)\s*:/g,
       '$1"$2":',
     );
-
     const j2 = JSON.parse(jsonLike);
     if (j2 && typeof j2 === 'object') return j2;
   } catch (_) {}
@@ -670,12 +735,6 @@ function parseMaybePythonDict(raw) {
   return null;
 }
 
-/**
- * Aplica el mapa IA al app:
- * - Normaliza claves a minúsculas.
- * - Parchea getComponentDescription para usar ese mapa.
- * - Emite ia_descriptions_ready.
- */
 function applyIaDescriptionsToApp(app, map) {
   if (!map || typeof map !== 'object') return;
 
@@ -691,7 +750,6 @@ function applyIaDescriptionsToApp(app, map) {
     }
   }
 
-  // Parchear getComponentDescription una sola vez
   if (!app.__patchedGetComponentDescription) {
     const orig = app.getComponentDescription
       ? app.getComponentDescription.bind(app)
