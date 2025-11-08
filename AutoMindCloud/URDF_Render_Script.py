@@ -13,15 +13,11 @@
 #   - (Opcional) registra el callback "describe_component_images"
 #     para que el JS pueda pedir descripciones vía API externa.
 #
-# IMPORTANTE:
-#   - Si NO pasas IA_Widgets=True:
-#       * No se registra callback.
-#       * No se envía ninguna imagen a ninguna API.
-#       * Solo funciona el viewer + panel de componentes "local".
-#
-#   - La selección del modelo (por ejemplo GPT-5) se hace en tu API
-#     en Google Cloud. Aquí solo se envía texto + thumbnails.
-#     (No fijamos "model" en el payload a propósito.)
+# Importante:
+#   - IA_Widgets=False  -> no se manda nada a la API.
+#   - IA_Widgets=True   -> JS llama a describe_component_images(entries).
+#   - Aquí solo definimos el payload; el modelo (GPT-5, etc.) se configura
+#     en tu servicio de Google Cloud.
 
 import os
 import re
@@ -39,308 +35,393 @@ _COLAB_CALLBACK_REGISTERED = False
 
 
 def Download_URDF(Drive_Link, Output_Name="Model"):
-    """
-    Descarga un ZIP de Google Drive y lo deja en /content/Output_Name
-    con subcarpetas /urdf y /meshes.
-    """
-    root_dir = "/content"
-    file_id = Drive_Link.split("/d/")[1].split("/")[0]
-    url = f"https://drive.google.com/uc?id={file_id}"
-    zip_path = os.path.join(root_dir, Output_Name + ".zip")
-    tmp_extract = os.path.join(root_dir, f"__tmp_extract_{Output_Name}")
-    final_dir = os.path.join(root_dir, Output_Name)
+  """
+  Descarga un ZIP de Google Drive y lo deja en /content/Output_Name
+  con subcarpetas /urdf y /meshes.
+  """
+  root_dir = "/content"
+  file_id = Drive_Link.split("/d/")[1].split("/")[0]
+  url = f"https://drive.google.com/uc?id={file_id}"
+  zip_path = os.path.join(root_dir, Output_Name + ".zip")
+  tmp_extract = os.path.join(root_dir, f"__tmp_extract_{Output_Name}")
+  final_dir = os.path.join(root_dir, Output_Name)
 
-    if os.path.exists(tmp_extract):
-        shutil.rmtree(tmp_extract)
-    os.makedirs(tmp_extract, exist_ok=True)
-    if os.path.exists(final_dir):
-        shutil.rmtree(final_dir)
+  if os.path.exists(tmp_extract):
+      shutil.rmtree(tmp_extract)
+  os.makedirs(tmp_extract, exist_ok=True)
+  if os.path.exists(final_dir):
+      shutil.rmtree(final_dir)
 
-    import gdown
-    gdown.download(url, zip_path, quiet=True)
+  import gdown
+  gdown.download(url, zip_path, quiet=True)
 
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(tmp_extract)
+  with zipfile.ZipFile(zip_path, "r") as zf:
+      zf.extractall(tmp_extract)
 
-    def junk(name: str) -> bool:
-        return name.startswith(".") or name == "__MACOSX"
+  def junk(name: str) -> bool:
+      return name.startswith(".") or name == "__MACOSX"
 
-    visibles = [n for n in os.listdir(tmp_extract) if not junk(n)]
-    if len(visibles) == 1 and os.path.isdir(os.path.join(tmp_extract, visibles[0])):
-        shutil.move(os.path.join(tmp_extract, visibles[0]), final_dir)
-    else:
-        os.makedirs(final_dir, exist_ok=True)
-        for n in visibles:
-            shutil.move(os.path.join(tmp_extract, n), os.path.join(final_dir, n))
+  visibles = [n for n in os.listdir(tmp_extract) if not junk(n)]
+  if len(visibles) == 1 and os.path.isdir(os.path.join(tmp_extract, visibles[0])):
+      shutil.move(os.path.join(tmp_extract, visibles[0]), final_dir)
+  else:
+      os.makedirs(final_dir, exist_ok=True)
+      for n in visibles:
+          shutil.move(os.path.join(tmp_extract, n), os.path.join(final_dir, n))
 
-    shutil.rmtree(tmp_extract, ignore_errors=True)
-    return final_dir
+  shutil.rmtree(tmp_extract, ignore_errors=True)
+  return final_dir
 
 
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120):
-    """
-    Registra el callback 'describe_component_images' si estamos en Colab.
-    Recibe thumbnails ~5KB en base64 y devuelve { assetKey: descripcion }.
-    """
-    global _COLAB_CALLBACK_REGISTERED
-    if _COLAB_CALLBACK_REGISTERED:
-        return
+  """
+  Registra el callback 'describe_component_images' si estamos en Colab.
+  Ahora soporta:
+    - Una entrada opcional __robot_iso__ con la imagen isométrica del robot completo.
+    - Entradas de componentes con:
+        { "key", "name", "index", "image_b64" }
+    - Construye una secuencia ordenada de nombres y la envía como contexto
+      en cada request a la API externa.
+  """
+  global _COLAB_CALLBACK_REGISTERED
+  if _COLAB_CALLBACK_REGISTERED:
+      return
 
-    try:
-        from google.colab import output  # type: ignore
+  try:
+      from google.colab import output  # type: ignore
 
-        api_base = api_base.rstrip("/")
-        infer_url = api_base + API_INFER_PATH
+      api_base = api_base.rstrip("/")
+      infer_url = api_base + API_INFER_PATH
 
-        def _describe_component_images(entries):
-            """
-            entries: [{ "key": assetKey, "image_b64": "..." }, ...]
-            """
-            try:
-                n = len(entries)
-            except TypeError:
-                n = 0
-            print(f"[Colab] describe_component_images: {n} imágenes recibidas.")
+      def _describe_component_images(entries):
+          """
+          entries: [
+            { "key": "__robot_iso__", "image_b64": "...", ... }?,
+            { "key": assetKey, "name": baseName, "index": i, "image_b64": "..." },
+            ...
+          ]
+          Devuelve: { assetKey: descripcion }
+          """
+          print(f"[Colab] describe_component_images: payload recibido")
 
-            if not isinstance(entries, (list, tuple)):
-                print("[Colab] Payload inválido (no lista).")
-                return {}
+          if not isinstance(entries, (list, tuple)):
+              print("[Colab] Payload inválido (no lista).")
+              return {}
 
-            results = {}
-            for item in entries:
-                if not isinstance(item, dict):
-                    continue
-                key = item.get("key")
-                img_b64 = item.get("image_b64")
-                if not key or not img_b64:
-                    continue
+          # --- Detectar ISO robot + normalizar componentes ---
+          iso_b64 = None
+          components = []
 
-                # ⚠️ El modelo se configura en tu API (Google Cloud).
-                # Aquí solo mandamos texto + imagen. Tu backend decide GPT-5.
-                payload = {
-                    "text": (
-                        "Describe brevemente qué pieza de robot se ve en esta imagen. "
-                        "Sé conciso, técnico y directo. NO uses frases como "
-                        "'En esta imagen se muestra' ni 'La pieza es'. "
-                        "Indica función mecánica, zona aproximada del robot "
-                        "y tipo de unión/movimiento que sugiere. Español, máx 8 frases."
-                    ),
-                    "images": [{"image_b64": img_b64, "mime": "image/png"}],
-                }
+          for raw in entries:
+              if not isinstance(raw, dict):
+                  continue
 
-                try:
-                    r = requests.post(infer_url, json=payload, timeout=timeout)
-                except Exception as e:
-                    print(f"[Colab] Error conexión API para {key}: {e}")
-                    results[key] = ""
-                    continue
+              key = (raw.get("key") or "").strip()
+              img_b64 = (raw.get("image_b64") or "").strip()
+              name = (raw.get("name") or "").strip()
+              idx = raw.get("index", None)
 
-                if r.status_code != 200:
-                    print(f"[Colab] API {r.status_code} para {key}: {r.text[:200]}")
-                    results[key] = ""
-                    continue
+              # ISO del robot completo
+              if key in (
+                  "__robot_iso__",
+                  "robot_iso",
+                  "__iso__",
+                  "robot",
+                  "full_robot",
+              ):
+                  if img_b64 and not iso_b64:
+                      iso_b64 = img_b64
+                      print("[Colab] Detectada imagen ISO del robot completo.")
+                  continue
 
-                txt = (r.text or "").strip()
-                # Si viene como string con comillas, intentar parsear
-                try:
-                    if txt.startswith('"') and txt.endswith('"'):
-                        txt = json.loads(txt)
-                except Exception:
-                    pass
+              if not img_b64:
+                  continue
 
-                results[key] = txt or ""
+              if not key:
+                  key = name or f"comp_{len(components)}"
+              if not name:
+                  name = key
 
-            print(
-                f"[Colab] describe_component_images: devueltas {len(results)} descripciones."
-            )
+              if not isinstance(idx, int) or idx < 0:
+                  idx = len(components)
 
-            # 💾 Guardado automático tipo Board_Script:
-            # Forzamos un save del notebook después de actualizar descripciones,
-            # para que queden persistentes en el .ipynb.
-            try:
-                from google.colab import _message  # type: ignore
+              components.append(
+                  {
+                      "key": key,
+                      "name": name,
+                      "index": idx,
+                      "image_b64": img_b64,
+                  }
+              )
 
-                _message.blocking_request("notebook.save", {})
-                print("[Colab] 💾 Guardado automático tras recibir descripciones IA.")
-            except Exception as e:
-                print(
-                    f"[Colab] (Aviso) No se pudo guardar automáticamente el notebook: {e}"
-                )
+          if not components:
+              print("[Colab] Sin componentes válidos en entries.")
+              return {}
 
-            return results
+          # Ordenar por índice para fijar secuencia lógica
+          components.sort(key=lambda c: c.get("index", 0))
 
-        output.register_callback("describe_component_images", _describe_component_images)
-        _COLAB_CALLBACK_REGISTERED = True
-        print(
-            "[Colab] ✅ Callback 'describe_component_images' registrado "
-            "(IA_Widgets=True, listo para usar tu API con GPT-5)."
-        )
+          # Secuencia de nombres para contexto global
+          sequence_names = [c["name"] for c in components]
+          sequence_str = ", ".join(sequence_names)
 
-    except Exception as e:
-        print(
-            f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}"
-        )
+          print(
+              f"[Colab] Componentes para IA: {len(components)} "
+              f"(secuencia nombres incluida)."
+          )
+          if iso_b64:
+              print("[Colab] Se usará ISO global como contexto en cada request.")
+
+          results = {}
+
+          for comp in components:
+              key = comp["key"]
+              name = comp["name"]
+              idx = comp["index"]
+              img_b64 = comp["image_b64"]
+
+              # Construir lista de imágenes: primero ISO (si existe), luego componente
+              images = []
+              if iso_b64:
+                  images.append(
+                      {"image_b64": iso_b64, "mime": "image/png"}
+                  )
+              images.append({"image_b64": img_b64, "mime": "image/png"})
+
+              # Prompt con contexto fuerte
+              prompt = (
+                  "Eres un modelo experto en robótica y diseño mecánico.\n"
+                  "Analiza un único componente de un robot industrial usando:\n"
+                  "- Si está presente, una imagen isométrica del robot completo como contexto global.\n"
+                  "- La imagen específica del componente actual.\n"
+                  "- La secuencia ordenada de nombres de archivo de todos los componentes renderizados.\n"
+                  f"Secuencia de nombres: {sequence_str}\n"
+                  f"Componente actual: nombre de archivo '{name}' (índice {idx}).\n"
+                  "Responde SOLO con una descripción concisa, técnica y determinante del componente actual:\n"
+                  "- Tipo de componente / elemento mecánico.\n"
+                  "- Función mecánica principal.\n"
+                  "- Zona aproximada del robot donde se ubica.\n"
+                  "- Tipo de unión o movimiento que sugiere (si aplica).\n"
+                  "NO uses frases como 'En esta imagen se muestra' ni 'La pieza es'.\n"
+                  "Máximo 8 frases. Responde en español."
+              )
+
+              payload = {
+                  "text": prompt,
+                  "images": images,
+              }
+
+              try:
+                  r = requests.post(infer_url, json=payload, timeout=timeout)
+              except Exception as e:
+                  print(f"[Colab] Error conexión API para {key}: {e}")
+                  results[key] = ""
+                  continue
+
+              if r.status_code != 200:
+                  print(
+                      f"[Colab] API {r.status_code} para {key}: {r.text[:200]}"
+                  )
+                  results[key] = ""
+                  continue
+
+              txt = (r.text or "").strip()
+
+              # Si viene como JSON con campo 'text' o similar, intentar parsear
+              try:
+                  if txt.startswith("{") and txt.endswith("}"):
+                      j = json.loads(txt)
+                      if isinstance(j, dict):
+                          txt = (
+                              j.get("text")
+                              or j.get("message")
+                              or j.get("content")
+                              or txt
+                          )
+              except Exception:
+                  pass
+
+              # Si viene entre comillas, parsear como string JSON
+              try:
+                  if txt.startswith('"') and txt.endswith('"'):
+                      txt = json.loads(txt)
+              except Exception:
+                  pass
+
+              results[key] = txt or ""
+
+          print(
+              f"[Colab] describe_component_images: descripciones devueltas "
+              f"para {len(results)} componentes."
+          )
+
+          # Guardado automático del notebook (best-effort)
+          try:
+              from google.colab import _message  # type: ignore
+
+              _message.blocking_request("notebook.save", {})
+              print("[Colab] 💾 Notebook guardado tras recibir descripciones IA.")
+          except Exception as e:
+              print(
+                  f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}"
+              )
+
+          return results
+
+      output.register_callback(
+          "describe_component_images", _describe_component_images
+      )
+      _COLAB_CALLBACK_REGISTERED = True
+      print(
+          "[Colab] ✅ Callback 'describe_component_images' registrado "
+          "(IA_Widgets=True, listo para usar tu API con GPT-5 + contexto ISO + secuencia)."
+      )
+
+  except Exception as e:
+      print(
+          f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}"
+      )
 
 
 def URDF_Render(
-    folder_path: str = "Model",
-    select_mode: str = "link",
-    background: int | None = 0xFFFFFF,
-    repo: str = "Arthemioxz/AutoMindCloudExperimental",
-    branch: str = "main",
-    compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
-    api_base: str = API_DEFAULT_BASE,
-    IA_Widgets: bool = False,
+  folder_path: str = "Model",
+  select_mode: str = "link",
+  background: int | None = 0xFFFFFF,
+  repo: str = "Arthemioxz/AutoMindCloudExperimental",
+  branch: str = "main",
+  compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
+  api_base: str = API_DEFAULT_BASE,
+  IA_Widgets: bool = False,
 ):
-    """
-    Renderiza el URDF Viewer para Colab.
+  """
+  Renderiza el URDF Viewer para Colab.
+  """
+  if IA_Widgets:
+      _register_colab_callback(api_base=api_base)
 
-    - Siempre:
-        * Carga URDF + meshes desde folder_path.
-        * Inserta meshDB embebido.
-        * Muestra viewer + ToolsDock + ComponentsPanel.
-    - Si IA_Widgets=True:
-        * Registra callback 'describe_component_images'.
-        * El JS enviará thumbnails comprimidos (~5KB) a ese callback.
-    - Si IA_Widgets=False:
-        * No se registra callback.
-        * No hay tráfico a ninguna API.
+  # --- Buscar directorios urdf / meshes ---
 
-    Puedes llamar:
-        URDF_Render("URDFModel")
-        URDF_Render("URDFModel", IA_Widgets=True)
-    """
+  def find_dirs(root: str):
+      u = os.path.join(root, "urdf")
+      m = os.path.join(root, "meshes")
+      if os.path.isdir(u) and os.path.isdir(m):
+          return u, m
+      if os.path.isdir(root):
+          for name in os.listdir(root):
+              cand = os.path.join(root, name)
+              uu = os.path.join(cand, "urdf")
+              mm = os.path.join(cand, "meshes")
+              if os.path.isdir(uu) and os.path.isdir(mm):
+                  return uu, mm
+      return None, None
 
-    if IA_Widgets:
-        _register_colab_callback(api_base=api_base)
+  urdf_dir, meshes_dir = find_dirs(folder_path)
+  if not urdf_dir or not meshes_dir:
+      return HTML(
+          f"<b style='color:red'>No se encontró /urdf y /meshes dentro de {folder_path}</b>"
+      )
 
-    # --- Buscar directorios urdf / meshes ---
+  # --- URDF principal ---
 
-    def find_dirs(root: str):
-        u = os.path.join(root, "urdf")
-        m = os.path.join(root, "meshes")
-        if os.path.isdir(u) and os.path.isdir(m):
-            return u, m
-        if os.path.isdir(root):
-            for name in os.listdir(root):
-                cand = os.path.join(root, name)
-                uu = os.path.join(cand, "urdf")
-                mm = os.path.join(cand, "meshes")
-                if os.path.isdir(uu) and os.path.isdir(mm):
-                    return uu, mm
-        return None, None
+  urdf_files = [
+      os.path.join(urdf_dir, f)
+      for f in os.listdir(urdf_dir)
+      if f.lower().endswith(".urdf")
+  ]
 
-    urdf_dir, meshes_dir = find_dirs(folder_path)
-    if not urdf_dir or not meshes_dir:
-        return HTML(
-            f"<b style='color:red'>No se encontró /urdf y /meshes dentro de {folder_path}</b>"
-        )
+  urdf_files.sort(
+      key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
+      reverse=True,
+  )
 
-    # --- URDF principal ---
+  urdf_raw = ""
+  mesh_refs: list[str] = []
 
-    urdf_files = [
-        os.path.join(urdf_dir, f)
-        for f in os.listdir(urdf_dir)
-        if f.lower().endswith(".urdf")
-    ]
+  for upath in urdf_files:
+      try:
+          with open(upath, "r", encoding="utf-8", errors="ignore") as f:
+              txt = f.read().lstrip("\ufeff")
+          refs = re.findall(
+              r'filename="([^"]+\.(?:stl|dae|STL|DAE))"', txt, re.IGNORECASE
+          )
+          if refs:
+              urdf_raw = txt
+              mesh_refs = list(dict.fromkeys(refs))
+              break
+      except Exception:
+          pass
 
-    urdf_files.sort(
-        key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
-        reverse=True,
-    )
+  if not urdf_raw and urdf_files:
+      with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
+          urdf_raw = f.read().lstrip("\ufeff")
 
-    urdf_raw = ""
-    mesh_refs: list[str] = []
+  # --- Construir meshDB embedido ---
 
-    for upath in urdf_files:
-        try:
-            with open(upath, "r", encoding="utf-8", errors="ignore") as f:
-                txt = f.read().lstrip("\ufeff")
-            refs = re.findall(
-                r'filename="([^"]+\.(?:stl|dae|STL|DAE))"', txt, re.IGNORECASE
-            )
-            if refs:
-                urdf_raw = txt
-                mesh_refs = list(dict.fromkeys(refs))
-                break
-        except Exception:
-            pass
+  disk_files = []
+  for root, _, files in os.walk(meshes_dir):
+      for name in files:
+          if name.lower().endswith((".stl", ".dae", ".png", ".jpg", ".jpeg")):
+              disk_files.append(os.path.join(root, name))
 
-    if not urdf_raw and urdf_files:
-        with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
-            urdf_raw = f.read().lstrip("\ufeff")
+  meshes_root_abs = os.path.abspath(meshes_dir)
+  by_rel, by_base = {}, {}
+  for path in disk_files:
+      rel = (
+          os.path.relpath(os.path.abspath(path), meshes_root_abs)
+          .replace("\\", "/")
+          .lower()
+      )
+      by_rel[rel] = path
+      by_base[os.path.basename(path).lower()] = path
 
-    # --- Construir meshDB embedido ---
+  _cache: dict[str, str] = {}
+  mesh_db: dict[str, str] = {}
 
-    disk_files = []
-    for root, _, files in os.walk(meshes_dir):
-        for name in files:
-            if name.lower().endswith((".stl", ".dae", ".png", ".jpg", ".jpeg")):
-                disk_files.append(os.path.join(root, name))
+  def b64(path: str) -> str:
+      if path not in _cache:
+          with open(path, "rb") as f:
+              _cache[path] = base64.b64encode(f.read()).decode("ascii")
+      return _cache[path]
 
-    meshes_root_abs = os.path.abspath(meshes_dir)
-    by_rel, by_base = {}, {}
-    for path in disk_files:
-        rel = (
-            os.path.relpath(os.path.abspath(path), meshes_root_abs)
-            .replace("\\", "/")
-            .lower()
-        )
-        by_rel[rel] = path
-        by_base[os.path.basename(path).lower()] = path
+  def add_entry(key: str, path: str):
+      k = key.replace("\\", "/")
+      if k not in mesh_db:
+          mesh_db[k] = b64(path)
 
-    _cache: dict[str, str] = {}
-    mesh_db: dict[str, str] = {}
+  for ref in mesh_refs:
+      raw = ref.replace("\\", "/")
+      lower = raw.lower()
+      base = os.path.basename(lower)
+      rel = lower.lstrip("./")
+      cand = (
+          by_rel.get(rel)
+          or by_rel.get(rel.replace("package://", ""))
+          or by_base.get(base)
+      )
+      if cand:
+          add_entry(raw, cand)
+          add_entry(lower, cand)
+          add_entry(base, cand)
 
-    def b64(path: str) -> str:
-        if path not in _cache:
-            with open(path, "rb") as f:
-                _cache[path] = base64.b64encode(f.read()).decode("ascii")
-        return _cache[path]
+  for base_name, path in by_base.items():
+      if base_name not in mesh_db:
+          add_entry(base_name, path)
 
-    def add_entry(key: str, path: str):
-        k = key.replace("\\", "/")
-        if k not in mesh_db:
-            mesh_db[k] = b64(path)
+  def esc_js(s: str) -> str:
+      return (
+          s.replace("\\", "\\\\")
+          .replace("`", "\\`")
+          .replace("$", "\\$")
+          .replace("</script>", "<\\/script>")
+      )
 
-    # 1) Desde URDF (coincidir refs)
-    for ref in mesh_refs:
-        raw = ref.replace("\\", "/")
-        lower = raw.lower()
-        base = os.path.basename(lower)
-        rel = lower.lstrip("./")
-        cand = (
-            by_rel.get(rel)
-            or by_rel.get(rel.replace("package://", ""))
-            or by_base.get(base)
-        )
-        if cand:
-            add_entry(raw, cand)
-            add_entry(lower, cand)
-            add_entry(base, cand)
+  urdf_js = esc_js(urdf_raw or "")
+  mesh_js = json.dumps(mesh_db)
+  bg_js = "null" if background is None else str(int(background))
+  sel_js = json.dumps(select_mode)
+  ia_js = "true" if IA_Widgets else "false"
 
-    # 2) Incluir basenames restantes como fallback
-    for base, path in by_base.items():
-        if base not in mesh_db:
-            add_entry(base, path)
-
-    def esc_js(s: str) -> str:
-        return (
-            s.replace("\\", "\\\\")
-            .replace("`", "\\`")
-            .replace("$", "\\$")
-            .replace("</script>", "<\\/script>")
-        )
-
-    urdf_js = esc_js(urdf_raw or "")
-    mesh_js = json.dumps(mesh_db)
-    bg_js = "null" if background is None else str(int(background))
-    sel_js = json.dumps(select_mode)
-    ia_js = "true" if IA_Widgets else "false"
-
-    # --- HTML + JS (usa urdf_viewer_main.js del repo) ---
-
-    html = f"""<!doctype html>
+  html = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
@@ -540,4 +621,4 @@ def URDF_Render(
 </body>
 </html>
 """
-    return HTML(html)
+  return HTML(html)
