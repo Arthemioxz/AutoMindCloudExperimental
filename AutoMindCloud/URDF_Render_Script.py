@@ -189,7 +189,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
               images.append({"image_b64": img_b64, "mime": "image/png"})
 
               # Prompt con contexto fuerte
-              prompt = (              prompt = (
+              prompt = (
                   "Eres un modelo experto en robótica y diseño mecánico.\n"
                   "Analiza exclusivamente el componente actual del robot industrial utilizando "
                   "la imagen isométrica del robot completo como contexto global, la imagen específica del componente "
@@ -202,8 +202,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   "'Se observa', 'Podemos ver' o similares. "
                   "No repitas la consigna ni agregues comentarios sobre el análisis. "
                   "Responde únicamente sobre el componente actual en español, sin enumerar, en un máximo de ocho párrafos."
-              )
-
               )
 
               payload = {
