@@ -379,18 +379,30 @@ def URDF_Render(
 
   <script type="module">
     function applyVHVar() {{
-      const vh = (window.visualViewport?.height || window.innerHeight || 600) * 0.01;
+      const viewport = window.visualViewport?.height || window.innerHeight || 600;
+      const vh = viewport * 0.01;
       document.documentElement.style.setProperty('--vh', `${{vh}}px`);
     }}
     applyVHVar();
 
-    function setColabFrameHeight() {{
-      const h = Math.ceil(
-        (window.visualViewport?.height ||
-         window.innerHeight ||
-         document.documentElement.clientHeight ||
-         600)
+    function computeDesiredHeight() {{
+      const viewportH =
+        window.visualViewport?.height ||
+        window.innerHeight ||
+        document.documentElement.clientHeight ||
+        0;
+
+      const docScrollH = Math.max(
+        document.documentElement?.scrollHeight || 0,
+        document.body?.scrollHeight || 0
       );
+
+      // 🔑 Clave: usar el máximo entre viewport, scrollHeight y 600px.
+      return Math.max(viewportH, docScrollH, 600);
+    }}
+
+    function setColabFrameHeight() {{
+      const h = Math.ceil(computeDesiredHeight());
       try {{
         if (window.google?.colab?.output?.setIframeHeight) {{
           window.google.colab.output.setIframeHeight(h, true);
@@ -414,6 +426,8 @@ def URDF_Render(
         setColabFrameHeight();
       }});
     }}
+
+    // Primera fijación (por si Colab arranca con un iframe muy bajo)
     setTimeout(setColabFrameHeight, 60);
 
     const repo     = {json.dumps(repo)};
@@ -471,12 +485,12 @@ def URDF_Render(
       function onResize() {{
         try {{
           if (!app || typeof app.resize !== 'function') return;
-          const w = window.innerWidth || document.documentElement.clientWidth;
-          const h = (
-            window.visualViewport?.height ||
-            window.innerHeight ||
-            document.documentElement.clientHeight
-          );
+          const w =
+            window.innerWidth ||
+            document.documentElement.clientWidth ||
+            document.body.clientWidth ||
+            800;
+          const h = computeDesiredHeight();
           app.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
         }} catch (_e) {{}}
       }}
@@ -485,7 +499,18 @@ def URDF_Render(
       if (window.visualViewport) {{
         window.visualViewport.addEventListener('resize', onResize);
       }}
-      setTimeout(onResize, 0);
+
+      // Asegurar tamaño correcto tras el primer render (con o sin IA).
+      setTimeout(() => {{
+        onResize();
+        setColabFrameHeight();
+      }}, 0);
+
+      // Un extra por si la IA mete logs async y crece el contenido.
+      setTimeout(() => {{
+        onResize();
+        setColabFrameHeight();
+      }}, 500);
     }}
   </script>
 </body>
