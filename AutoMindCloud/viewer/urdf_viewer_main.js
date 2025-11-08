@@ -2,13 +2,13 @@
 // Viewer moderno + thumbnails del script estable + IA opt-in con logs.
 //
 // - Cada thumbnail:
-//     * Se genera con un renderer offscreen.
-//     * Clona el robot con materiales reales.
-//     * Aísla SOLO el assetKey objetivo (todas las instancias).
-//     * Vista isométrica.
+//   * Se genera con un renderer offscreen.
+//   * Clona el robot con materiales reales.
+//   * Aísla SOLO el assetKey objetivo (todas las instancias).
+//   * Vista isométrica.
 // - IA_Widgets (optativo):
-//     * IA_Widgets = true  -> usa google.colab.kernel.invokeFunction('describe_component_images', ...)
-//     * IA_Widgets = false -> no se llama a la API.
+//   * IA_Widgets = true -> usa google.colab.kernel.invokeFunction('describe_component_images', ...)
+//   * IA_Widgets = false -> no se llama a la API.
 // - Todos los pasos clave tienen logs vía debugLog(), además guardados en window.URDF_DEBUG_LOGS.
 
 import { THEME } from './Theme.js';
@@ -103,51 +103,47 @@ export function render(opts = {}) {
     ...core,
     robot,
     IA_Widgets,
-
     assets: {
       list: () => listAssets(assetToMeshes),
       thumbnail: (assetKey) => off?.thumbnail(assetKey),
     },
-
     isolate: {
       asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey),
       clear: () => showAll(core),
     },
-
     showAll: () => showAll(core),
 
     openTools(open = true) {
       tools.set(!!open);
     },
 
+    // Se llenará con claves normalizadas en applyIaDescriptionsToApp
     componentDescriptions: {},
 
+    // getComponentDescription será parcheado para usar claves normalizadas
     getComponentDescription(assetKey, index) {
-      const src = app.componentDescriptions;
+      const src = app.componentDescriptions || {};
       if (!src) return '';
 
-      // clave completa
-      if (src[assetKey]) return src[assetKey];
+      // Intento directo (por compatibilidad si vienen sin normalizar)
+      if (assetKey && src[assetKey]) return src[assetKey];
 
-      // basename sin ruta
-      const baseFull = (assetKey || '').split('/').pop();
-      if (src[baseFull]) return src[baseFull];
+      const baseFull = (assetKey || '').split(/[\\/]/).pop();
+      if (baseFull && src[baseFull]) return src[baseFull];
 
-      // basename sin extensión
-      const base = baseFull.split('.')[0];
-      if (src[base]) return src[base];
+      const base = baseFull ? baseFull.split('.')[0] : '';
+      if (base && src[base]) return src[base];
 
-      // array fallback por índice
       if (Array.isArray(src) && typeof index === 'number') {
         return src[index] || '';
       }
-
       return '';
     },
 
     async collectAllThumbnails() {
       const items = app.assets.list();
       Base64Images.length = 0;
+
       for (const it of items) {
         try {
           const url = await app.assets.thumbnail(it.assetKey);
@@ -158,7 +154,11 @@ export function render(opts = {}) {
           debugLog('collectAllThumbnails error', it.assetKey, String(e));
         }
       }
-      if (typeof window !== 'undefined') window.Base64Images = Base64Images;
+
+      if (typeof window !== 'undefined') {
+        window.Base64Images = Base64Images;
+      }
+
       debugLog('collectAllThumbnails done', { count: Base64Images.length });
       return Base64Images;
     },
@@ -170,8 +170,11 @@ export function render(opts = {}) {
 
   // 8) SFX opcional
   if (clickAudioDataURL) {
-    try { installClickSound(clickAudioDataURL); }
-    catch (e) { debugLog('installClickSound error', String(e)); }
+    try {
+      installClickSound(clickAudioDataURL);
+    } catch (e) {
+      debugLog('installClickSound error', String(e));
+    }
   }
 
   // 9) IA opt-in
@@ -185,7 +188,9 @@ export function render(opts = {}) {
   // 10) expose
   if (typeof window !== 'undefined') {
     window.URDFViewer = window.URDFViewer || {};
-    try { window.URDFViewer.__app = app; } catch (_) {}
+    try {
+      window.URDFViewer.__app = app;
+    } catch (_) {}
   }
 
   const destroy = () => {
@@ -207,7 +212,9 @@ function rebuildAssetMapFromRobot(robot, assetToMeshes) {
     if (o && o.isMesh && o.geometry) {
       const k =
         (o.userData &&
-          (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) ||
+          (o.userData.__assetKey ||
+            o.userData.assetKey ||
+            o.userData.filename)) ||
         null;
       if (!k) return;
       const arr = tmp.get(k) || [];
@@ -228,7 +235,10 @@ function listAssets(assetToMeshes) {
     items.push({ assetKey, base, ext, count: meshes.length });
   });
   items.sort((a, b) =>
-    a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }),
+    a.base.localeCompare(b.base, undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    }),
   );
   return items;
 }
@@ -246,24 +256,33 @@ function splitName(key) {
 function isolateAsset(core, assetToMeshes, assetKey) {
   const meshes = assetToMeshes.get(assetKey) || [];
   if (!core.robot) return;
-  core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = false; });
-  meshes.forEach(m => { m.visible = true; });
+
+  core.robot.traverse((o) => {
+    if (o.isMesh && o.geometry) o.visible = false;
+  });
+  meshes.forEach((m) => {
+    m.visible = true;
+  });
+
   frameMeshes(core, meshes);
 }
 
 function showAll(core) {
   if (!core.robot) return;
-  core.robot.traverse(o => { if (o.isMesh && o.geometry) o.visible = true; });
+  core.robot.traverse((o) => {
+    if (o.isMesh && o.geometry) o.visible = true;
+  });
   if (core.fitAndCenter) core.fitAndCenter(core.robot, 1.06);
 }
 
 function frameMeshes(core, meshes) {
   if (!meshes || meshes.length === 0) return;
+
   const box = new THREE.Box3();
   const tmp = new THREE.Box3();
   let has = false;
 
-  meshes.forEach(m => {
+  meshes.forEach((m) => {
     if (!m) return;
     tmp.setFromObject(m);
     if (!has) {
@@ -277,7 +296,7 @@ function frameMeshes(core, meshes) {
   if (!has) return;
 
   const center = box.getCenter(new THREE.Vector3());
-  const size   = box.getSize(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
 
   const cam = core.camera;
@@ -286,9 +305,11 @@ function frameMeshes(core, meshes) {
   if (cam.isPerspectiveCamera) {
     const fov = (cam.fov || 60) * Math.PI / 180;
     const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
+
     cam.near = Math.max(maxDim / 1000, 0.001);
-    cam.far  = Math.max(maxDim * 1500, 1500);
+    cam.far = Math.max(maxDim * 1500, 1500);
     cam.updateProjectionMatrix();
+
     const dir = new THREE.Vector3(1, 0.7, 1).normalize();
     cam.position.copy(center.clone().add(dir.multiplyScalar(dist)));
   } else {
@@ -299,7 +320,9 @@ function frameMeshes(core, meshes) {
     cam.near = Math.max(maxDim / 1000, 0.001);
     cam.far = Math.max(maxDim * 1500, 1500);
     cam.updateProjectionMatrix();
-    cam.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
+    cam.position.copy(
+      center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)),
+    );
   }
 
   if (ctrl) {
@@ -325,13 +348,16 @@ function buildOffscreenForThumbnails(core) {
     antialias: true,
     preserveDrawingBuffer: true,
   });
+
   renderer.setSize(OFF_W, OFF_H, false);
 
   // Igualar configuración de renderer principal
   if (core.renderer) {
-    renderer.physicallyCorrectLights = core.renderer.physicallyCorrectLights ?? true;
+    renderer.physicallyCorrectLights =
+      core.renderer.physicallyCorrectLights ?? true;
     renderer.toneMapping = core.renderer.toneMapping;
-    renderer.toneMappingExposure = core.renderer.toneMappingExposure ?? 1.0;
+    renderer.toneMappingExposure =
+      core.renderer.toneMappingExposure ?? 1.0;
 
     if ('outputColorSpace' in renderer && 'outputColorSpace' in core.renderer) {
       renderer.outputColorSpace = core.renderer.outputColorSpace;
@@ -344,7 +370,8 @@ function buildOffscreenForThumbnails(core) {
   }
 
   const baseScene = new THREE.Scene();
-  baseScene.background = core.scene?.background ?? new THREE.Color(0xffffff);
+  baseScene.background =
+    core.scene?.background ?? new THREE.Color(0xffffff);
   baseScene.environment = core.scene?.environment ?? null;
 
   const amb = new THREE.AmbientLight(0xffffff, 0.95);
@@ -352,9 +379,14 @@ function buildOffscreenForThumbnails(core) {
   dir.position.set(2.5, 2.5, 2.5);
   baseScene.add(amb, dir);
 
-  const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
+  const camera = new THREE.PerspectiveCamera(
+    60,
+    OFF_W / OFF_H,
+    0.01,
+    10000,
+  );
 
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const ready = (async () => {
     await sleep(400);
@@ -370,10 +402,10 @@ function buildOffscreenForThumbnails(core) {
     const robotClone = core.robot.clone(true);
     scene.add(robotClone);
 
-    robotClone.traverse(o => {
+    robotClone.traverse((o) => {
       if (o.isMesh && o.material) {
         if (Array.isArray(o.material)) {
-          o.material = o.material.map(m => m.clone());
+          o.material = o.material.map((m) => m.clone());
         } else {
           o.material = o.material.clone();
         }
@@ -382,7 +414,7 @@ function buildOffscreenForThumbnails(core) {
     });
 
     const cloneMap = new Map();
-    robotClone.traverse(o => {
+    robotClone.traverse((o) => {
       const key = o?.userData?.__assetKey;
       if (key && o.isMesh && o.geometry) {
         const arr = cloneMap.get(key) || [];
@@ -397,36 +429,45 @@ function buildOffscreenForThumbnails(core) {
   function snapshotAsset(assetKey) {
     const { scene, robotClone, cloneMap } = buildCloneAndMap();
     const meshes = cloneMap.get(assetKey) || [];
+
     if (!meshes.length) {
       debugLog('[Thumbs] snapshotAsset sin meshes para', assetKey);
       return null;
     }
 
-    robotClone.traverse(o => {
+    robotClone.traverse((o) => {
       if (o.isMesh && o.geometry) o.visible = false;
     });
-    meshes.forEach(m => { m.visible = true; });
+    meshes.forEach((m) => {
+      m.visible = true;
+    });
 
     const box = new THREE.Box3();
     const tmp = new THREE.Box3();
     let has = false;
-    meshes.forEach(m => {
+
+    meshes.forEach((m) => {
       tmp.setFromObject(m);
-      if (!has) { box.copy(tmp); has = true; }
-      else box.union(tmp);
+      if (!has) {
+        box.copy(tmp);
+        has = true;
+      } else {
+        box.union(tmp);
+      }
     });
+
     if (!has) {
       debugLog('[Thumbs] snapshotAsset box vacío para', assetKey);
       return null;
     }
 
     const center = box.getCenter(new THREE.Vector3());
-    const size   = box.getSize(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist   = maxDim * 2.0;
+    const dist = maxDim * 2.0;
 
     camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far  = Math.max(maxDim * 1000, 1000);
+    camera.far = Math.max(maxDim * 1000, 1000);
     camera.updateProjectionMatrix();
 
     const az = Math.PI * 0.25;
@@ -434,14 +475,13 @@ function buildOffscreenForThumbnails(core) {
     const dirV = new THREE.Vector3(
       Math.cos(el) * Math.cos(az),
       Math.sin(el),
-      Math.cos(el) * Math.sin(az)
+      Math.cos(el) * Math.sin(az),
     ).multiplyScalar(dist);
 
     camera.position.copy(center.clone().add(dirV));
     camera.lookAt(center);
 
     renderer.render(scene, camera);
-
     const url = canvas.toDataURL('image/png');
     return url;
   }
@@ -483,7 +523,6 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     typeof window.google.colab.kernel.invokeFunction === 'function';
 
   debugLog('[IA] Colab bridge?', hasColab);
-
   if (!hasColab) return;
 
   const items = listAssets(assetToMeshes);
@@ -493,12 +532,16 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   (async () => {
     try {
       const entries = [];
+
       for (const ent of items) {
         try {
           const url = await off.thumbnail(ent.assetKey);
           if (!url) continue;
+
+          // Reducir a ~5KB
           const b64 = await makeApproxSizedBase64(url, 5);
           if (!b64) continue;
+
           entries.push({ key: ent.assetKey, image_b64: b64 });
         } catch (e) {
           debugLog('[IA] Error thumb IA', ent.assetKey, String(e));
@@ -513,7 +556,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
         res = await window.google.colab.kernel.invokeFunction(
           'describe_component_images',
           [entries],
-          {}
+          {},
         );
         debugLog('[IA] invokeFunction OK', res);
       } catch (e) {
@@ -525,16 +568,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
       debugLog('[IA] parsed map', map);
 
       if (map && typeof map === 'object' && Object.keys(map).length) {
-        app.componentDescriptions = map;
-        if (typeof window !== 'undefined') {
-          window.COMPONENT_DESCRIPTIONS = map;
-        }
-        debugLog('[IA] Descripciones IA aplicadas');
-        try {
-          window.dispatchEvent(
-            new CustomEvent('ia_descriptions_ready', { detail: map })
-          );
-        } catch (_) {}
+        applyIaDescriptionsToApp(app, map);
       } else {
         debugLog('[IA] Respuesta IA sin mapa utilizable');
       }
@@ -544,91 +578,219 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   })();
 }
 
+/**
+ * Extrae un mapa assetKey -> descripción desde la respuesta
+ * de google.colab.kernel.invokeFunction, manejando:
+ * - {data: {"application/json": {...}}}
+ * - {data: {"text/plain": "{'base.dae': '...'}"}}
+ * - dicts planos ya parseados
+ */
 function extractDescMap(res) {
-  if (!res) return {};
-  const data = res.data || res;
+  if (!res) return null;
 
-  // 1) Colab callback correcto: application/json con el dict
+  let data = res.data ?? res;
+
+  // 1) Caso application/json correcto
   if (
+    data &&
+    typeof data === 'object' &&
     data['application/json'] &&
     typeof data['application/json'] === 'object'
   ) {
     return data['application/json'];
   }
 
-  // 2) Caso problemático: text/plain con dict estilo Python o JSON
-  if (typeof data['text/plain'] === 'string') {
+  // 2) Caso text/plain con dict (Python o JSON)
+  if (
+    data &&
+    typeof data === 'object' &&
+    typeof data['text/plain'] === 'string'
+  ) {
     const raw = data['text/plain'].trim();
-
-    // 2a) Intentar JSON directo
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') return parsed;
-    } catch (_) {}
-
-    // 2b) Intentar transformar dict Python -> JSON
-    if (raw.startsWith('{') && raw.endsWith('}')) {
-      try {
-        // Reemplaza comillas simples por dobles
-        let jsonLike = raw.replace(/'/g, '"');
-
-        // Asegura que las claves sin comillas queden con comillas
-        jsonLike = jsonLike.replace(
-          /([,{]\s*)([A-Za-z0-9_./-]+)\s*:/g,
-          '$1"$2":'
-        );
-
-        const parsed2 = JSON.parse(jsonLike);
-        if (parsed2 && typeof parsed2 === 'object') return parsed2;
-      } catch (_) {}
-    }
+    const parsed = parseMaybePythonDict(raw);
+    if (parsed) return parsed;
   }
 
-  // 3) Si ya es un objeto simple, úsalo
-  if (typeof data === 'object' && !Array.isArray(data)) {
+  // 3) Si data es string directa
+  if (typeof data === 'string') {
+    const parsed = parseMaybePythonDict(data.trim());
+    if (parsed) return parsed;
+  }
+
+  // 4) Si es un objeto ya "limpio" (y no es solo {text/plain: ...})
+  if (
+    data &&
+    typeof data === 'object' &&
+    !Array.isArray(data) &&
+    !(Object.keys(data).length === 1 && 'text/plain' in data)
+  ) {
     return data;
   }
 
-  // 4) Si es array con un objeto, usa el primero
-  if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
+  // 5) Si es array con objeto dentro
+  if (
+    Array.isArray(data) &&
+    data.length &&
+    typeof data[0] === 'object'
+  ) {
     return data[0];
   }
 
-  return {};
+  return null;
 }
+
+/**
+ * Parsea cadenas tipo:
+ *   "{'base.dae': 'Actuador ...'}"
+ *   '{"base.dae": "Actuador ..."}"
+ */
+function parseMaybePythonDict(raw) {
+  if (!raw || raw[0] !== '{' || raw[raw.length - 1] !== '}') return null;
+
+  // 1) Intentar JSON directo
+  try {
+    const j = JSON.parse(raw);
+    if (j && typeof j === 'object') return j;
+  } catch (_) {}
+
+  // 2) Transformar dict Python -> JSON
+  try {
+    let jsonLike = raw.replace(/'/g, '"');
+
+    // Asegura claves sin comillas (por seguridad)
+    jsonLike = jsonLike.replace(
+      /([,{]\s*)([A-Za-z0-9_./-]+)\s*:/g,
+      '$1"$2":',
+    );
+
+    const j2 = JSON.parse(jsonLike);
+    if (j2 && typeof j2 === 'object') return j2;
+  } catch (_) {}
+
+  return null;
+}
+
+/**
+ * Aplica el mapa IA al app:
+ * - Normaliza claves a minúsculas.
+ * - Parchea getComponentDescription para usar ese mapa.
+ * - Emite ia_descriptions_ready.
+ */
+function applyIaDescriptionsToApp(app, map) {
+  if (!map || typeof map !== 'object') return;
+
+  if (!app.componentDescriptions || typeof app.componentDescriptions !== 'object') {
+    app.componentDescriptions = {};
+  }
+
+  const store = app.componentDescriptions;
+
+  for (const [k, v] of Object.entries(map)) {
+    if (typeof v === 'string' && v.trim()) {
+      store[String(k).toLowerCase()] = v.trim();
+    }
+  }
+
+  // Parchear getComponentDescription una sola vez
+  if (!app.__patchedGetComponentDescription) {
+    const orig = app.getComponentDescription
+      ? app.getComponentDescription.bind(app)
+      : null;
+
+    app.getComponentDescription = function (assetKey, index = 0) {
+      const cd = app.componentDescriptions || {};
+      const values = Object.values(cd);
+
+      if (assetKey) {
+        const key = String(assetKey).toLowerCase();
+        if (cd[key]) return cd[key];
+
+        const base = key.split(/[\\/]/).pop();
+        if (cd[base]) return cd[base];
+
+        for (const k of Object.keys(cd)) {
+          if (k.endsWith('/' + base)) return cd[k];
+        }
+      }
+
+      if (orig) {
+        const fromOrig = orig(assetKey, index);
+        if (fromOrig) return fromOrig;
+      }
+
+      return values[index] || values[0] || '';
+    };
+
+    app.__patchedGetComponentDescription = true;
+  }
+
+  const detail = { map: app.componentDescriptions };
+
+  if (typeof app.emit === 'function') {
+    try {
+      app.emit('ia_descriptions_ready', detail);
+    } catch (_) {}
+  }
+
+  try {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('ia_descriptions_ready', { detail }),
+      );
+    }
+  } catch (_) {}
+
+  debugLog(
+    '[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido',
+    detail,
+  );
+}
+
+/* =================== Reducción thumbnails ~5KB =================== */
 
 async function makeApproxSizedBase64(dataURL, targetKB = 5) {
   try {
     const maxBytes = targetKB * 1024;
+
     const resp = await fetch(dataURL);
     const blob = await resp.blob();
 
     const img = document.createElement('img');
     const u = URL.createObjectURL(blob);
+
     await new Promise((res, rej) => {
       img.onload = () => res();
       img.onerror = rej;
       img.src = u;
     });
 
-    const ratio = Math.min(1, Math.max(0.05, maxBytes / (blob.size || maxBytes)));
+    const ratio = Math.min(
+      1,
+      Math.max(0.05, maxBytes / (blob.size || maxBytes)),
+    );
     const scale = Math.sqrt(ratio);
+
     const w = Math.max(32, Math.floor(img.width * scale));
     const h = Math.max(32, Math.floor(img.height * scale));
 
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
+
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, w, h);
     ctx.drawImage(img, 0, 0, w, h);
+
     URL.revokeObjectURL(u);
 
     const out = canvas.toDataURL('image/png');
     const b64 = out.split(',')[1] || '';
     if (!b64) return null;
 
-    debugLog('[IA] makeApproxSizedBase64 bytes ~', Math.floor(b64.length * 3 / 4));
+    debugLog(
+      '[IA] makeApproxSizedBase64 bytes ~',
+      Math.floor((b64.length * 3) / 4),
+    );
     return b64;
   } catch (e) {
     debugLog('[IA] makeApproxSizedBase64 error', String(e));
@@ -640,10 +802,15 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
 
 function installClickSound(dataURL) {
   if (!dataURL || typeof dataURL !== 'string') return;
-  let ctx = null, buf = null;
+
+  let ctx = null;
+  let buf = null;
 
   async function ensure() {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!ctx) {
+      ctx =
+        new (window.AudioContext || window.webkitAudioContext)();
+    }
     if (!buf) {
       const resp = await fetch(dataURL);
       const arr = await resp.arrayBuffer();
@@ -652,13 +819,23 @@ function installClickSound(dataURL) {
   }
 
   function play() {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!ctx) {
+      ctx =
+        new (window.AudioContext || window.webkitAudioContext)();
+    }
     if (ctx.state === 'suspended') ctx.resume();
-    if (!buf) { ensure().then(play).catch(() => {}); return; }
+
+    if (!buf) {
+      ensure().then(play).catch(() => {});
+      return;
+    }
+
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-    try { src.start(); } catch (_) {}
+    try {
+      src.start();
+    } catch (_) {}
   }
 
   window.__urdf_click__ = play;
@@ -668,7 +845,9 @@ if (typeof window !== 'undefined') {
   window.URDFViewer = window.URDFViewer || {};
   window.URDFViewer.render = (opts) => {
     const app = render(opts);
-    try { window.URDFViewer.__app = app; } catch (_) {}
+    try {
+      window.URDFViewer.__app = app;
+    } catch (_) {}
     return app;
   };
 }
