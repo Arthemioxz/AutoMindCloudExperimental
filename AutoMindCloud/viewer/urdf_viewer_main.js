@@ -5,7 +5,7 @@
 //     * Se genera con un renderer offscreen.
 //     * Clona el robot con materiales reales.
 //     * Aísla SOLO el assetKey objetivo (todas las instancias).
-//     * Vista isométrica. Sin robot completo, sin imágenes negras.
+//     * Vista isométrica.
 // - IA_Widgets (optativo):
 //     * IA_Widgets = true  -> usa google.colab.kernel.invokeFunction('describe_component_images', ...)
 //     * IA_Widgets = false -> no se llama a la API.
@@ -24,11 +24,9 @@ export let Base64Images = [];
 
 function debugLog(...args) {
   try {
-    // consola del iframe
     console.log('[URDF_DEBUG]', ...args);
   } catch (_) {}
   try {
-    // buffer accesible desde fuera:
     if (typeof window !== 'undefined') {
       window.URDF_DEBUG_LOGS = window.URDF_DEBUG_LOGS || [];
       window.URDF_DEBUG_LOGS.push(args);
@@ -128,12 +126,18 @@ export function render(opts = {}) {
       const src = app.componentDescriptions;
       if (!src) return '';
 
-      if (!Array.isArray(src) && typeof src === 'object') {
-        if (src[assetKey]) return src[assetKey];
-        const base = (assetKey || '').split('/').pop().split('.')[0];
-        if (src[base]) return src[base];
-      }
+      // clave completa
+      if (src[assetKey]) return src[assetKey];
 
+      // basename sin ruta
+      const baseFull = (assetKey || '').split('/').pop();
+      if (src[baseFull]) return src[baseFull];
+
+      // basename sin extensión
+      const base = baseFull.split('.')[0];
+      if (src[base]) return src[base];
+
+      // array fallback por índice
       if (Array.isArray(src) && typeof index === 'number') {
         return src[index] || '';
       }
@@ -264,7 +268,7 @@ function frameMeshes(core, meshes) {
     tmp.setFromObject(m);
     if (!has) {
       box.copy(tmp);
-      has = true;       // <- importante: JS, no "True"
+      has = true;
     } else {
       box.union(tmp);
     }
@@ -323,7 +327,7 @@ function buildOffscreenForThumbnails(core) {
   });
   renderer.setSize(OFF_W, OFF_H, false);
 
-  // Igualar configuración de renderer principal (evita negros)
+  // Igualar configuración de renderer principal
   if (core.renderer) {
     renderer.physicallyCorrectLights = core.renderer.physicallyCorrectLights ?? true;
     renderer.toneMapping = core.renderer.toneMapping;
@@ -520,12 +524,16 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
       const map = extractDescMap(res);
       debugLog('[IA] parsed map', map);
 
-      if (map && typeof map === 'object') {
+      if (map && typeof map === 'object' && Object.keys(map).length) {
         app.componentDescriptions = map;
-        if (typeof window !== 'undefined') window.COMPONENT_DESCRIPTIONS = map;
+        if (typeof window !== 'undefined') {
+          window.COMPONENT_DESCRIPTIONS = map;
+        }
         debugLog('[IA] Descripciones IA aplicadas');
         try {
-          window.dispatchEvent(new CustomEvent('ia_descriptions_ready', { detail: map }));
+          window.dispatchEvent(
+            new CustomEvent('ia_descriptions_ready', { detail: map })
+          );
         } catch (_) {}
       } else {
         debugLog('[IA] Respuesta IA sin mapa utilizable');
@@ -540,19 +548,52 @@ function extractDescMap(res) {
   if (!res) return {};
   const data = res.data || res;
 
-  if (data['application/json'] && typeof data['application/json'] === 'object') {
+  // 1) Colab callback correcto: application/json con el dict
+  if (
+    data['application/json'] &&
+    typeof data['application/json'] === 'object'
+  ) {
     return data['application/json'];
   }
-  if (data['text/plain']) {
+
+  // 2) Caso problemático: text/plain con dict estilo Python o JSON
+  if (typeof data['text/plain'] === 'string') {
+    const raw = data['text/plain'].trim();
+
+    // 2a) Intentar JSON directo
     try {
-      const parsed = JSON.parse(data['text/plain']);
+      const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') return parsed;
     } catch (_) {}
+
+    // 2b) Intentar transformar dict Python -> JSON
+    if (raw.startsWith('{') && raw.endsWith('}')) {
+      try {
+        // Reemplaza comillas simples por dobles
+        let jsonLike = raw.replace(/'/g, '"');
+
+        // Asegura que las claves sin comillas queden con comillas
+        jsonLike = jsonLike.replace(
+          /([,{]\s*)([A-Za-z0-9_./-]+)\s*:/g,
+          '$1"$2":'
+        );
+
+        const parsed2 = JSON.parse(jsonLike);
+        if (parsed2 && typeof parsed2 === 'object') return parsed2;
+      } catch (_) {}
+    }
   }
+
+  // 3) Si ya es un objeto simple, úsalo
+  if (typeof data === 'object' && !Array.isArray(data)) {
+    return data;
+  }
+
+  // 4) Si es array con un objeto, usa el primero
   if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
     return data[0];
   }
-  if (typeof data === 'object') return data;
+
   return {};
 }
 
@@ -583,7 +624,6 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
     ctx.drawImage(img, 0, 0, w, h);
     URL.revokeObjectURL(u);
 
-    // PNG para que coincida con el mime usado en Python
     const out = canvas.toDataURL('image/png');
     const b64 = out.split(',')[1] || '';
     if (!b64) return null;
