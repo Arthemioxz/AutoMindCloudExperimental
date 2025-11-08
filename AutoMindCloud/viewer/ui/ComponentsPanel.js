@@ -184,7 +184,9 @@ export function createComponentsPanel(app, theme) {
   });
 
   ui.showAllBtn.addEventListener("click", () => {
-    try { app.showAll(); } catch (_) {}
+    try {
+      app.showAll();
+    } catch (_) {}
     hideDetails();
   });
 
@@ -295,14 +297,16 @@ export function createComponentsPanel(app, theme) {
       // CLICK: aislar + mostrar descripción
       row.addEventListener("click", () => {
         console.debug("[ComponentsPanel] Click en", ent.assetKey);
-        try { app.isolate.asset(ent.assetKey); } catch (_) {}
+        try {
+          app.isolate.asset(ent.assetKey);
+        } catch (_) {}
         currentEnt = ent;
         currentIndex = index;
         showDetails(ent, index);
         set(true);
       });
 
-      // Thumbnail async
+      // Thumbnail async (UI: sin compresión)
       (async () => {
         try {
           const url = await app.assets.thumbnail?.(ent.assetKey);
@@ -320,7 +324,6 @@ export function createComponentsPanel(app, theme) {
   function resolveDescription(ent, index) {
     let text = "";
 
-    // 1) app.getComponentDescription
     try {
       if (typeof app.getComponentDescription === "function") {
         text = app.getComponentDescription(ent.assetKey, index) || "";
@@ -329,7 +332,6 @@ export function createComponentsPanel(app, theme) {
       text = "";
     }
 
-    // 2) Fallback: mapa directo
     if (!text && app.componentDescriptions) {
       const src = app.componentDescriptions;
       if (src[ent.assetKey]) {
@@ -347,10 +349,12 @@ export function createComponentsPanel(app, theme) {
     if (disposed) return;
 
     let text = resolveDescription(ent, index);
-
     if (!text) {
       text = "Sin descripción generada para esta pieza.";
-      console.debug("[ComponentsPanel] No se encontró descripción para", ent.assetKey);
+      console.debug(
+        "[ComponentsPanel] No se encontró descripción para",
+        ent.assetKey
+      );
     }
 
     ui.detailsTitle.textContent = ent.base;
@@ -381,7 +385,7 @@ export function createComponentsPanel(app, theme) {
     }
   }
 
-  // -------- integración con IA: evento + pequeño poll --------
+  // -------- integración IA: evento + pequeño poll --------
 
   function onIAReady(ev) {
     console.debug(
@@ -413,7 +417,7 @@ export function createComponentsPanel(app, theme) {
     }
   }, 500);
 
-  // -------- API pública del panel --------
+  // -------- API pública --------
 
   async function refresh() {
     if (disposed) return;
@@ -422,12 +426,22 @@ export function createComponentsPanel(app, theme) {
 
   function destroy() {
     disposed = true;
-    try { document.removeEventListener("keydown", onHotkeyC, true); } catch (_) {}
-    try { window.removeEventListener("ia_descriptions_ready", onIAReady); } catch (_) {}
+    try {
+      document.removeEventListener("keydown", onHotkeyC, true);
+    } catch (_) {}
+    try {
+      window.removeEventListener("ia_descriptions_ready", onIAReady);
+    } catch (_) {}
     clearInterval(pollTimer);
-    try { ui.btn.remove(); } catch (_) {}
-    try { ui.panel.remove(); } catch (_) {}
-    try { ui.root.remove(); } catch (_) {}
+    try {
+      ui.btn.remove();
+    } catch (_) {}
+    try {
+      ui.panel.remove();
+    } catch (_) {}
+    try {
+      ui.root.remove();
+    } catch (_) {}
   }
 
   // Hotkey 'c' para abrir/cerrar
