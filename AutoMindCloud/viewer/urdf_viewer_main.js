@@ -1,6 +1,7 @@
 // urdf_viewer_main.js
-// Entrypoint que compone ViewerCore + AssetDB + Interaction + UI (Tools & Components)
-// con soporte opcional IA_Widgets y thumbnails en Iso View consistentes.
+// ViewerCore + AssetDB + Interaction + UI
+// Thumbnails: componente aislado (todas sus instancias), Iso View, colores correctos.
+// IA: opt-in con IA_Widgets.
 
 /* global THREE */
 
@@ -19,13 +20,13 @@ export function render(opts = {}) {
     selectMode = "link",
     background = THEME.bgCanvas || 0xffffff,
     clickAudioDataURL = null,
-    IA_Widgets = false, // ✅ opt-in
+    IA_Widgets = false,
   } = opts;
 
-  // ---- Core viewer ----
+  // 1) Core
   const core = createViewer({ container, background });
 
-  // ---- Asset DB + hook assetKey -> meshes ----
+  // 2) AssetDB + assetKey -> meshes
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map();
 
@@ -36,27 +37,25 @@ export function render(opts = {}) {
         if (o && o.isMesh && o.geometry) {
           list.push(o);
           o.userData = o.userData || {};
-          if (!o.userData.__assetKey) {
-            o.userData.__assetKey = assetKey;
-          }
+          if (!o.userData.__assetKey) o.userData.__assetKey = assetKey;
         }
       });
       if (list.length) assetToMeshes.set(assetKey, list);
     },
   });
 
-  // ---- Cargar URDF ----
+  // 3) Carga URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
 
-  // Fallback: si por alguna razón el hook no llenó nada, reconstruir desde userData.__assetKey
+  // Fallback si el hook no llenó nada
   if (robot && !assetToMeshes.size) {
     rebuildAssetMapFromRobot(robot, assetToMeshes);
   }
 
-  // ---- Sistema de thumbnails en Iso View (tipo thumbalist) ----
+  // 4) Sistema de thumbnails aislados
   const thumbs = buildIsoThumbnailSystem(core, robot, assetToMeshes);
 
-  // ---- Interacción (selección / drag) ----
+  // 5) Interacción
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -66,7 +65,7 @@ export function render(opts = {}) {
     selectMode,
   });
 
-  // ---- Facade app para UI ----
+  // 6) Facade app
   const app = {
     ...core,
     robot,
@@ -93,40 +92,35 @@ export function render(opts = {}) {
     getComponentDescription(assetKey, index) {
       const src = app.componentDescriptions;
       if (!src) return "";
-
-      // Mapa { assetKey: desc }
       if (!Array.isArray(src) && typeof src === "object") {
         if (src[assetKey]) return src[assetKey];
         const base = (assetKey || "").split("/").pop().split(".")[0];
         if (src[base]) return src[base];
       }
-
-      // Lista indexada (fallback)
       if (Array.isArray(src) && typeof index === "number") {
         return src[index] || "";
       }
-
       return "";
     },
   };
 
-  // ---- UI ----
+  // 7) UI
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // ---- Sonido opcional ----
+  // 8) Sonido opcional
   if (clickAudioDataURL) {
     try {
       installClickSound(clickAudioDataURL);
     } catch (_) {}
   }
 
-  // ---- IA opcional (solo si IA_Widgets = true) ----
+  // 9) IA opcional
   if (IA_Widgets) {
     bootstrapComponentDescriptions(app, assetToMeshes, thumbs);
   }
 
-  // ---- Destroy ----
+  // 10) Destroy
   const destroy = () => {
     try { comps.destroy(); } catch (_) {}
     try { tools.destroy(); } catch (_) {}
@@ -138,9 +132,7 @@ export function render(opts = {}) {
   return { ...app, destroy };
 }
 
-/* ====================================================================== */
-/* Helpers: asset map, lista, aislamiento, framing                        */
-/* ====================================================================== */
+/* ======================= Helpers: assets / isolate ===================== */
 
 function rebuildAssetMapFromRobot(robot, assetToMeshes) {
   const tmp = new Map();
@@ -227,9 +219,8 @@ function frameMeshes(core, meshes) {
   camera.far = Math.max(maxDim * 1000, 1000);
   camera.updateProjectionMatrix();
 
-  // Iso view
-  const az = Math.PI * 0.25; // 45°
-  const el = Math.PI * 0.3;  // ~30°
+  const az = Math.PI * 0.25;
+  const el = Math.PI * 0.3;
   const dirV = new THREE.Vector3(
     Math.cos(el) * Math.cos(az),
     Math.sin(el),
@@ -242,9 +233,7 @@ function frameMeshes(core, meshes) {
   renderer.render(scene, camera);
 }
 
-/* ====================================================================== */
-/* Thumbnails: Iso View, grupo correcto de geometrías por assetKey        */
-/* ====================================================================== */
+/* ================= Thumbs: componente aislado + Iso View ================ */
 
 function buildIsoThumbnailSystem(core, robot, assetToMeshes) {
   if (!robot || typeof THREE === "undefined") {
@@ -267,89 +256,105 @@ function buildIsoThumbnailSystem(core, robot, assetToMeshes) {
     preserveDrawingBuffer: true,
   });
   renderer.setSize(WIDTH, HEIGHT, false);
+  renderer.setClearColor(0xffffff, 1);
 
-  // Luces y fondo suaves (independiente del viewer principal)
-  const baseScene = new THREE.Scene();
-  baseScene.background = new THREE.Color(0xffffff);
+  // Heredar configuración básica
+  if (core.renderer) {
+    renderer.toneMapping = core.renderer.toneMapping;
+    renderer.toneMappingExposure = core.renderer.toneMappingExposure;
+    renderer.physicallyCorrectLights =
+      core.renderer.physicallyCorrectLights ?? true;
 
-  const amb = new THREE.AmbientLight(0xffffff, 0.95);
-  const dir = new THREE.DirectionalLight(0xffffff, 1.2);
-  dir.position.set(3, 4, 5);
-  baseScene.add(amb, dir);
+    if ("outputColorSpace" in renderer && "outputColorSpace" in core.renderer) {
+      renderer.outputColorSpace = core.renderer.outputColorSpace;
+    } else if ("outputEncoding" in renderer && "outputEncoding" in core.renderer) {
+      renderer.outputEncoding = core.renderer.outputEncoding;
+    }
 
-  // Plantilla de robot con userData.__assetKey ya propagado
-  const templateRobot = robot.clone(true);
-  baseScene.add(templateRobot);
+    renderer.shadowMap.enabled = false;
+  }
 
   const cache = new Map();
 
-  async function captureIso(assetKey) {
-    if (!assetKey) return null;
-
+  function collectMeshesForKey(assetKey) {
+    const out = [];
     const keyNorm = String(assetKey);
 
-    // Clonar escena+robot para este thumbnail
-    const scene = baseScene.clone();
-    const robotClone = templateRobot.clone(true);
-    scene.add(robotClone);
+    // 1) Si tenemos assetToMeshes, úsalo
+    if (assetToMeshes && assetToMeshes.size) {
+      const arr = assetToMeshes.get(assetKey);
+      if (arr && arr.length) {
+        return arr.slice();
+      }
+    }
 
-    // 1) Ocultar todo
-    robotClone.traverse((o) => {
-      if (o.isMesh) o.visible = false;
-    });
-
-    // 2) Mostrar solo meshes con este assetKey
-    let anyVisible = false;
-    robotClone.traverse((o) => {
+    // 2) Fallback: buscar por userData
+    robot.traverse((o) => {
       if (!o.isMesh || !o.geometry) return;
       const k =
         (o.userData &&
           (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) ||
         null;
-      if (k === keyNorm) {
-        o.visible = true;
-        anyVisible = true;
-      }
+      if (k === keyNorm) out.push(o);
     });
 
-    // 3) Fallback: si nada visible, usar assetToMeshes
-    if (!anyVisible && assetToMeshes && assetToMeshes.size) {
-      const ms = assetToMeshes.get(assetKey) || [];
-      if (ms.length) {
-        robotClone.traverse((o) => {
-          if (o.isMesh) o.visible = false;
-        });
-        ms.forEach((m) => {
-          const clone = m.clone();
-          clone.visible = true;
-          scene.add(clone);
-        });
-        anyVisible = true;
+    return out;
+  }
+
+  async function captureIso(assetKey) {
+    const meshes = collectMeshesForKey(assetKey);
+    if (!meshes.length) return null;
+
+    // Asegura matrices actualizadas
+    robot.updateWorldMatrix(true, true);
+    meshes.forEach((m) => m.updateWorldMatrix(true, false));
+
+    // Escena nueva SOLO con ese componente
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    const amb = new THREE.AmbientLight(0xffffff, 0.9);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.3);
+    dir.position.set(3, 4, 5);
+    scene.add(amb, dir);
+
+    const group = new THREE.Group();
+    scene.add(group);
+
+    // Clonar cada mesh con su transform global → componente aislado
+    for (const m of meshes) {
+      if (!m.isMesh || !m.geometry) continue;
+      const clone = m.clone();
+
+      if (Array.isArray(m.material)) {
+        clone.material = m.material.map((mt) => mt.clone());
+      } else if (m.material) {
+        clone.material = m.material.clone();
       }
+
+      clone.applyMatrix4(m.matrixWorld); // posición real
+      clone.visible = true;
+      group.add(clone);
     }
 
-    // 4) Si sigue sin haber nada, abortar
-    if (!anyVisible) {
-      return null;
-    }
+    if (!group.children.length) return null;
 
-    // 5) Bounding box de lo visible
-    const box = new THREE.Box3().setFromObject(robotClone);
+    // Bounding box del componente aislado
+    const box = new THREE.Box3().setFromObject(group);
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
     const dist = maxDim * 2.2;
 
-    // 6) Cámara en Iso View
+    // Cámara Iso
     const camera = new THREE.PerspectiveCamera(
       55,
       WIDTH / HEIGHT,
       Math.max(maxDim / 1000, 0.001),
       Math.max(maxDim * 1000, 5000)
     );
-
-    const az = Math.PI * 0.25; // 45°
-    const el = Math.PI * 0.3;  // ~30°
+    const az = Math.PI * 0.25;
+    const el = Math.PI * 0.3;
     const dirV = new THREE.Vector3(
       Math.cos(el) * Math.cos(az),
       Math.sin(el),
@@ -380,9 +385,7 @@ function buildIsoThumbnailSystem(core, robot, assetToMeshes) {
   };
 }
 
-/* ====================================================================== */
-/* IA: mini-lotes (~5KB) usando thumbnails (optativo)                     */
-/* ====================================================================== */
+/* ========================== IA (optativa) ============================= */
 
 function bootstrapComponentDescriptions(app, assetToMeshes, thumbs) {
   if (!app || app.IA_Widgets !== true) {
@@ -510,9 +513,7 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
   }
 }
 
-/* ====================================================================== */
-/* Click sound opcional + hook global                                     */
-/* ====================================================================== */
+/* ==================== Click sound + hook global ======================= */
 
 function installClickSound(dataURL) {
   try {
