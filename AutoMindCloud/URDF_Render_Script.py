@@ -1,21 +1,19 @@
 # URDF_Render_Script.py
-# Puente Colab <-> JS para descripciones de piezas del URDF.
+# Bridge Colab <-> JS for URDF component descriptions.
 #
-# Uso típico en Colab:
+# Usage:
 #   from URDF_Render_Script import URDF_Render
-#   URDF_Render("URDFModel")                      # solo viewer
-#   URDF_Render("URDFModel", IA_Widgets=True)     # viewer + IA opt-in
+#   URDF_Render("URDFModel")                      # viewer only
+#   URDF_Render("URDFModel", IA_Widgets=True)     # viewer + IA (via /infer)
 #
-# Este script:
-#   - Busca /urdf y /meshes dentro de folder_path.
-#   - Construye un meshDB embebido (base64) para el viewer JS.
-#   - Renderiza un viewer HTML fullscreen para Colab.
-#   - (Opcional, IA_Widgets=True):
-#       * Registra "describe_component_images" para que JS pida descripciones vía API externa.
-#       * Registra "persist.saveURDFDescriptions" AL ESTILO Board_Script:
-#           - Solo se llama cuando JS lo invoca explícitamente.
-#           - Guarda SOLO las descripciones IA en JSON.
-#           - NO guarda cámara / pose / estado del robot.
+# Behavior (IA_Widgets=True):
+#   - JS generates thumbnails (~5KB).
+#   - JS calls "describe_component_images" -> this file calls your IA API (/infer).
+#   - JS receives {assetKey: description}, displays descriptions.
+#   - JS then calls "persist.saveURDFDescriptions" AUTOMATICALLY.
+#   - Python saves ONLY those descriptions to /content/urdf_component_descriptions.json.
+#
+# No camera, no pose, no robot state is persisted.
 
 import os
 import re
@@ -30,14 +28,11 @@ API_DEFAULT_BASE = "https://gpt-proxy-github-619255898589.us-central1.run.app"
 API_INFER_PATH = "/infer"
 
 _COLAB_DESCRIBE_REGISTERED = False
-_SAVE_DESC_CB_NAME = None
+_COLAB_SAVE_REGISTERED = False
+_SAVE_CB_NAME = "persist.saveURDFDescriptions"
 
 
 def Download_URDF(Drive_Link, Output_Name="Model"):
-    """
-    Descarga un ZIP de Google Drive y lo deja en /content/Output_Name
-    con subcarpetas /urdf y /meshes.
-    """
     root_dir = "/content"
     file_id = Drive_Link.split("/d/")[1].split("/")[0]
     url = f"https://drive.google.com/uc?id={file_id}"
@@ -74,8 +69,11 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 
 def _register_describe_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120):
     """
-    Registra el callback 'describe_component_images' si estamos en Colab.
-    Recibe thumbnails ~5KB en base64 y devuelve { assetKey: descripcion }.
+    JS -> describe_component_images(entries) -> { assetKey: desc }
+
+    Supports:
+    - Plain text output from your proxy
+    - Or JSON formats typical of GPT-style APIs
     """
     global _COLAB_DESCRIBE_REGISTERED
     if _COLAB_DESCRIBE_REGISTERED:
@@ -84,8 +82,7 @@ def _register_describe_callback(api_base: str = API_DEFAULT_BASE, timeout: int =
     try:
         from google.colab import output  # type: ignore
 
-        api_base = api_base.rstrip("/")
-        infer_url = api_base + API_INFER_PATH
+        infer_url = api_base.rstrip("/") + API_INFER_PATH
 
         def _describe_component_images(entries):
             try:
@@ -99,6 +96,7 @@ def _register_describe_callback(api_base: str = API_DEFAULT_BASE, timeout: int =
                 return {}
 
             results = {}
+
             for item in entries:
                 if not isinstance(item, dict):
                     continue
@@ -109,11 +107,10 @@ def _register_describe_callback(api_base: str = API_DEFAULT_BASE, timeout: int =
 
                 payload = {
                     "text": (
-                        "Describe brevemente qué pieza de robot se ve en esta imagen. "
-                        "Sé conciso, técnico y directo. NO uses frases como "
-                        "'En esta imagen se muestra' ni 'La pieza es'. "
-                        "Indica función mecánica, zona aproximada del robot "
-                        "y tipo de unión/movimiento que sugiere. Español, máx 8 frases."
+                        "Describe brevemente qué componente de robot se ve en esta imagen. "
+                        "Sé directo, técnico y determinante. "
+                        "Nada de 'en esta imagen se ve' ni 'la pieza es'. "
+                        "Explica función mecánica y zona aproximada. Máx 6 frases."
                     ),
                     "images": [{"image_b64": img_b64, "mime": "image/png"}],
                 }
@@ -130,61 +127,64 @@ def _register_describe_callback(api_base: str = API_DEFAULT_BASE, timeout: int =
                     results[key] = ""
                     continue
 
-                txt = (r.text or "").strip()
+                raw = (r.text or "").strip()
+                desc = raw
+
+                # If your GPT-5 proxy returns JSON, normalize it here:
                 try:
-                    if txt.startswith('"') and txt.endswith('"'):
-                        txt = json.loads(txt)
+                    maybe = json.loads(raw)
+                    if isinstance(maybe, dict):
+                        if "output" in maybe:
+                            desc = str(maybe["output"])
+                        elif "content" in maybe:
+                            desc = str(maybe["content"])
+                        elif "choices" in maybe:
+                            ch0 = maybe["choices"][0]
+                            if isinstance(ch0, dict):
+                                mc = ch0.get("message", {}).get("content")
+                                if mc:
+                                    desc = str(mc)
+                    # If it's a list or something else, fallback to raw
                 except Exception:
+                    # Not JSON, assume plain text from proxy
                     pass
 
-                results[key] = txt or ""
+                results[key] = (desc or "").strip()
 
-            print(
-                f"[Colab] describe_component_images: devueltas {len(results)} descripciones."
-            )
+            print(f"[Colab] describe_component_images: devueltas {len(results)} descripciones.")
             return results
 
         output.register_callback("describe_component_images", _describe_component_images)
         _COLAB_DESCRIBE_REGISTERED = True
-        print("[Colab] ✅ Callback 'describe_component_images' registrado (IA_Widgets=True).")
+        print("[Colab] ✅ Callback 'describe_component_images' registrado.")
+        print(f"[Colab]    Endpoint IA: {infer_url}")
 
     except Exception as e:
-        print(
-            f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}"
-        )
+        print(f"[Colab] ⚠️ No se pudo registrar 'describe_component_images': {e}")
 
 
-def _ensure_save_descriptions_callback():
+def _register_save_descriptions_callback():
     """
-    Registra y devuelve el nombre del callback de guardado:
-        persist.saveURDFDescriptions
+    JS -> persist.saveURDFDescriptions(desc_map) (AUTO when IA ready)
 
-    Patrón tipo Board_Script:
-      - Se llama SOLO cuando JS lo invoca.
-      - Recibe un dict { assetKey: descripcion }.
-      - Guarda JSON en /content/urdf_component_descriptions.json.
-      - No guarda cámara / pose / nada extra.
+    desc_map: { key: description }
+
+    Saves to: /content/urdf_component_descriptions.json
     """
-    global _SAVE_DESC_CB_NAME
-
-    if _SAVE_DESC_CB_NAME:
-        return _SAVE_DESC_CB_NAME
+    global _COLAB_SAVE_REGISTERED
+    if _COLAB_SAVE_REGISTERED:
+        return
 
     try:
         from google.colab import output  # type: ignore
     except Exception as e:
-        print("[Colab] No se pudo importar google.colab.output para saveURDFDescriptions:", e)
-        return ""
+        print(f"[Colab] ⚠️ No se puede registrar callback de guardado: {e}")
+        return
 
-    cb_name = "persist.saveURDFDescriptions"
-
-    def _cb(desc_map):
+    def _save(desc_map):
         try:
             if not isinstance(desc_map, dict):
-                print(
-                    "[Colab] saveURDFDescriptions: payload no es dict, recibido:",
-                    type(desc_map),
-                )
+                print("[Colab] saveURDFDescriptions: payload no es dict:", type(desc_map))
                 return {"ok": False, "error": "payload_not_dict"}
 
             safe = {
@@ -197,28 +197,19 @@ def _ensure_save_descriptions_callback():
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(safe, f, ensure_ascii=False, indent=2)
 
-            print(
-                f"[Colab] ✅ Guardadas {len(safe)} descripciones IA en {path}."
-            )
-            print(
-                "[Colab] (Solo descripciones IA; NO se guarda pose/cámara del robot)."
-            )
+            print(f"[Colab] ✅ Guardadas {len(safe)} descripciones IA en {path}.")
+            print("[Colab]    (Solo descripciones, sin cámara ni pose del robot.)")
             return {"ok": True, "count": len(safe), "path": path}
         except Exception as e:
             print(f"[Colab] Error al guardar descripciones IA: {e}")
             return {"ok": False, "error": str(e)}
 
     try:
-        output.register_callback(cb_name, _cb)
-        _SAVE_DESC_CB_NAME = cb_name
-        print(
-            f"[Colab] ✅ Callback '{cb_name}' registrado (guardar solo descripciones IA)."
-        )
+        output.register_callback(_SAVE_CB_NAME, _save)
+        _COLAB_SAVE_REGISTERED = True
+        print(f"[Colab] ✅ Callback '{_SAVE_CB_NAME}' registrado (auto-guardado IA).")
     except Exception as e:
-        print(f"[Colab] No se pudo registrar callback {cb_name}: {e}")
-        return ""
-
-    return _SAVE_DESC_CB_NAME
+        print(f"[Colab] ⚠️ No se pudo registrar '{_SAVE_CB_NAME}': {e}")
 
 
 def URDF_Render(
@@ -232,26 +223,14 @@ def URDF_Render(
     IA_Widgets: bool = False,
 ):
     """
-    Renderiza el URDF Viewer para Colab.
-
-    - Siempre:
-        * Carga URDF + meshes desde folder_path.
-        * Inserta meshDB embedido.
-        * Muestra viewer + ToolsDock + ComponentsPanel.
-    - Si IA_Widgets=True:
-        * Registra 'describe_component_images'.
-        * Registra 'persist.saveURDFDescriptions'.
-        * Pasa el nombre del callback a JS como saveCallbackName.
-        * JS SOLO guardará al invocar manualmente saveDescriptions()
-          (por botón o por código), igual que Board_Script.
+    Main entry to render the URDF viewer in Colab.
     """
 
-    save_cb_name = ""
     if IA_Widgets:
         _register_describe_callback(api_base=api_base)
-        save_cb_name = _ensure_save_descriptions_callback()
+        _register_save_descriptions_callback()
 
-    # --- Buscar directorios urdf / meshes ---
+    # --- Find /urdf and /meshes ---
 
     def find_dirs(root: str):
         u = os.path.join(root, "urdf")
@@ -273,21 +252,20 @@ def URDF_Render(
             f"<b style='color:red'>No se encontró /urdf y /meshes dentro de {folder_path}</b>"
         )
 
-    # --- URDF principal ---
+    # --- Choose URDF ---
 
     urdf_files = [
         os.path.join(urdf_dir, f)
         for f in os.listdir(urdf_dir)
         if f.lower().endswith(".urdf")
     ]
-
     urdf_files.sort(
         key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
         reverse=True,
     )
 
     urdf_raw = ""
-    mesh_refs: list[str] = []
+    mesh_refs = []
 
     for upath in urdf_files:
         try:
@@ -307,7 +285,7 @@ def URDF_Render(
         with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
             urdf_raw = f.read().lstrip("\ufeff")
 
-    # --- Construir meshDB embedido ---
+    # --- Build meshDB ---
 
     disk_files = []
     for root, _, files in os.walk(meshes_dir):
@@ -326,10 +304,10 @@ def URDF_Render(
         by_rel[rel] = path
         by_base[os.path.basename(path).lower()] = path
 
-    _cache: dict[str, str] = {}
-    mesh_db: dict[str, str] = {}
+    mesh_db = {}
+    _cache = {}
 
-    def b64(path: str) -> str:
+    def b64(path: str):
         if path not in _cache:
             with open(path, "rb") as f:
                 _cache[path] = base64.b64encode(f.read()).decode("ascii")
@@ -340,7 +318,6 @@ def URDF_Render(
         if k not in mesh_db:
             mesh_db[k] = b64(path)
 
-    # 1) Desde URDF (coincidir refs)
     for ref in mesh_refs:
         raw = ref.replace("\\", "/")
         lower = raw.lower()
@@ -356,7 +333,6 @@ def URDF_Render(
             add_entry(lower, cand)
             add_entry(base, cand)
 
-    # 2) Incluir basenames restantes como fallback
     for base, path in by_base.items():
         if base not in mesh_db:
             add_entry(base, path)
@@ -374,9 +350,11 @@ def URDF_Render(
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
     ia_js = "true" if IA_Widgets else "false"
-    save_cb_js = json.dumps(save_cb_name or "")
+    save_cb_js = json.dumps(
+        _SAVE_CB_NAME if IA_Widgets and _COLAB_SAVE_REGISTERED else ""
+    )
 
-    # --- HTML + JS ---
+    # --- HTML / JS ---
 
     html = f"""<!doctype html>
 <html lang="en">
@@ -430,23 +408,6 @@ def URDF_Render(
       max-height:40px;
       display:block;
     }}
-    #save-ia-btn {{
-      position:fixed;
-      left:14px;
-      bottom:10px;
-      z-index:20;
-      padding:6px 10px;
-      border-radius:8px;
-      border:1px solid #cbd5f5;
-      background:#ffffffcc;
-      backdrop-filter: blur(6px);
-      font-size:12px;
-      display:none;
-      cursor:pointer;
-    }}
-    #save-ia-btn span {{
-      opacity:0.8;
-    }}
   </style>
 </head>
 <body>
@@ -454,9 +415,6 @@ def URDF_Render(
   <div class="badge">
     <img src="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png" alt="AutoMind"/>
   </div>
-  <button id="save-ia-btn" title="Guardar solo descripciones IA (JSON)">
-    💾 <span>Save IA descriptions</span>
-  </button>
 
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
@@ -548,7 +506,7 @@ def URDF_Render(
       pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
       autoResize: true,
       IA_Widgets: IA_WIDGETS,
-      saveCallbackName: SAVE_DESC_CALLBACK || null,
+      saveCallbackName: SAVE_DESC_CALLBACK || null
     }};
 
     let mod = null;
@@ -596,36 +554,6 @@ def URDF_Render(
         onResize();
         setColabFrameHeight();
       }}, 500);
-
-      // Botón estilo Board: guardar SOLO descripciones IA a demanda
-      const btn = document.getElementById('save-ia-btn');
-      if (IA_WIDGETS && SAVE_DESC_CALLBACK && btn) {{
-        btn.style.display = 'inline-flex';
-        btn.addEventListener('click', async () => {{
-          try {{
-            if (!window.URDFViewer || !window.URDFViewer.__app) {{
-              alert('Viewer todavía no está listo.');
-              return;
-            }}
-            const res = await window.URDFViewer.__app.saveDescriptions();
-            console.log('[URDF] saveDescriptions()', res);
-            if (res && res.ok) {{
-              btn.innerHTML = '✅ Guardado';
-              setTimeout(() => {{
-                btn.innerHTML = '💾 <span>Save IA descriptions</span>';
-              }}, 1500);
-            }} else {{
-              alert('No se pudo guardar. Revisa la consola.');
-            }}
-          }} catch (e) {{
-            console.error('[URDF] Error al guardar descripciones IA', e);
-            alert('Error al guardar descripciones IA. Mira la consola.');
-          }}
-        }});
-      }} else if (btn) {{
-        // Si no hay IA, ocultamos el botón
-        btn.style.display = 'none';
-      }}
     }}
   </script>
 </body>
