@@ -1,4 +1,4 @@
-// /viewer/urdf_viewer_main.js
+// /viewer/urdf_viewer_main.js 
 // Viewer moderno + thumbnails del script estable + IA opt-in con logs.
 //
 // - Cada thumbnail:
