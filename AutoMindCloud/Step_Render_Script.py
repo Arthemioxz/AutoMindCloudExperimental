@@ -1,4 +1,3 @@
-
 import base64
 import gdown
 from IPython.display import display, HTML
@@ -338,6 +337,7 @@ def Step_Render(Step_Name):
     let model = null;
     let modelScale = 1.0;
     let currentRenderMode = 'Solid';
+    let DEFAULT_VIEW_RADIUS = null;  // distancia usada al iniciar el render
 
     function applyFixedSize() {{
       if (camera.isPerspectiveCamera) {{
@@ -538,6 +538,12 @@ def Step_Render(Step_Name):
       controls.target.set(0, 0, 0);
       controls.update();
 
+      // Guardamos la distancia inicial cámara–centro para reutilizarla en Iso/Top/Front/Right
+      const camDist = camera.position.length();  // centro está en (0,0,0) tras centrar
+      if (DEFAULT_VIEW_RADIUS === null && isFinite(camDist)) {{
+        DEFAULT_VIEW_RADIUS = camDist;
+      }}
+
       sizeAxesHelper(_lastMaxDim, new THREE.Vector3(0,0,0));
       boundsInfo = {{ center: new THREE.Vector3(0,0,0), radius, maxDim: _lastMaxDim }};
     }}
@@ -556,29 +562,50 @@ def Step_Render(Step_Name):
       }}
     }}
 
-    // --- SISTEMA DE TWEEN (del script antiguo) ---
-    function tweenCameraToDir(dir, duration = 480, onComplete = null) {{
-      if (!boundsInfo) return;
-      const {{ center, radius, maxDim }} = boundsInfo;
+    // --- SISTEMA DE VISTAS (Iso / Top / Front / Right) ---
+    // Distancia SIEMPRE igual a la usada al iniciar el render (DEFAULT_VIEW_RADIUS)
+    const easeInOutCubic = (t) => t < 0.5
+      ? 4 * t * t * t
+      : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
+    function viewEndPose(kind) {{
+      if (!boundsInfo) return null;
+      const target = boundsInfo.center.clone(); // (0,0,0) tras centrar modelo
+
+      // vector actual cámara → target
+      const curVec = camera.position.clone().sub(target);
+      const len = Math.max(1e-9, curVec.length());
+      let az = Math.atan2(curVec.z, curVec.x);
+      let el = Math.asin(curVec.y / len);
+      const topEps = 1e-3;
+
+      if (kind === 'iso')   {{ az = Math.PI * 0.25; el = Math.PI * 0.20; }}
+      if (kind === 'top')   {{ az = Math.round(az / (Math.PI/2)) * (Math.PI/2); el = Math.PI/2 - topEps; }}
+      if (kind === 'front') {{ az = Math.PI / 2; el = 0; }}
+      if (kind === 'right') {{ az = 0; el = 0; }}
+
+      // radio fijo: el que tenía la cámara al iniciar el render
+      const r = (DEFAULT_VIEW_RADIUS !== null ? DEFAULT_VIEW_RADIUS : len);
+
+      const dir = new THREE.Vector3(
+        Math.cos(el) * Math.cos(az),
+        Math.sin(el),
+        Math.cos(el) * Math.sin(az)
+      ).normalize();
+
+      const pos = target.clone().add(dir.multiplyScalar(r));
+      return {{ pos, target }};
+    }}
+
+    function tweenCameraToPose(endPos, endTarget, duration = 750) {{
       const startPos = camera.position.clone();
       const startTarget = controls.target.clone();
-
-      let dist;
-      if (camera.isPerspectiveCamera) {{
-        const fov = THREE.MathUtils.degToRad(camera.fov);
-        dist = radius / Math.tan(Math.max(1e-6, fov / 2)) * 1.18;
-      }} else {{
-        dist = maxDim * 2.0;
-      }}
-
-      const endTarget = center.clone();
-      const endPos = center.clone().add(dir.clone().normalize().multiplyScalar(dist));
-
       const t0 = performance.now();
+
       function animate() {{
-        const t = Math.min(1, (performance.now() - t0) / duration);
-        const k = t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t;
+        const now = performance.now();
+        const t = Math.min(1, (now - t0) / duration);
+        const k = easeInOutCubic(t);
 
         camera.position.lerpVectors(startPos, endPos, k);
         controls.target.lerpVectors(startTarget, endTarget, k);
@@ -587,23 +614,31 @@ def Step_Render(Step_Name):
 
         if (t < 1) {{
           requestAnimationFrame(animate);
-        }} else if (onComplete) {{
-          onComplete();
         }}
       }}
+
       requestAnimationFrame(animate);
     }}
 
-    function viewIso()   {{ tweenCameraToDir(new THREE.Vector3(1, 1, 1)); }}
-    function viewFront() {{ tweenCameraToDir(new THREE.Vector3(0, 0, 1)); }}
-    function viewRight() {{ tweenCameraToDir(new THREE.Vector3(1, 0, 0)); }}
+    function viewIso() {{
+      const v = viewEndPose('iso');
+      if (!v) return;
+      tweenCameraToPose(v.pos, v.target, 750);
+    }}
+    function viewFront() {{
+      const v = viewEndPose('front');
+      if (!v) return;
+      tweenCameraToPose(v.pos, v.target, 750);
+    }}
+    function viewRight() {{
+      const v = viewEndPose('right');
+      if (!v) return;
+      tweenCameraToPose(v.pos, v.target, 750);
+    }}
     function viewTop() {{
-      if (!boundsInfo) return;
-      // 1) rápido
-      tweenCameraToDir(new THREE.Vector3(0, 1, 0.35), 480, () => {{
-        // 2) corrección lenta solo inclinación, 0.00001
-        tweenCameraToDir(new THREE.Vector3(0, 1, 0.00001), 1800);
-      }});
+      const v = viewEndPose('top');
+      if (!v) return;
+      tweenCameraToPose(v.pos, v.target, 900);
     }}
 
     // --- Cargar STEP ---
@@ -810,12 +845,21 @@ def Step_Render(Step_Name):
     setDock(false);
 
     toolsToggle.addEventListener('click', () => {{ playClick(); setDock(!dockOpen); }});
-    window.addEventListener('keydown', (ev) => {{
-      if (ev.key === 'c' || ev.key === 'C') {{
+
+    // === NUEVO: hotkey "t" (y también "c") como en tu ToolsDock ===
+    function onHotkeyToggle(e) {{
+      const tag = (e.target && e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+
+      if (e.key === 't' || e.key === 'T' || e.key === 'c' || e.key === 'C') {{
+        e.preventDefault();
+        try {{ console.log('toggle tools'); }} catch(_) {{}}
         playClick();
         setDock(!dockOpen);
       }}
-    }});
+    }}
+    document.addEventListener('keydown', onHotkeyToggle, true);
+    // === FIN CAMBIO ===
 
     snapBtn.addEventListener('click', () => {{
       playClick();
@@ -947,4 +991,3 @@ def Step_Render(Step_Name):
 </html>"""
 
     display(HTML(html))
-
