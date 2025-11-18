@@ -210,6 +210,7 @@ from IPython.display import display, HTML
 # 🔹 POLLI_TEXT: cliente robusto
 # =========================================================
 def polli_text(prompt: str, url: str = "https://gpt-proxy-github-619255898589.us-central1.run.app/infer", timeout: int = 60) -> str:
+    # IMPORTANTE: tu backend /infer debe aceptar {"text": "..."}
     r = requests.post(url, json={"text": prompt}, timeout=timeout)
     r.raise_for_status()
     try:
@@ -273,6 +274,7 @@ def _strip_boilerplate(s: str) -> str:
 def _split_summary_and_steps(text: str):
     text = _strip_boilerplate(text)
     lines = [re.sub(r'\s+', ' ', l).strip() for l in text.splitlines() if l.strip()]
+    # quitar encabezados específicos en español si aparecen
     lines = [re.sub(r'^\s*\(?\s*1\s*\)?\s*\.?\s*Resumen\s*:?\s*', '', l, flags=re.IGNORECASE) for l in lines]
     lines = [re.sub(r'^\s*\(?\s*2\s*\)?\s*\.?\s*Pasos\s*:?\s*', '', l, flags=re.IGNORECASE) for l in lines]
 
@@ -289,11 +291,14 @@ def _split_summary_and_steps(text: str):
     for line in lines[first_idx:]:
         m = _num_pat.match(line)
         if m:
-            if current: steps.append(current.strip())
+            if current:
+                steps.append(current.strip())
             current = m.group(2)
         else:
-            if current: current += ' ' + line
-    if current: steps.append(current.strip())
+            if current:
+                current += ' ' + line
+    if current:
+        steps.append(current.strip())
     steps = [re.sub(r'^\s*[-–•]\s*', '', s).strip() for s in steps]
     return summary, steps
 
@@ -335,37 +340,67 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
 
 
 # =====================================
-# 🔹 Función principal: CalculusSummary (usa variable global)
+# 🔹 Función principal con idioma
 # =====================================
-def IA_CalculusSummary(numero: int, font_type: str = "Latin Modern Roman"):
+def IA_CalculusSummary(numero: int, language: str = "spanish", font_type: str = "Latin Modern Roman"):
     """
-    Usa la variable global 'documento' como entrada (como antes).
+    IA_CalculusSummary(numero, language="spanish"/"english", font_type=...)
+    Usa la variable global 'documento' como entrada.
     """
     global documento
-    base = (
-        "Escribe en español, tono académico, formal e impersonal (tercera persona). "
-        "Empieza directamente con el contenido. "
-        "Estructura la salida en dos partes: "
-        "(1) un párrafo de resumen; "
-        "(2) luego una enumeración con pasos numerados 1., 2., 3., etc. "
-        "IMPORTANTE: Toda notación matemática DEBE ir delimitada correctamente: "
-        "usa \\( ... \\) para fórmulas en línea y \\[ ... \\] para ecuaciones en bloque. "
-        "Nunca escribas comandos LaTeX fuera de esos delimitadores. "
-        "No utilices negritas con **."
-    )
+
+    lang = (language or "spanish").strip().lower()
+
+    if lang.startswith("en"):  # english
+        base = (
+            "Write in English, academic tone, formal and impersonal (third person). "
+            "Start directly with the content. "
+            "Structure the output in two parts: "
+            "(1) one summary paragraph; "
+            "(2) then a numbered list of steps 1., 2., 3., etc. "
+            "IMPORTANT: All mathematical notation MUST be correctly delimited: "
+            "use \\( ... \\) for inline formulas and \\[ ... \\] for display equations. "
+            "Never write LaTeX commands outside those delimiters. "
+            "Do not use bold with **."
+        )
+    else:  # default: spanish
+        base = (
+            "Escribe en español, tono académico, formal e impersonal (tercera persona). "
+            "Empieza directamente con el contenido. "
+            "Estructura la salida en dos partes: "
+            "(1) un párrafo de resumen; "
+            "(2) luego una enumeración con pasos numerados 1., 2., 3., etc. "
+            "IMPORTANTE: Toda notación matemática DEBE ir delimitada correctamente: "
+            "usa \\( ... \\) para fórmulas en línea y \\[ ... \\] para ecuaciones en bloque. "
+            "Nunca escribas comandos LaTeX fuera de esos delimitadores. "
+            "No utilices negritas con **."
+        )
+
     if numero == 1:
-        detalle = " Redacta un resumen conciso (5-7 líneas) y 7 pasos generales sin fórmulas."
+        if lang.startswith("en"):
+            detalle = " Write a concise summary (5–7 lines) and 7 general steps without formulas."
+        else:
+            detalle = " Redacta un resumen conciso (5-7 líneas) y 7 pasos generales sin fórmulas."
     elif numero == 2:
-        detalle = " Redacta un resumen preciso (7-9 líneas) y 10 pasos con detalles clave."
+        if lang.startswith("en"):
+            detalle = " Write an accurate summary (7–9 lines) and 10 steps with key details."
+        else:
+            detalle = " Redacta un resumen preciso (7-9 líneas) y 10 pasos con detalles clave."
     elif numero == 3:
-        detalle = " Redacta un resumen muy preciso (9-12 líneas) y 18 pasos con notación LaTeX."
+        if lang.startswith("en"):
+            detalle = " Write a very detailed summary (9–12 lines) and 18 steps with LaTeX notation."
+        else:
+            detalle = " Redacta un resumen muy preciso (9-12 líneas) y 18 pasos con notación LaTeX."
     else:
-        detalle = " Redacta un resumen breve y pasos razonables."
-    prompt = f"{base}{detalle}\n\nContenido a resumir:\n\n{documento}"
+        if lang.startswith("en"):
+            detalle = " Write a brief summary and a reasonable number of steps."
+        else:
+            detalle = " Redacta un resumen breve y pasos razonables."
+
+    prompt = f"{base}{detalle}\n\nContenido a resumir / Content to summarize:\n\n{documento}"
+
     raw = polli_text(prompt)
     summary, steps = _split_summary_and_steps(raw)
     html_out = _render_html(summary, steps, font_type)
     display(HTML(html_out))
-
-
 
