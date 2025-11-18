@@ -377,22 +377,22 @@ def IA_CalculusSummary(numero: int, language: str = "spanish", font_type: str = 
         )
 
     if numero == 1:
-        if lang.startswith("en"):
+        if lang.startswith("english"):
             detalle = " Write a concise summary (5–7 lines) and 7 general steps without formulas."
         else:
             detalle = " Redacta un resumen conciso (5-7 líneas) y 7 pasos generales sin fórmulas."
     elif numero == 2:
-        if lang.startswith("en"):
+        if lang.startswith("english"):
             detalle = " Write an accurate summary (7–9 lines) and 10 steps with key details."
         else:
             detalle = " Redacta un resumen preciso (7-9 líneas) y 10 pasos con detalles clave."
     elif numero == 3:
-        if lang.startswith("en"):
+        if lang.startswith("english"):
             detalle = " Write a very detailed summary (9–12 lines) and 18 steps with LaTeX notation."
         else:
             detalle = " Redacta un resumen muy preciso (9-12 líneas) y 18 pasos con notación LaTeX."
     else:
-        if lang.startswith("en"):
+        if lang.startswith("english"):
             detalle = " Write a brief summary and a reasonable number of steps."
         else:
             detalle = " Redacta un resumen breve y pasos razonables."
