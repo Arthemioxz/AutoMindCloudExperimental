@@ -98,6 +98,8 @@ def D(elemento):#Por default se imprime en rojo, para indicar que es un derivado
   elif isinstance(elemento,list):#Si el elemento ingresado es un componente, entonces lo identificamos.
     Tipo = "Componente"
     c_componente = elemento
+  elif 
+    Tipo = "Expresion
   
   if Tipo == "Ecuacion":#Si hemos identificado el elemento ingresado como una ecuación, entonces la imprimimos en rojo
 
@@ -135,6 +137,16 @@ def D(elemento):#Por default se imprime en rojo, para indicar que es un derivado
     IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+texto+"}$"))
     #Documento.append(texto)
 
+if Tipo = "Expresion":
+
+    exp = sympy.latex(elemento.args[1])
+
+    texto = exp
+    #texto = texto.replace("text", Estilo)
+
+    documento += "$\\textcolor{"+Color+"}{"+texto+"}$"
+    IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+texto+"}$"))
+  
 
 def R(string):
   #global DatosList,Orden,Color#Documento
