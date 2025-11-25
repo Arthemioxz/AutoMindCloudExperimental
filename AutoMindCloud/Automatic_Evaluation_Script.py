@@ -137,7 +137,7 @@ def D(elemento):#Por default se imprime en rojo, para indicar que es un derivado
     IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+texto+"}$"))
     #Documento.append(texto)
 
-if Tipo = "Expresion":
+  if Tipo = "Expresion":
 
     exp = sympy.latex(elemento.args[1])
 
