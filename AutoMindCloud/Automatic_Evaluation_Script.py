@@ -98,7 +98,7 @@ def D(elemento):#Por default se imprime en rojo, para indicar que es un derivado
   elif isinstance(elemento,list):#Si el elemento ingresado es un componente, entonces lo identificamos.
     Tipo = "Componente"
     c_componente = elemento
-  elif 
+  else:
     Tipo = "Expresion"
   
   if Tipo == "Ecuacion":#Si hemos identificado el elemento ingresado como una ecuación, entonces la imprimimos en rojo
