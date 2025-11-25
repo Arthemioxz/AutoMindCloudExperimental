@@ -139,7 +139,7 @@ def D(elemento):#Por default se imprime en rojo, para indicar que es un derivado
 
   if Tipo == "Expresion":
 
-    exp = sympy.latex(elemento.args[1])
+    exp = sympy.latex(elemento)
 
     texto = exp
     #texto = texto.replace("text", Estilo)
