@@ -99,7 +99,7 @@ def D(elemento):#Por default se imprime en rojo, para indicar que es un derivado
     Tipo = "Componente"
     c_componente = elemento
   else:
-    Tipo = "Expresion"
+    Tipo == "Expresion"
   
   if Tipo == "Ecuacion":#Si hemos identificado el elemento ingresado como una ecuación, entonces la imprimimos en rojo
 
