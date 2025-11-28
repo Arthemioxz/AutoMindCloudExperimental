@@ -213,6 +213,20 @@ from IPython.display import display, Markdown
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import requests, base64, mimetypes, re, html, urllib.parse, json
 from pathlib import Path
 from IPython.display import display, HTML
@@ -274,14 +288,10 @@ def _looks_like_heading(line: str) -> bool:
     return any(rx.match(line.strip()) for rx in _heading_regexes)
 
 
-# ========= FUNCIÓN CLAVE: evita texto pegado en modo math =========
+# ========= FUNCIÓN CLAVE: evita texto pegado y corrige "\ (" =========
 def _escape_keep_math(s: str) -> str:
-    """
-    Escapa HTML pero mantiene segmentos matemáticos.
-    Además detecta bloques de LaTeX que en realidad son TEXTO largo
-    metido entre delimitadores ($...$, \\(...\\), \\[...\\]) y les quita
-    esos delimitadores para que no se vea todo pegado en cursiva.
-    """
+    # Corrige intentos de \( ... \) escritos con espacio: "\ (" -> "\(" y "\ )" -> "\)"
+    s = s.replace("\\ (", "\\(").replace("\\ )", "\\)")
 
     # Detecta TODOS los bloques "matemáticos"
     math_pattern = re.compile(
@@ -295,7 +305,7 @@ def _escape_keep_math(s: str) -> str:
     def _maybe_unmath(seg: str) -> str:
         # Detecta tipo de delimitador y extrae el interior
         if seg.startswith("$$") and seg.endswith("$$"):
-            # Asumimos que $$...$$ casi siempre es fórmula de verdad → se respeta
+            # $$...$$ suele ser fórmula de verdad → lo respetamos
             return seg
 
         if seg.startswith("\\(") and seg.endswith("\\)"):
@@ -305,7 +315,7 @@ def _escape_keep_math(s: str) -> str:
         elif seg.startswith("$") and seg.endswith("$"):
             inner = seg[1:-1]  # $...$
         else:
-            return seg  # algo raro, lo dejamos como está
+            return seg  # algo raro → lo dejamos como está
 
         inner_stripped = inner.strip()
         if not inner_stripped:
@@ -324,9 +334,7 @@ def _escape_keep_math(s: str) -> str:
         if len(tokens) >= 6 and not has_math_ops:
             return html.escape(inner_stripped)
 
-        # Heurística 2 (por si acaso):
-        #   - bastantes palabras (>= 4)
-        #   - alta proporción de letras frente a símbolos
+        # Heurística 2: bastantes palabras y casi todo letras/números
         letters_digits = re.sub(r'[^A-Za-z0-9]+', '', inner_stripped)
         if letters_digits:
             letters_count = sum(c.isalpha() for c in letters_digits)
@@ -558,3 +566,4 @@ def IA_CalculusSummary(
     summary, steps = _split_summary_and_steps(raw)
     html_out = _render_html(summary, steps, font_type, language)
     display(HTML(html_out))
+
