@@ -153,7 +153,8 @@ def R(string):
 
   global documento
 
-  documento += "$\\textcolor{"+Color+"}{"+string+"}$"
+  #documento += "$\\textcolor{"+Color+"}{"+string+"}$"
+  documento += string
   IPython.display.display(IPython.display.Latex("$\\textcolor{"+Color+"}{"+string+"}$"))
   
 def E(expr):
@@ -212,8 +213,6 @@ from IPython.display import display, Markdown
 
 
 
-
-
 import requests, base64, mimetypes, re, html, urllib.parse, json
 from pathlib import Path
 from IPython.display import display, HTML
@@ -221,7 +220,11 @@ from IPython.display import display, HTML
 # =========================================================
 # 🔹 POLLI_TEXT: cliente robusto
 # =========================================================
-def polli_text(prompt: str, url: str = "https://gpt-proxy-github-619255898589.us-central1.run.app/infer", timeout: int = 60) -> str:
+def polli_text(
+    prompt: str,
+    url: str = "https://gpt-proxy-github-619255898589.us-central1.run.app/infer",
+    timeout: int = 60,
+) -> str:
     # IMPORTANTE: tu backend /infer debe aceptar {"text": "..."}
     r = requests.post(url, json={"text": prompt}, timeout=timeout)
     r.raise_for_status()
@@ -229,8 +232,10 @@ def polli_text(prompt: str, url: str = "https://gpt-proxy-github-619255898589.us
         data = r.json()
     except Exception:
         return r.text.strip()
+
     if isinstance(data, str):
         return data.strip()
+
     if isinstance(data, dict):
         if "text" in data and isinstance(data["text"], str):
             return data["text"].strip()
@@ -243,6 +248,7 @@ def polli_text(prompt: str, url: str = "https://gpt-proxy-github-619255898589.us
                     if k in ch and isinstance(ch[k], str):
                         return ch[k].strip()
         return json.dumps(data, ensure_ascii=False)
+
     return str(data).strip()
 
 
@@ -261,45 +267,135 @@ _heading_patterns = [
 ]
 _heading_regexes = [re.compile(p, re.IGNORECASE) for p in _heading_patterns]
 
+
 def _looks_like_heading(line: str) -> bool:
     line = re.sub(r'[*_`~]+', '', line)
     line = re.sub(r'<[^>]+>', '', line)
     return any(rx.match(line.strip()) for rx in _heading_regexes)
 
+
+# ========= FUNCIÓN CLAVE: evita texto pegado en modo math =========
 def _escape_keep_math(s: str) -> str:
-    parts = re.split(r'(\$\$.*?\$\$|\$.*?\$|\\\[.*?\\\]|\\\(.*?\\\))', s, flags=re.S)
+    """
+    Escapa HTML pero mantiene segmentos matemáticos.
+    Además detecta bloques de LaTeX que en realidad son TEXTO largo
+    metido entre delimitadores ($...$, \\(...\\), \\[...\\]) y les quita
+    esos delimitadores para que no se vea todo pegado en cursiva.
+    """
+
+    # Detecta TODOS los bloques "matemáticos"
+    math_pattern = re.compile(
+        r'(\$\$.*?\$\$|\$.*?\$|\\\[.*?\\\]|\\\(.*?\\\))',
+        re.S
+    )
+
+    # símbolos / macros típicamente matemáticos (operadores, \lambda, \frac, etc.)
+    math_ops_re = re.compile(r'(\\[a-zA-Z]+|[_^=+\-*/=])')
+
+    def _maybe_unmath(seg: str) -> str:
+        # Detecta tipo de delimitador y extrae el interior
+        if seg.startswith("$$") and seg.endswith("$$"):
+            # Asumimos que $$...$$ casi siempre es fórmula de verdad → se respeta
+            return seg
+
+        if seg.startswith("\\(") and seg.endswith("\\)"):
+            inner = seg[2:-2]
+        elif seg.startswith("\\[") and seg.endswith("\\]"):
+            inner = seg[2:-2]
+        elif seg.startswith("$") and seg.endswith("$"):
+            inner = seg[1:-1]  # $...$
+        else:
+            return seg  # algo raro, lo dejamos como está
+
+        inner_stripped = inner.strip()
+        if not inner_stripped:
+            return ""
+
+        # Palabras aproximadas (separando por espacios)
+        tokens = inner_stripped.replace("\n", " ").split()
+
+        # ¿Tiene símbolos / macros claramente matemáticos?
+        has_math_ops = bool(math_ops_re.search(inner_stripped))
+
+        # Heurística 1:
+        #   - muchas palabras (>= 6)
+        #   - y NO hay símbolos matemáticos claros
+        #   => probablemente es TEXTO que el modelo metió entre delimitadores
+        if len(tokens) >= 6 and not has_math_ops:
+            return html.escape(inner_stripped)
+
+        # Heurística 2 (por si acaso):
+        #   - bastantes palabras (>= 4)
+        #   - alta proporción de letras frente a símbolos
+        letters_digits = re.sub(r'[^A-Za-z0-9]+', '', inner_stripped)
+        if letters_digits:
+            letters_count = sum(c.isalpha() for c in letters_digits)
+            letters_ratio = letters_count / len(letters_digits)
+        else:
+            letters_ratio = 0.0
+
+        if len(tokens) >= 4 and not has_math_ops and letters_ratio > 0.6:
+            return html.escape(inner_stripped)
+
+        # En los demás casos (fórmulas cortas de verdad), lo dejamos como math
+        return seg
+
+    parts = math_pattern.split(s)
     out = []
     for p in parts:
-        if p.startswith('$') or p.startswith('\\(') or p.startswith('\\['):
-            out.append(p)
+        if not p:
+            continue
+        if math_pattern.fullmatch(p):
+            # Segmento marcado como "math" → aplicamos heurística
+            out.append(_maybe_unmath(p))
         else:
+            # Texto normal → solo escapamos HTML
             out.append(html.escape(p))
-    return ''.join(out)
+
+    return "".join(out)
+# ================= FIN _escape_keep_math =========================
+
 
 def _strip_boilerplate(s: str) -> str:
     s = s.lstrip()
-    s = re.sub(r"^(claro|por supuesto|aquí tienes|a continuación).*?\n+", "", s, flags=re.IGNORECASE)
+    s = re.sub(
+        r"^(claro|por supuesto|aquí tienes|a continuación).*?\n+",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
     lines = [l.rstrip() for l in s.splitlines()]
     lines = [l for l in lines if not _looks_like_heading(l)]
-    return '\n'.join(lines).strip()
+    return "\n".join(lines).strip()
+
 
 def _split_summary_and_steps(text: str):
     text = _strip_boilerplate(text)
-    lines = [re.sub(r'\s+', ' ', l).strip() for l in text.splitlines() if l.strip()]
-    # quitar encabezados específicos en español si aparecen
-    lines = [re.sub(r'^\s*\(?\s*1\s*\)?\s*\.?\s*Resumen\s*:?\s*', '', l, flags=re.IGNORECASE) for l in lines]
-    lines = [re.sub(r'^\s*\(?\s*2\s*\)?\s*\.?\s*Pasos\s*:?\s*', '', l, flags=re.IGNORECASE) for l in lines]
+    lines = [re.sub(r"\s+", " ", l).strip() for l in text.splitlines() if l.strip()]
+
+    # Quita encabezados tipo "1. Resumen" / "2. Pasos"
+    lines = [
+        re.sub(r"^\s*\(?\s*1\s*\)?\s*\.?\s*Resumen\s*:?\s*", "", l, flags=re.IGNORECASE)
+        for l in lines
+    ]
+    lines = [
+        re.sub(r"^\s*\(?\s*2\s*\)?\s*\.?\s*Pasos\s*:?\s*", "", l, flags=re.IGNORECASE)
+        for l in lines
+    ]
 
     first_idx = None
     for i, line in enumerate(lines):
         if _num_pat.match(line):
             first_idx = i
             break
-    if first_idx is None:
-        return ' '.join(lines).strip(), []
 
-    summary = ' '.join(lines[:first_idx]).strip()
-    steps, current = [], None
+    if first_idx is None:
+        return " ".join(lines).strip(), []
+
+    summary = " ".join(lines[:first_idx]).strip()
+    steps = []
+    current = None
+
     for line in lines[first_idx:]:
         m = _num_pat.match(line)
         if m:
@@ -308,30 +404,69 @@ def _split_summary_and_steps(text: str):
             current = m.group(2)
         else:
             if current:
-                current += ' ' + line
+                current += " " + line
+
     if current:
         steps.append(current.strip())
-    steps = [re.sub(r'^\s*[-–•]\s*', '', s).strip() for s in steps]
+
+    steps = [re.sub(r"^\s*[-–•]\s*", "", s).strip() for s in steps]
     return summary, steps
 
 
 # =====================================
 # 🔹 Render con fuentes + MathJax
 # =====================================
-def _render_html(summary: str, steps: list, font_type: str):
+def _render_html(summary: str, steps: list, font_type: str, language: str):
+    global Color  # Color definido por ti afuera
+
+    lang = (language or "spanish").strip().lower()
+    if lang.startswith("en"):
+        title_resumen = "Summary"
+        title_pasos = "Steps"
+    else:
+        title_resumen = "Resumen"
+        title_pasos = "Pasos"
+
     css = f"""
 <link href="https://fonts.googleapis.com/css2?family=Anton:wght@400;700&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;600&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link href="https://fonts.cdnfonts.com/css/latin-modern-roman" rel="stylesheet">
 <style>
-  .calc-wrap {{max-width:980px;margin:8px auto;padding:8px 4px;
+  .calc-wrap {{
+    max-width:980px;
+    margin:8px auto;
+    padding:8px 4px;
     font-family:'{font_type}','Fira Sans',system-ui;
-    color:#000;}}
-  .title {{font-family:'Anton',sans-serif;color:teal;font-size:22px;
-    font-weight:700;margin:8px 0 10px;}}
-  .p {{font-size:18px;line-height:1.6;margin:8px 0;}}
-  .step {{margin:10px 0;}}
-  .idx {{margin-right:8px;font-weight:700;}}
+  }}
+
+  .title {{
+    font-family:'Anton',sans-serif;
+    color:{Color};
+    font-size:22px;
+    font-weight:700;
+    letter-spacing:1.5px;
+    margin:8px 0 10px;
+  }}
+
+  .p {{
+    font-size:18px;
+    line-height:1.6;
+    margin:8px 0;
+  }}
+
+  .summary {{
+    color:{Color};
+  }}
+
+  .step {{
+    margin:10px 0;
+    color:{Color};
+  }}
+
+  .idx {{
+    margin-right:8px;
+    font-weight:700;
+  }}
 </style>
 <script>
 window.MathJax={{tex:{{inlineMath:[['$','$'],['\\\\(','\\\\)']],
@@ -340,21 +475,30 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
 </script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
 """
+
     body = f"""
 <div class="calc-wrap">
-  <div class="title">Resumen</div>
-  <p class="p">{_escape_keep_math(summary)}</p>
-  {"<div class='title'>Pasos</div>" if steps else ""}
-  {''.join(f'<p class="p step"><span class="idx">{i}.</span>{_escape_keep_math(s)}</p>'
-           for i, s in enumerate(steps,1))}
-</div>"""
+  <div class="title">{title_resumen}</div>
+  <p class="p summary">{_escape_keep_math(summary)}</p>
+
+  {"<div class='title'>" + title_pasos + "</div>" if steps else ""}
+  {''.join(
+      f'<p class="p step"><span class="idx">{i}.</span>{_escape_keep_math(s)}</p>'
+      for i, s in enumerate(steps, 1)
+  )}
+</div>
+"""
     return css + body
 
 
 # =====================================
 # 🔹 Función principal con idioma
 # =====================================
-def IA_CalculusSummary(numero: int, language: str = "spanish", font_type: str = "Latin Modern Roman"):
+def IA_CalculusSummary(
+    numero: int,
+    language: str = "spanish",
+    font_type: str = "Latin Modern Roman",
+):
     """
     IA_CalculusSummary(numero, language="spanish"/"english", font_type=...)
     Usa la variable global 'documento' como entrada.
@@ -372,8 +516,9 @@ def IA_CalculusSummary(numero: int, language: str = "spanish", font_type: str = 
             "(2) then a numbered list of steps 1., 2., 3., etc. "
             "IMPORTANT: All mathematical notation MUST be correctly delimited: "
             "use \\( ... \\) for inline formulas and \\[ ... \\] for display equations. "
-            "Never write LaTeX commands outside those delimiters. "
-            "Do not use bold with **."
+            "Use LaTeX ONLY for short mathematical expressions, never for whole sentences. "
+            "If the model tries to wrap an entire sentence with \\( ... \\) or $ ... $, rewrite it so that "
+            "only the specific mathematical expressions are in LaTeX."
         )
     else:  # default: spanish
         base = (
@@ -384,35 +529,32 @@ def IA_CalculusSummary(numero: int, language: str = "spanish", font_type: str = 
             "(2) luego una enumeración con pasos numerados 1., 2., 3., etc. "
             "IMPORTANTE: Toda notación matemática DEBE ir delimitada correctamente: "
             "usa \\( ... \\) para fórmulas en línea y \\[ ... \\] para ecuaciones en bloque. "
-            "Nunca escribas comandos LaTeX fuera de esos delimitadores. "
-            "No utilices negritas con **."
+            "Usa LaTeX SOLO para expresiones matemáticas cortas, nunca para oraciones completas. "
+            "Si el modelo intenta rodear una oración completa con \\( ... \\) o $ ... $, "
+            "reformula la oración para que únicamente las expresiones matemáticas específicas "
+            "aparezcan en LaTeX."
         )
 
     if numero == 1:
-        if lang.startswith("english"):
-            detalle = " Write a concise summary (5–7 lines) and 7 general steps without formulas."
-        else:
-            detalle = " Redacta un resumen conciso (5-7 líneas) y 7 pasos generales sin fórmulas."
+        detalle = (
+            " Redacta un resumen conciso (5-7 líneas) y 7 pasos generales sin fórmulas."
+        )
     elif numero == 2:
-        if lang.startswith("english"):
-            detalle = " Write an accurate summary (7–9 lines) and 10 steps with key details."
-        else:
-            detalle = " Redacta un resumen preciso (7-9 líneas) y 10 pasos con detalles clave."
+        detalle = (
+            " Redacta un resumen preciso (7-9 líneas) y 15 pasos con detalles clave."
+        )
     elif numero == 3:
-        if lang.startswith("english"):
-            detalle = " Write a very detailed summary (9–12 lines) and 18 steps with LaTeX notation."
-        else:
-            detalle = " Redacta un resumen muy preciso (9-12 líneas) y 18 pasos con notación LaTeX."
+        detalle = (
+            " Redacta un resumen muy preciso (9-12 líneas) y 30 pasos con notación LaTeX."
+        )
     else:
-        if lang.startswith("english"):
-            detalle = " Write a brief summary and a reasonable number of steps."
-        else:
-            detalle = " Redacta un resumen breve y pasos razonables."
+        detalle = " Redacta un resumen breve y pasos razonables."
 
-    prompt = f"{base}{detalle}\n\nContenido a resumir / Content to summarize:\n\n{documento}"
+    prompt = (
+        f"{base}{detalle}\n\nContenido a resumir / Content to summarize:\n\n{documento}"
+    )
 
     raw = polli_text(prompt)
     summary, steps = _split_summary_and_steps(raw)
-    html_out = _render_html(summary, steps, font_type)
+    html_out = _render_html(summary, steps, font_type, language)
     display(HTML(html_out))
-
