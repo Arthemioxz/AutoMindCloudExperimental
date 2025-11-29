@@ -2,7 +2,13 @@ import IPython
 
 from IPython.display import Image
 
-display(Image(url="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png"))
+from IPython.display import Image, display
+
+display(Image(
+    url="https://i.gyazo.com/075a65994e032c0dc0551fcd76d77f51.jpg",
+    width=700,   # change this
+    height=None  # or use height instead
+))
 
 import requests
 
