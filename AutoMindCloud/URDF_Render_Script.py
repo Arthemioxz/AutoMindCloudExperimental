@@ -475,7 +475,7 @@ def URDF_Render(
 <body>
   <div id="app"></div>
   <div class="badge">
-    <img src="https://i.gyazo.com/30a9ecbd8f1a0483a7e07a10eaaa8522.png" alt="AutoMind"/>
+    <img src="https://i.gyazo.com/fc67eb75c04d4a87db559b961dda9786.png" alt="AutoMind"/>
   </div>
 
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
