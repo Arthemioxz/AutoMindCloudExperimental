@@ -5,7 +5,7 @@ from IPython.display import Image
 from IPython.display import Image, display
 
 display(Image(
-    url="https://i.gyazo.com/075a65994e032c0dc0551fcd76d77f51.jpg",
+    url="https://i.gyazo.com/2eae75ef6e2b0febad0526e00980ce78.png",
     width=700,   # change this
     height=None  # or use height instead
 ))
