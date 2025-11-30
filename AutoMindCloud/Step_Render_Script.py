@@ -148,7 +148,7 @@ def Step_Render(Step_Name):
 <body>
   <div id="app"></div>
   <div class="badge">
-    <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="badge">
+    <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud.png" alt="badge">
   </div>
 
   <!-- Sistema de tamaño original: captura inicial y bloquea (solo puede crecer) -->
