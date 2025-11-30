@@ -12,7 +12,7 @@ display(Image(
 
 import requests
 
-url = "https://raw.githubusercontent.com/ArtemioA/AutoMindCloudExperimental/main/AutoMindCloud/click_sound.mp3"
+url = "https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/click_sound.mp3"
 local_filename = "click_sound.mp3"
 
 response = requests.get(url)
