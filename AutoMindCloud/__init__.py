@@ -5,10 +5,10 @@ from IPython.display import Image
 from IPython.display import Image, display
 
 display(Image(
-    url="https://i.gyazo.com/fc67eb75c04d4a87db559b961dda9786.png",
-    width=700,   # change this
-    height=None  # or use height instead
+    url="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png",
+    width=700   # Ajusta el ancho aquí
 ))
+
 
 import requests
 
