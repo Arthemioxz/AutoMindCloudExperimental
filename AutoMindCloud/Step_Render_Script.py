@@ -318,7 +318,7 @@ def Step_Render(Step_Name):
     const grid = new THREE.GridHelper(GRID_SIZE, 20, 0x0ea5a6, 0x0ea5a6);
     grid.position.y = 0;
     grid.visible = false;
-    groundGroup.add(grid);  // GRID ORIGINAL, sin tocar material
+    groundGroup.add(grid);
 
     const groundMat = new THREE.ShadowMaterial({{ opacity: 0.22 }});
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
@@ -327,7 +327,6 @@ def Step_Render(Step_Name):
     ground.receiveShadow = false;
     ground.visible = false;
     groundGroup.add(ground);
-    // groundMat se queda con comportamiento por defecto de ShadowMaterial
 
     const axesHelper = new THREE.AxesHelper(1);
     axesHelper.visible = false;
@@ -338,7 +337,7 @@ def Step_Render(Step_Name):
     let model = null;
     let modelScale = 1.0;
     let currentRenderMode = 'Solid';
-    let DEFAULT_VIEW_RADIUS = null;  // distancia usada al iniciar el render
+    let DEFAULT_VIEW_RADIUS = null;
 
     function applyFixedSize() {{
       if (camera.isPerspectiveCamera) {{
@@ -358,7 +357,7 @@ def Step_Render(Step_Name):
       axesHelper.position.copy(center || new THREE.Vector3());
     }}
 
-    // --- Sección: solo modelo, slide plane por encima del grid ---
+    // --- Sección ---
     let secEnabled = false;
     let secAxis = 'X';
     let secPlaneVisible = false;
@@ -463,7 +462,7 @@ def Step_Render(Step_Name):
       secVisual.visible = !!secPlaneVisible;
     }}
 
-    // --- Render modes (solo toco el modelo; grid y ground quedan intactos) ---
+    // --- Render modes ---
     function setRenderMode(mode) {{
       if (!model) return;
       currentRenderMode = mode;
@@ -472,11 +471,10 @@ def Step_Render(Step_Name):
         const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
         mats.forEach(m => {{
           if (!m) return;
-          // Reset por defecto
           m.wireframe   = false;
           m.transparent = false;
           m.opacity     = 1.0;
-          m.depthWrite  = true;   // SIEMPRE escribe depth
+          m.depthWrite  = true;
           m.depthTest   = true;
 
           if (mode === 'Wireframe') {{
@@ -484,7 +482,7 @@ def Step_Render(Step_Name):
           }} else if (mode === 'X-Ray') {{
             m.transparent = true;
             m.opacity     = 0.25;
-            m.depthWrite  = true;   // <-- antes era false, AQUÍ está el fix
+            m.depthWrite  = true;
           }} else if (mode === 'Ghost') {{
             m.transparent = true;
             m.opacity     = 0.6;
@@ -540,7 +538,7 @@ def Step_Render(Step_Name):
       controls.target.set(0, 0, 0);
       controls.update();
 
-      const camDist = camera.position.length();  // centro en (0,0,0)
+      const camDist = camera.position.length();
       if (DEFAULT_VIEW_RADIUS === null && isFinite(camDist)) {{
         DEFAULT_VIEW_RADIUS = camDist;
       }}
@@ -583,7 +581,8 @@ def Step_Render(Step_Name):
       if (kind === 'front') {{ az = Math.PI / 2; el = 0; }}
       if (kind === 'right') {{ az = 0; el = 0; }}
 
-      const r = (DEFAULT_VIEW_RADIUS !== null ? DEFAULT_VIEW_RADIUS : len);
+      // Usar SIEMPRE la distancia actual (funciona bien en perspectiva y ortográfica)
+      const r = len;
 
       const dir = new THREE.Vector3(
         Math.cos(el) * Math.cos(az),
@@ -612,6 +611,11 @@ def Step_Render(Step_Name):
 
         if (t < 1) {{
           requestAnimationFrame(animate);
+        }} else {{
+          // En ortográfica, reasegura el frustum para que no recorte el grid
+          if (camera.isOrthographicCamera) {{
+            applyFixedSize();
+          }}
         }}
       }}
 
@@ -900,9 +904,16 @@ def Step_Render(Step_Name):
     bFront.addEventListener('click', () => {{ playClick(); viewFront(); }});
     bRight.addEventListener('click', () => {{ playClick(); viewRight(); }});
 
-    // Proyección ortográfica sin tocar grid/ground
+    // PROYECCIÓN ORTOGRÁFICA - VERSIÓN QUE NO CORTA EL GRID
     projSel.addEventListener('change', () => {{
       playClick();
+
+      const wasSectionEnabled = secEnabled;
+      if (secEnabled) {{
+        secEnabled = false;
+        updateSectionPlane(parseFloat(secDist.value)||0);
+      }}
+
       if (!boundsInfo) {{
         camera = (projSel.value === 'Perspective') ? persp : ortho;
         controls.object = camera;
@@ -914,32 +925,56 @@ def Step_Render(Step_Name):
       const {{ maxDim }} = boundsInfo;
       const span = Math.max(maxDim, GRID_SIZE * 0.5);
       const aspect = BASE_W / BASE_H;
+      const target = controls.target.clone();
 
       if (projSel.value === 'Orthographic' && camera.isPerspectiveCamera) {{
+        const dir = camera.position.clone().sub(target).normalize();
+        const distance = Math.max(span * 2, 1);
+
         ortho.left   = -span * aspect;
         ortho.right  =  span * aspect;
         ortho.top    =  span;
         ortho.bottom = -span;
-        ortho.near   = Math.max(span/1000,0.001);
-        ortho.far    = Math.max(span*1500,1500);
-        ortho.position.copy(camera.position);
+        ortho.near   = Math.max(span / 1000, 0.001);
+        ortho.far    = Math.max(span * 100, 1000);
+
+        ortho.position.copy(target).add(dir.multiplyScalar(distance));
         ortho.up.copy(camera.up);
+        ortho.lookAt(target);
         ortho.updateProjectionMatrix();
-        controls.object = ortho;
+
         camera = ortho;
+        controls.object = ortho;
+
       }} else if (projSel.value === 'Perspective' && camera.isOrthographicCamera) {{
+        const dir = camera.position.clone().sub(target).normalize();
+        const distance = Math.max(span * 3, 1);
+
         persp.aspect = aspect;
+        persp.fov = 60;
         persp.near = 0.01;
         persp.far  = 10000;
-        persp.position.copy(camera.position);
+
+        persp.position.copy(target).add(dir.multiplyScalar(distance));
         persp.up.copy(camera.up);
+        persp.lookAt(target);
         persp.updateProjectionMatrix();
-        controls.object = persp;
+
         camera = persp;
+        controls.object = persp;
       }}
 
+      controls.target.copy(target);
       controls.update();
       applyFixedSize();
+
+      if (wasSectionEnabled) {{
+        setTimeout(() => {{
+          secEnabled = true;
+          secToggle.cb.checked = true;
+          updateSectionPlane(parseFloat(secDist.value)||0);
+        }}, 100);
+      }}
     }});
 
     togGrid.cb.addEventListener('change', () => {{
