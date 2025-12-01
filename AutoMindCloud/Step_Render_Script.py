@@ -170,7 +170,7 @@ def Step_Render(Step_Name):
           window.google.colab.output.setIframeHeight) {{
         window.google.colab.output.setIframeHeight(initialH, true);
       }}
-    }} catch (e) {{}}
+    }} catch (e) {{ }}
 
     let resizeBlocked = false;
     window.addEventListener('resize', function(e) {{
@@ -187,7 +187,7 @@ def Step_Render(Step_Name):
               window.google.colab.output.setIframeHeight) {{
             window.google.colab.output.setIframeHeight(window.__VIEWER_BASE_H__, true);
           }}
-        }} catch (e) {{}}
+        }} catch (e) {{ }}
       }} else {{
         setTimeout(() => {{
           document.documentElement.style.width = '100%';
@@ -255,13 +255,13 @@ def Step_Render(Step_Name):
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") audioCtx.resume();
     if (!clickBuf) {{
-      ensureClickBuffer().then(() => playClick()).catch(() => {{}});
+      ensureClickBuffer().then(() => playClick()).catch(() => {{ }});
       return;
     }}
     const src = audioCtx.createBufferSource();
     src.buffer = clickBuf;
     src.connect(audioCtx.destination);
-    try {{ src.start(); }} catch (e) {{}}
+    try {{ src.start(); }} catch (e) {{ }}
   }}
 
   (async function init() {{
@@ -318,7 +318,7 @@ def Step_Render(Step_Name):
     const grid = new THREE.GridHelper(GRID_SIZE, 20, 0x0ea5a6, 0x0ea5a6);
     grid.position.y = 0;
     grid.visible = false;
-    groundGroup.add(grid);
+    groundGroup.add(grid);  // GRID ORIGINAL, sin tocar material
 
     const groundMat = new THREE.ShadowMaterial({{ opacity: 0.22 }});
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
@@ -327,6 +327,7 @@ def Step_Render(Step_Name):
     ground.receiveShadow = false;
     ground.visible = false;
     groundGroup.add(ground);
+    // groundMat se queda con comportamiento por defecto de ShadowMaterial
 
     const axesHelper = new THREE.AxesHelper(1);
     axesHelper.visible = false;
@@ -462,7 +463,7 @@ def Step_Render(Step_Name):
       secVisual.visible = !!secPlaneVisible;
     }}
 
-    // --- Render modes ---
+    // --- Render modes (solo toco el modelo; grid y ground quedan intactos) ---
     function setRenderMode(mode) {{
       if (!model) return;
       currentRenderMode = mode;
@@ -471,22 +472,23 @@ def Step_Render(Step_Name):
         const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
         mats.forEach(m => {{
           if (!m) return;
-          m.wireframe = false;
+          // Reset por defecto
+          m.wireframe   = false;
           m.transparent = false;
-          m.opacity = 1.0;
-          m.depthWrite = true;
-          m.depthTest = true;
+          m.opacity     = 1.0;
+          m.depthWrite  = true;   // SIEMPRE escribe depth
+          m.depthTest   = true;
 
           if (mode === 'Wireframe') {{
             m.wireframe = true;
           }} else if (mode === 'X-Ray') {{
             m.transparent = true;
-            m.opacity = 0.25;
-            m.depthWrite = false;
+            m.opacity     = 0.25;
+            m.depthWrite  = true;   // <-- antes era false, AQUÍ está el fix
           }} else if (mode === 'Ghost') {{
             m.transparent = true;
-            m.opacity = 0.6;
-            m.depthWrite = true;
+            m.opacity     = 0.6;
+            m.depthWrite  = true;
           }}
           m.needsUpdate = true;
         }});
@@ -538,8 +540,7 @@ def Step_Render(Step_Name):
       controls.target.set(0, 0, 0);
       controls.update();
 
-      // Guardamos la distancia inicial cámara–centro para reutilizarla en Iso/Top/Front/Right
-      const camDist = camera.position.length();  // centro está en (0,0,0) tras centrar
+      const camDist = camera.position.length();  // centro en (0,0,0)
       if (DEFAULT_VIEW_RADIUS === null && isFinite(camDist)) {{
         DEFAULT_VIEW_RADIUS = camDist;
       }}
@@ -562,17 +563,15 @@ def Step_Render(Step_Name):
       }}
     }}
 
-    // --- SISTEMA DE VISTAS (Iso / Top / Front / Right) ---
-    // Distancia SIEMPRE igual a la usada al iniciar el render (DEFAULT_VIEW_RADIUS)
+    // --- SISTEMA DE VISTAS ---
     const easeInOutCubic = (t) => t < 0.5
       ? 4 * t * t * t
       : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
     function viewEndPose(kind) {{
       if (!boundsInfo) return null;
-      const target = boundsInfo.center.clone(); // (0,0,0) tras centrar modelo
+      const target = boundsInfo.center.clone();
 
-      // vector actual cámara → target
       const curVec = camera.position.clone().sub(target);
       const len = Math.max(1e-9, curVec.length());
       let az = Math.atan2(curVec.z, curVec.x);
@@ -584,7 +583,6 @@ def Step_Render(Step_Name):
       if (kind === 'front') {{ az = Math.PI / 2; el = 0; }}
       if (kind === 'right') {{ az = 0; el = 0; }}
 
-      // radio fijo: el que tenía la cámara al iniciar el render
       const r = (DEFAULT_VIEW_RADIUS !== null ? DEFAULT_VIEW_RADIUS : len);
 
       const dir = new THREE.Vector3(
@@ -846,20 +844,18 @@ def Step_Render(Step_Name):
 
     toolsToggle.addEventListener('click', () => {{ playClick(); setDock(!dockOpen); }});
 
-    // === NUEVO: hotkey "t" (y también "c") como en tu ToolsDock ===
+    // Hotkey t / c
     function onHotkeyToggle(e) {{
       const tag = (e.target && e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
 
       if (e.key === 't' || e.key === 'T' || e.key === 'c' || e.key === 'C') {{
         e.preventDefault();
-        try {{ console.log('toggle tools'); }} catch(_) {{}}
         playClick();
         setDock(!dockOpen);
       }}
     }}
     document.addEventListener('keydown', onHotkeyToggle, true);
-    // === FIN CAMBIO ===
 
     snapBtn.addEventListener('click', () => {{
       playClick();
@@ -869,7 +865,7 @@ def Step_Render(Step_Name):
         a.href = url;
         a.download = 'snapshot.png';
         a.click();
-      }} catch(e) {{}}
+      }} catch(e) {{ }}
     }});
 
     renderModeSel.addEventListener('change', () => {{
@@ -904,7 +900,7 @@ def Step_Render(Step_Name):
     bFront.addEventListener('click', () => {{ playClick(); viewFront(); }});
     bRight.addEventListener('click', () => {{ playClick(); viewRight(); }});
 
-    // Proyección ortográfica sin cortar el grid
+    // Proyección ortográfica sin tocar grid/ground
     projSel.addEventListener('change', () => {{
       playClick();
       if (!boundsInfo) {{
