@@ -566,14 +566,20 @@ def Step_Render(Step_Name):
       ? 4 * t * t * t
       : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
+    // *** AQUÍ CAMBIO: distancia calculada según el tamaño del STEP ***
     function viewEndPose(kind) {{
       if (!boundsInfo) return null;
       const target = boundsInfo.center.clone();
 
+      // Orientación base a partir de la cámara actual (por si importa)
       const curVec = camera.position.clone().sub(target);
-      const len = Math.max(1e-9, curVec.length());
-      let az = Math.atan2(curVec.z, curVec.x);
-      let el = Math.asin(curVec.y / len);
+      const len = curVec.length();
+      let az = 0, el = 0;
+      if (len > 1e-6) {{
+        az = Math.atan2(curVec.z, curVec.x);
+        el = Math.asin(THREE.MathUtils.clamp(curVec.y / len, -1, 1));
+      }}
+
       const topEps = 1e-3;
 
       if (kind === 'iso')   {{ az = Math.PI * 0.25; el = Math.PI * 0.20; }}
@@ -581,8 +587,28 @@ def Step_Render(Step_Name):
       if (kind === 'front') {{ az = Math.PI / 2; el = 0; }}
       if (kind === 'right') {{ az = 0; el = 0; }}
 
-      // Usar SIEMPRE la distancia actual (funciona bien en perspectiva y ortográfica)
-      const r = len;
+      const pad = 1.18; // padding para que no quede pegado al borde
+      const aspect = BASE_W / BASE_H;
+      const effectiveRadius = boundsInfo.radius * pad;
+
+      let r;
+      if (camera.isPerspectiveCamera) {{
+        const vFOV = THREE.MathUtils.degToRad(camera.fov);
+        const hFOV = 2 * Math.atan(Math.tan(vFOV / 2) * aspect);
+        const distV = effectiveRadius / Math.sin(Math.max(1e-6, vFOV / 2));
+        const distH = effectiveRadius / Math.sin(Math.max(1e-6, hFOV / 2));
+        r = Math.max(distV, distH);
+      }} else {{
+        const span = Math.max(effectiveRadius, GRID_SIZE * 0.5);
+        camera.left   = -span * aspect;
+        camera.right  =  span * aspect;
+        camera.top    =  span;
+        camera.bottom = -span;
+        camera.near   = Math.max(span / 1000, 0.001);
+        camera.far    = Math.max(span * 1500, 1500);
+        camera.updateProjectionMatrix();
+        r = span * 2.6; // distancia cómoda en ortográfica
+      }}
 
       const dir = new THREE.Vector3(
         Math.cos(el) * Math.cos(az),
@@ -612,7 +638,6 @@ def Step_Render(Step_Name):
         if (t < 1) {{
           requestAnimationFrame(animate);
         }} else {{
-          // En ortográfica, reasegura el frustum para que no recorte el grid
           if (camera.isOrthographicCamera) {{
             applyFixedSize();
           }}
