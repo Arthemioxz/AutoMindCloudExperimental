@@ -1,22 +1,3 @@
-# Google Colab drawing board that plays a bundled click_sound.mp3 entirely
-# client-side (no visible audio player and no "button pressed" text in the
-# notebook). Just upload click_sound.mp3 (or change _audio_filename), run the
-# cell, then call board("Dibujo 1").
-#
-# Behavior:
-# - The MP3 is read on the kernel, encoded as a data: URI and embedded in the
-#   displayed HTML/JS.
-# - Toolbar button clicks call the browser to play the sound directly (no
-#   kernel round-trip, no Audio widget shown).
-#
-# Notes:
-# - Browser autoplay policies may still block playback until the user interacts
-#   with the page; typical toolbar clicks are user interactions so playback
-#   should normally succeed.
-# - The snapshot save logic (canvas persistence) is unchanged and still calls
-#   the kernel callback when the canvas is saved; only the toolbar-button
-#   listener was changed to play audio client-side.
-
 from IPython.display import HTML, display
 from google.colab import output
 import re, base64, os, uuid, json
@@ -174,7 +155,6 @@ def board(serial: str = "board"):
       clickAudio.preload = 'auto';
       clickAudio.loop = false;
       clickAudio.volume = 1.0;
-      // Do not add controls or append to DOM; keep it hidden and play programmatically.
     }} catch(e) {{
       console.warn('Failed to create click audio:', e);
       clickAudio = null;
@@ -292,7 +272,6 @@ def board(serial: str = "board"):
 
   // -------------------------------
   // Attach a handler to ALL buttons in the toolbar that PLAYS the client-side audio.
-  // This avoids any kernel printouts and avoids showing an audio widget.
   // -------------------------------
   try {{
     const toolbar = document.querySelector('.toolbar');
@@ -300,14 +279,12 @@ def board(serial: str = "board"):
       const btns = toolbar.querySelectorAll('button');
       btns.forEach(b => {{
         b.addEventListener('click', () => {{
-          // Play the embedded audio client-side (if available).
           try {{
             if (clickAudio) {{
-              // reset to start and play; ignore promise rejection (autoplay blocked)
               clickAudio.pause();
-              try {{ clickAudio.currentTime = 0; }} catch(e){{ /* some browsers may throw */ }}
+              try {{ clickAudio.currentTime = 0; }} catch(e){{ }}
               const p = clickAudio.play();
-              if (p && typeof p.catch === 'function') p.catch(() => {{ /* autoplay blocked or play failed; ignore */ }});
+              if (p && typeof p.catch === 'function') p.catch(() => {{ }});
             }}
           }} catch(e) {{
             console.warn('play sound failed', e);
@@ -328,28 +305,98 @@ def board(serial: str = "board"):
 <meta charset="utf-8" />
 <title>Pizarra {serial}</title>
 <style>
-  :root{{ --muted:#e2e8f0; }}
-  *{{ box-sizing:border-box; }}
-  body{{ margin:0; font-family:ui-sans-serif,system-ui; background:#f8fafc; }}
-  .toolbar{{ display:flex; gap:10px; flex-wrap:wrap; margin:12px; align-items:center; }}
-  .toolbar button{{ padding:8px 12px; border:1px solid var(--muted); border-radius:8px; cursor:pointer; background:#fff; }}
-  .toolbar input[type="color"], .toolbar input[type="range"]{{ height:36px; }}
-  canvas{{ border:1px solid var(--muted); border-radius:12px; width:100%; height:460px; touch-action:none; cursor:crosshair; background:#fff; }}
-  .serial{{ margin:8px 12px; font:12px/1.2 ui-sans-serif,system-ui; color:#64748b; }}
+  :root{{
+    --muted:#e2e8f0;
+  }}
+  *{{
+    box-sizing:border-box;
+  }}
+  html, body{{
+    margin:0;
+    padding:0;
+    background:#f8fafc;
+    font-family:"Computer Modern","CMU Serif",Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial;
+  }}
+  .toolbar{{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    margin:12px;
+    align-items:center;
+  }}
+  .btn{{
+    padding:8px 12px;
+    border-radius:12px;
+    border:1px solid #e6e6e6;
+    background:#ffffff;
+    color:#0b3b3c;
+    font-weight:700;
+    cursor:pointer;
+    box-shadow:0 10px 24px rgba(0,0,0,.12);
+    transition:all 0.16s ease-out;
+  }}
+  .btn:hover{{
+    transform:translateY(-1px) scale(1.02);
+    background:#ecfeff;
+    border-color:#0ea5a6;
+    box-shadow:0 16px 40px rgba(0,0,0,.16);
+  }}
+  .toolbar input[type="color"],
+  .toolbar input[type="range"]{{
+    height:36px;
+    padding:0 4px;
+    border:1px solid #e6e6e6;
+    border-radius:10px;
+    accent-color:#0ea5a6;
+    background:#ffffff;
+  }}
+  canvas{{
+    border:1px solid var(--muted);
+    border-radius:12px;
+    width:100%;
+    height:460px;
+    touch-action:none;
+    cursor:crosshair;
+    background:#fff;
+    margin:0 12px 18px 12px;
+    box-shadow:0 12px 32px rgba(15,23,42,.12);
+  }}
+  .serial{{
+    margin:8px 12px;
+    font:12px/1.2 ui-sans-serif,system-ui;
+    color:#64748b;
+  }}
+  .badge{{
+    position:fixed;
+    bottom:12px;
+    right:14px;
+    z-index:10;
+    user-select:none;
+    pointer-events:none;
+  }}
+  .badge img{{
+    max-height:40px;
+    display:block;
+  }}
 </style>
 </head>
 <body>
   <div class="serial">Board: <strong>{serial}</strong></div>
 
   <div class="toolbar">
-    <button id="penBtn_{serial}">✏️ Lápiz</button>
-    <button id="eraserBtn_{serial}">🧹 Borrador</button>
+    <button id="penBtn_{serial}" class="btn">✏️ Lápiz</button>
+    <button id="eraserBtn_{serial}" class="btn">🧹 Borrador</button>
     <label>Color <input id="color_{serial}" type="color" value="#0f172a"></label>
     <label>Grosor <input id="size_{serial}" type="range" min="1" max="50" value="8"></label>
-    <button id="undoBtn_{serial}">↩️ Undo</button>
-    <button id="redoBtn_{serial}">↪️ Redo</button>
-    <button id="clearBtn_{serial}">🗑️ Limpiar</button>
-    <button id="downloadBtn_{serial}">⬇️ Descargar PNG</button>
+    <button id="undoBtn_{serial}" class="btn">↩️ Undo</button>
+    <button id="redoBtn_{serial}" class="btn">↪️ Redo</button>
+    <button id="clearBtn_{serial}" class="btn">🗑️ Limpiar</button>
+    <button id="downloadBtn_{serial}" class="btn">⬇️ Descargar PNG</button>
+  </div>
+
+  <!-- Badge tipo AutoMindCloud, igual que el visualizador STEP -->
+  <div class="badge">
+    <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud.png" alt="badge">
   </div>
 
   <!-- (INTERNO oculto) para rehidratar el canvas y seguir editando -->
