@@ -14,7 +14,7 @@ def Download_Step(Drive_Link, Output_Name):
     output_step = os.path.join(root_dir, Output_Name + ".step")
     gdown.download(url, output_step, quiet=True)
 
-def Step_Render(Step_Name):
+def Step_Visualization(Step_Name):
     # Config internos
     STEP_PATH = f"{Step_Name}.step"   # Usa el nombre pasado como base
     bg_js = "0xffffff"               # Fondo canvas
