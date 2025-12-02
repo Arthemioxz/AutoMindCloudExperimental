@@ -336,8 +336,7 @@ def Step_Visualization(Step_Name):
 
     const groundMat = new THREE.ShadowMaterial({{ opacity: 0.22 }});
     groundMat.transparent = true;
-    groundMat.depthWrite = false;
-
+    groundMat.depthWrite = false
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.0001;
@@ -901,7 +900,7 @@ def Step_Visualization(Step_Name):
         const url = renderer.domElement.toDataURL('image/png');
         const a = document.createElement('a');
         a.href = url;
-        const name = '{Step_Name}'.replace(/[^a-z0-9_\-]/gi,'_') || 'snapshot';
+        const name = '{Step_Name}'.replace(/[^a-z0-9_-]/gi,'_') || 'snapshot';
         a.download = name + '_snapshot.png';
         a.click();
       }} catch(e) {{ }}
