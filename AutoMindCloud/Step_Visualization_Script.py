@@ -321,6 +321,10 @@ def Step_Visualization(Step_Name):
     groundGroup.add(grid);
 
     const groundMat = new THREE.ShadowMaterial({{ opacity: 0.22 }});
+    // *** CAMBIO: que el plano de sombras no recorte el modelo ***
+    groundMat.transparent = true;
+    groundMat.depthWrite = false;
+
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.0001;
@@ -462,7 +466,7 @@ def Step_Visualization(Step_Name):
       secVisual.visible = !!secPlaneVisible;
     }}
 
-    // --- Render modes ---
+    // --- Render modes (CAMBIO en Ghost/X-Ray: depthWrite = false) ---
     function setRenderMode(mode) {{
       if (!model) return;
       currentRenderMode = mode;
@@ -482,11 +486,13 @@ def Step_Visualization(Step_Name):
           }} else if (mode === 'X-Ray') {{
             m.transparent = true;
             m.opacity     = 0.25;
-            m.depthWrite  = true;
+            m.depthWrite  = false;   // <- antes true
+            m.depthTest   = true;
           }} else if (mode === 'Ghost') {{
             m.transparent = true;
             m.opacity     = 0.6;
-            m.depthWrite  = true;
+            m.depthWrite  = false;   // <- antes true
+            m.depthTest   = true;
           }}
           m.needsUpdate = true;
         }});
@@ -566,12 +572,10 @@ def Step_Visualization(Step_Name):
       ? 4 * t * t * t
       : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
-    // *** AQUÍ CAMBIO: distancia calculada según el tamaño del STEP ***
     function viewEndPose(kind) {{
       if (!boundsInfo) return null;
       const target = boundsInfo.center.clone();
 
-      // Orientación base a partir de la cámara actual (por si importa)
       const curVec = camera.position.clone().sub(target);
       const len = curVec.length();
       let az = 0, el = 0;
@@ -587,7 +591,7 @@ def Step_Visualization(Step_Name):
       if (kind === 'front') {{ az = Math.PI / 2; el = 0; }}
       if (kind === 'right') {{ az = 0; el = 0; }}
 
-      const pad = 1.18; // padding para que no quede pegado al borde
+      const pad = 1.18; 
       const aspect = BASE_W / BASE_H;
       const effectiveRadius = boundsInfo.radius * pad;
 
@@ -607,7 +611,7 @@ def Step_Visualization(Step_Name):
         camera.near   = Math.max(span / 1000, 0.001);
         camera.far    = Math.max(span * 1500, 1500);
         camera.updateProjectionMatrix();
-        r = span * 2.6; // distancia cómoda en ortográfica
+        r = span * 2.6; 
       }}
 
       const dir = new THREE.Vector3(
@@ -929,7 +933,7 @@ def Step_Visualization(Step_Name):
     bFront.addEventListener('click', () => {{ playClick(); viewFront(); }});
     bRight.addEventListener('click', () => {{ playClick(); viewRight(); }});
 
-    // PROYECCIÓN ORTOGRÁFICA - VERSIÓN QUE NO CORTA EL GRID
+    // PROYECCIÓN ORTOGRÁFICA - versión que no corta el grid
     projSel.addEventListener('change', () => {{
       playClick();
 
