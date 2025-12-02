@@ -217,7 +217,7 @@ def Step_Visualization(Step_Name):
 
   <script type="module">
   import * as THREE from "three";
-  import {{ OrbitControls }} from "https://unpkg.com/three@0.181.0/examples/jsm/controls/OrbitControls.js";
+  import {{ TrackballControls }} from "https://unpkg.com/three@0.181.0/examples/jsm/controls/TrackballControls.js";
 
   const THEME = {{
     teal: 0x0ea5a6,
@@ -300,9 +300,23 @@ def Step_Visualization(Step_Name):
     ortho.up.set(0,1,0);
     let camera = persp;
 
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
+    // =============== ROTACIÓN LIBRE TIPO AUTODESK ===============
+    const controls = new TrackballControls(camera, renderer.domElement);
+    controls.rotateSpeed          = 4.0;
+    controls.zoomSpeed            = 1.4;
+    controls.panSpeed             = 0.8;
+    controls.noZoom               = false;
+    controls.noPan                = false;
+    controls.staticMoving         = false;
+    controls.dynamicDampingFactor = 0.15;
+    controls.mouseButtons = {{
+      LEFT:   THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.ZOOM,
+      RIGHT:  THREE.MOUSE.PAN
+    }};
+    controls.target.set(0, 0, 0);
+    controls.update();
+    // ============================================================
 
     const hemi = new THREE.HemisphereLight(0xffffff, 0xeeeeee, 0.7);
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.05);
@@ -321,7 +335,6 @@ def Step_Visualization(Step_Name):
     groundGroup.add(grid);
 
     const groundMat = new THREE.ShadowMaterial({{ opacity: 0.22 }});
-    // *** CAMBIO: que el plano de sombras no recorte el modelo ***
     groundMat.transparent = true;
     groundMat.depthWrite = false;
 
@@ -466,7 +479,7 @@ def Step_Visualization(Step_Name):
       secVisual.visible = !!secPlaneVisible;
     }}
 
-    // --- Render modes (CAMBIO en Ghost/X-Ray: depthWrite = false) ---
+    // --- Render modes ---
     function setRenderMode(mode) {{
       if (!model) return;
       currentRenderMode = mode;
@@ -486,12 +499,12 @@ def Step_Visualization(Step_Name):
           }} else if (mode === 'X-Ray') {{
             m.transparent = true;
             m.opacity     = 0.25;
-            m.depthWrite  = false;   // <- antes true
+            m.depthWrite  = false;
             m.depthTest   = true;
           }} else if (mode === 'Ghost') {{
             m.transparent = true;
             m.opacity     = 0.6;
-            m.depthWrite  = false;   // <- antes true
+            m.depthWrite  = false;
             m.depthTest   = true;
           }}
           m.needsUpdate = true;
@@ -567,31 +580,16 @@ def Step_Visualization(Step_Name):
       }}
     }}
 
-    // --- SISTEMA DE VISTAS ---
+    // --- SISTEMA DE VISTAS (ABSOLUTAS + TWEEN) ---
     const easeInOutCubic = (t) => t < 0.5
       ? 4 * t * t * t
       : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
     function viewEndPose(kind) {{
       if (!boundsInfo) return null;
-      const target = boundsInfo.center.clone();
 
-      const curVec = camera.position.clone().sub(target);
-      const len = curVec.length();
-      let az = 0, el = 0;
-      if (len > 1e-6) {{
-        az = Math.atan2(curVec.z, curVec.x);
-        el = Math.asin(THREE.MathUtils.clamp(curVec.y / len, -1, 1));
-      }}
-
-      const topEps = 1e-3;
-
-      if (kind === 'iso')   {{ az = Math.PI * 0.25; el = Math.PI * 0.20; }}
-      if (kind === 'top')   {{ az = Math.round(az / (Math.PI/2)) * (Math.PI/2); el = Math.PI/2 - topEps; }}
-      if (kind === 'front') {{ az = Math.PI / 2; el = 0; }}
-      if (kind === 'right') {{ az = 0; el = 0; }}
-
-      const pad = 1.18; 
+      const target = boundsInfo.center.clone(); // centro real (ya recentrado)
+      const pad = 1.18;
       const aspect = BASE_W / BASE_H;
       const effectiveRadius = boundsInfo.radius * pad;
 
@@ -611,14 +609,19 @@ def Step_Visualization(Step_Name):
         camera.near   = Math.max(span / 1000, 0.001);
         camera.far    = Math.max(span * 1500, 1500);
         camera.updateProjectionMatrix();
-        r = span * 2.6; 
+        r = span * 2.6;
       }}
 
-      const dir = new THREE.Vector3(
-        Math.cos(el) * Math.cos(az),
-        Math.sin(el),
-        Math.cos(el) * Math.sin(az)
-      ).normalize();
+      // Direcciones absolutas tipo Autodesk
+      let dir = new THREE.Vector3(1, 1, 1); // Iso
+      if (kind === 'front') dir.set(0, 0, 1);
+      if (kind === 'right') dir.set(1, 0, 0);
+      if (kind === 'top') {{
+        // TOP ligeramente inclinado para evitar singularidad (no paralelo a up)
+        dir.set(0.001, 1, 0).normalize();
+      }}
+
+      dir.normalize();
 
       const pos = target.clone().add(dir.multiplyScalar(r));
       return {{ pos, target }};
@@ -628,6 +631,9 @@ def Step_Visualization(Step_Name):
       const startPos = camera.position.clone();
       const startTarget = controls.target.clone();
       const t0 = performance.now();
+
+      // Forzar up mundial estable desde el inicio del tween
+      camera.up.set(0, 1, 0);
 
       function animate() {{
         const now = performance.now();
@@ -877,7 +883,6 @@ def Step_Visualization(Step_Name):
 
     toolsToggle.addEventListener('click', () => {{ playClick(); setDock(!dockOpen); }});
 
-    // Hotkey t / c
     function onHotkeyToggle(e) {{
       const tag = (e.target && e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
@@ -896,7 +901,8 @@ def Step_Visualization(Step_Name):
         const url = renderer.domElement.toDataURL('image/png');
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'snapshot.png';
+        const name = '{Step_Name}'.replace(/[^a-z0-9_\-]/gi,'_') || 'snapshot';
+        a.download = name + '_snapshot.png';
         a.click();
       }} catch(e) {{ }}
     }});
@@ -933,7 +939,7 @@ def Step_Visualization(Step_Name):
     bFront.addEventListener('click', () => {{ playClick(); viewFront(); }});
     bRight.addEventListener('click', () => {{ playClick(); viewRight(); }});
 
-    // PROYECCIÓN ORTOGRÁFICA - versión que no corta el grid
+    // Proyección ortográfica
     projSel.addEventListener('change', () => {{
       playClick();
 
@@ -954,7 +960,7 @@ def Step_Visualization(Step_Name):
       const {{ maxDim }} = boundsInfo;
       const span = Math.max(maxDim, GRID_SIZE * 0.5);
       const aspect = BASE_W / BASE_H;
-      const target = controls.target.clone();
+      const target = boundsInfo.center.clone();
 
       if (projSel.value === 'Orthographic' && camera.isPerspectiveCamera) {{
         const dir = camera.position.clone().sub(target).normalize();
