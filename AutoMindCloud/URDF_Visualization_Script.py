@@ -581,19 +581,32 @@ def URDF_Visualization(
     const branch   = {json.dumps(branch)};
     const compFile = {json.dumps(compFile)};
 
-    async function latestShaFull() {{
+    async function resolveBranchToSha() {{
+      // 1) jsDelivr resolve (preferido)
       try {{
-        const url = 'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
-        const r = await fetch(url, {{
+        const u = 'https://data.jsdelivr.com/v1/package/gh/' + repo + '@' + branch + '/resolved';
+        const r = await fetch(u, {{ cache: 'no-store' }});
+        if (r.ok) {{
+          const j = await r.json();
+          if (j && j.resolved && typeof j.resolved === 'string' && j.resolved.length >= 40) {{
+            return j.resolved;
+          }}
+        }}
+      }} catch (_) {{}}
+
+      // 2) GitHub fallback
+      try {{
+        const u = 'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
+        const r = await fetch(u, {{
           headers: {{ 'Accept': 'application/vnd.github+json' }},
           cache: 'no-store'
         }});
         if (!r.ok) throw 0;
         const j = await r.json();
-        return (j.sha || '') || branch;
-      }} catch (_e) {{
-        return null;
-      }}
+        if (j && j.sha && String(j.sha).length >= 40) return j.sha;
+      }} catch (_) {{}}
+
+      return null;
     }}
 
     const SELECT_MODE = {sel_js};
@@ -613,13 +626,15 @@ def URDF_Visualization(
 
     let mod = null;
     try {{
-      const sha = await latestShaFull();
+      const sha = await resolveBranchToSha();
       if (!sha) throw 0;
+
       const base = 'https://cdn.jsdelivr.net/gh/' + repo + '@' + sha + '/';
-      mod = await import(base + compFile + '?v=' + Date.now());
-      console.debug('[URDF] Módulo viewer desde SHA', sha);
+      mod = await import(base + compFile);
+
+      console.debug('[URDF] Loaded from FULL SHA', sha);
     }} catch (_e) {{
-      console.debug('[URDF] Fallback branch', branch);
+      console.debug('[URDF] Fallback to branch', branch);
       mod = await import(
         'https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now()
       );
