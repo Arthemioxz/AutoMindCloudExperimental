@@ -35,8 +35,6 @@ function debugLog(...args) {
 
 /* ============================ Render ============================ */
 
-debugLog('__USING_URDF_VIEWER_MAIN__', '2025-12-22_THUMBS_FIX_ACTIVE');
-
 export function render(opts = {}) {
   const {
     container,
@@ -495,6 +493,20 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(BG);
 
+
+// Copiar Environment/HDR del viewer principal (clave para materiales PBR/metal/roughness)
+try {
+  if (core && core.scene) {
+    if (core.scene.environment) scene.environment = core.scene.environment;
+    // Si el scene principal usa background textura (HDRI), opcionalmente úsalo también.
+    // Si es solo Color, mantenemos BG para thumbs.
+    if (core.scene.background && core.scene.background.isTexture) {
+      scene.background = core.scene.background;
+    }
+  }
+} catch (e) {
+  debugLog('[Thumbs] copy environment/background error', String(e));
+}
     // ===============================
 // Luces: copiar EXACTO el setup del viewer principal
 // (Theme.js solo define colores UI; las luces vienen del scene principal).
