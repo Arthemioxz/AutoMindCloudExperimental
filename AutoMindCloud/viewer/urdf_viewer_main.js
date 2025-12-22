@@ -395,60 +395,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   // - NO hacemos dispose() de geometrías/texturas/materiales compartidos con el robot principal.
   const OFF_W = 320, OFF_H = 320;
 
-  function normalizeAssetKey(s) {
-    if (!s) return '';
-    let t = String(s).trim();
-    // quita query/hash
-    t = t.split('?')[0].split('#')[0];
-    // quita package://
-    t = t.replace(/^package:\/\//i, '');
-    // slashes uniformes
-    t = t.replace(/\\/g, '/');
-    return t.trim();
-  }
-
-  function variantsForKey(path) {
-    const out = new Set();
-    const raw = String(path || '');
-    if (!raw) return [];
-    const clean = normalizeAssetKey(raw);
-    if (!clean) return [];
-
-    const lower = clean.toLowerCase();
-    const base = clean.split('/').pop();
-    const baseLower = lower.split('/').pop();
-
-    out.add(clean);
-    out.add(lower);
-    out.add(base);
-    out.add(baseLower);
-
-    // sin extensión
-    const dot1 = base.lastIndexOf('.');
-    if (dot1 > 0) out.add(base.slice(0, dot1));
-    const dot2 = baseLower.lastIndexOf('.');
-    if (dot2 > 0) out.add(baseLower.slice(0, dot2));
-
-    // agrega subpaths (por si viene con carpetas)
-    const parts = lower.split('/');
-    for (let i = 1; i < parts.length; i++) {
-      const sub = parts.slice(i).join('/');
-      out.add(sub);
-      out.add(sub.split('/').pop());
-    }
-
-    return Array.from(out).filter(Boolean);
-  }
-
-  function getCloneMeshesForAssetKey(ses, assetKey) {
-    const vars = variantsForKey(assetKey);
-    for (const k of vars) {
-      const list = ses.cloneMap.get(k);
-      if (list && list.length) return list;
-    }
-    return null;
-  }
-
   const thumbCache = new Map(); // assetKey -> dataURL
   let isoCache = null;
 
@@ -502,22 +448,16 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const camera = new THREE.PerspectiveCamera(40, OFF_W / OFF_H, 0.001, 2000);
 
     const robotClone = core.robot.clone(true);
-    // Map keyVariant -> [meshes...]
+    // Map assetKey -> [meshes...]
     const cloneMap = new Map();
     robotClone.traverse((n) => {
       if (!n || !n.isMesh) return;
       n.castShadow = false;
       n.receiveShadow = false;
-
-      const ud = n.userData || {};
-      const keyRaw = ud.__assetKey || ud.assetKey || ud.filename || null;
-      if (!keyRaw) return;
-
-      const keys = variantsForKey(keyRaw);
-      for (const key of keys) {
-        if (!cloneMap.has(key)) cloneMap.set(key, []);
-        cloneMap.get(key).push(n);
-      }
+      const key = n.userData && n.userData.assetKey;
+      if (!key) return;
+      if (!cloneMap.has(key)) cloneMap.set(key, []);
+      cloneMap.get(key).push(n);
     });
     scene.add(robotClone);
 
@@ -545,49 +485,33 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     ses.robotClone.traverse((n) => {
       if (n && n.isMesh) n.visible = false;
     });
-
-    // ISO / showAll
     if (!assetKey) {
+      // show all
       ses.robotClone.traverse((n) => {
         if (n && n.isMesh) n.visible = true;
       });
-      return { usedFallback: false };
+      return;
     }
-
-    const list = getCloneMeshesForAssetKey(ses, assetKey);
-
-    if (!list || !list.length) {
-      // Si no encontramos meshes para esta clave, mostramos todo para evitar thumbnails en blanco
-      ses.robotClone.traverse((n) => {
-        if (n && n.isMesh) n.visible = true;
-      });
-      return { usedFallback: true };
-    }
-
-    list.forEach((m) => { if (m) m.visible = true; });
-    return { usedFallback: false };
+    const list = ses.cloneMap.get(assetKey) || [];
+    list.forEach(m => { if (m) m.visible = true; });
   }
 
-  function computeVisibleBox(ses) {
-    // ✅ IMPORTANTÍSIMO: actualizar world matrices antes de box
-    try { ses.robotClone.updateWorldMatrix(true, true); } catch (_) {}
-
+  function computeVisibleBox(ses, assetKey) {
     const box = ses._box;
     const tmp = ses._tmpBox;
     box.makeEmpty();
 
-    let has = false;
-    ses.robotClone.traverse((n) => {
-      if (!n || !n.isMesh || !n.visible) return;
-      tmp.setFromObject(n);
-      if (tmp.isEmpty()) return;
-      if (!has) { box.copy(tmp); has = true; }
-      else box.union(tmp);
-    });
+    const meshes = assetKey ? (ses.cloneMap.get(assetKey) || []) : null;
+    if (meshes && meshes.length) {
+      for (const m of meshes) {
+        if (!m) continue;
+        tmp.setFromObject(m);
+        if (!tmp.isEmpty()) box.union(tmp);
+      }
+      return box;
+    }
 
-    if (has) return box;
-
-    // fallback final: box de todo el clon
+    // fallback: box de todo el clon
     tmp.setFromObject(ses.robotClone);
     return tmp;
   }
@@ -615,6 +539,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   function renderToDataURL(ses) {
     const r = ses.renderer;
 
+    const pause = (core && typeof core.setPaused === 'function') ? core.setPaused.bind(core) : null;
+
     // Guardar estado renderer
     const prevRT = r.getRenderTarget();
     const prevVp = r.getViewport(new THREE.Vector4());
@@ -624,6 +550,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const prevClearColor = r.getClearColor(new THREE.Color());
 
     try {
+      try { if (pause) pause(true); } catch (_) {}
+
       r.setRenderTarget(ses.rt);
       r.setViewport(0, 0, OFF_W, OFF_H);
       r.setScissor(0, 0, OFF_W, OFF_H);
@@ -655,6 +583,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       r.setScissor(prevSc.x, prevSc.y, prevSc.z, prevSc.w);
       r.setScissorTest(prevScTest);
       r.setClearColor(prevClearColor, prevClearAlpha);
+      try { if (pause) pause(false); } catch (_) {}
     }
   }
 
@@ -669,13 +598,9 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       // Re-chequeo después de esperar la cola
       if (thumbCache.has(assetKey)) return thumbCache.get(assetKey);
 
-      const vis = setVisibleOnly(ses, assetKey);
-      const box = computeVisibleBox(ses);
+      setVisibleOnly(ses, assetKey);
+      const box = computeVisibleBox(ses, assetKey);
       fitCameraIso(ses, box);
-
-      if (vis && vis.usedFallback) {
-        debugLog('[Thumbs] key mismatch → fallback showAll', { assetKey });
-      }
 
       const url = renderToDataURL(ses);
       if (url) thumbCache.set(assetKey, url);
@@ -693,7 +618,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       if (isoCache) return isoCache;
 
       setVisibleOnly(ses, null);
-      const box = computeVisibleBox(ses);
+      const box = computeVisibleBox(ses, null);
       fitCameraIso(ses, box);
 
       const url = renderToDataURL(ses);
