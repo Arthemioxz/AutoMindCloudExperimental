@@ -4,12 +4,18 @@
 //  - Nombres + orden de componentes
 //  - Reducción de thumbnails a ~5KB solo para IA
 //  - Parser robusto para el dict que llega desde Colab
-
 import { THEME } from './Theme.js';
+
 import * as ViewerCore from './core/ViewerCore.js';
-const createViewer = ViewerCore.createViewer || ViewerCore.default || (typeof window !== 'undefined' ? window.createViewer : null);
+const createViewer =
+  ViewerCore.createViewer ||
+  ViewerCore.default ||
+  (typeof window !== 'undefined' ? window.createViewer : null);
+
 if (createViewer == null) {
-  throw new Error("ViewerCore: createViewer no encontrado. Revisa core/ViewerCore.js (export) o window.createViewer (UMD).");
+  throw new Error(
+    "ViewerCore: createViewer no encontrado. Revisa core/ViewerCore.js (export) o window.createViewer (UMD)."
+  );
 }
 
 import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
