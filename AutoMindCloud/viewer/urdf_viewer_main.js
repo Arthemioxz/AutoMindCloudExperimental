@@ -1,10 +1,10 @@
 // /viewer/urdf_viewer_main.js
-// ✅ Versión “thumbalist con texturas”:
+// ✅ Versión “thumbalist con texturas” (ARREGLADA):
 // - Para sacar thumbnails NO usa el robotClone.
 // - En su lugar, ANTES de tomar la foto:
 //    1) carga el .dae del componente con ColladaLoader
 //    2) reescribe URLs internas de texturas con assetDB.resolveURL (LoadingManager.setURLModifier)
-//    3) espera a que terminen de cargar las texturas
+//    3) ESPERA de verdad a que terminen de cargar las texturas (manager.onLoad)
 //    4) recién ahí renderiza al RenderTarget y genera el PNG
 //
 // Requisitos:
@@ -13,9 +13,14 @@
 
 import { THEME } from './Theme.js';
 import * as ViewerCore from './core/ViewerCore.js';
-const createViewer = ViewerCore.createViewer || ViewerCore.default || (typeof window !== 'undefined' ? window.createViewer : null);
+const createViewer =
+  ViewerCore.createViewer ||
+  ViewerCore.default ||
+  (typeof window !== 'undefined' ? window.createViewer : null);
 if (createViewer == null) {
-  throw new Error("ViewerCore: createViewer no encontrado. Revisa core/ViewerCore.js (export) o window.createViewer (UMD).");
+  throw new Error(
+    'ViewerCore: createViewer no encontrado. Revisa core/ViewerCore.js (export) o window.createViewer (UMD).',
+  );
 }
 
 import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
@@ -28,7 +33,9 @@ export let Base64Images = [];
 /* ========================= Debug helper ========================= */
 
 function debugLog(...args) {
-  try { console.log('[URDF_DEBUG]', ...args); } catch (_) {}
+  try {
+    console.log('[URDF_DEBUG]', ...args);
+  } catch (_) {}
   try {
     if (typeof window !== 'undefined') {
       window.URDF_DEBUG_LOGS = window.URDF_DEBUG_LOGS || [];
@@ -46,7 +53,9 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
   function countNow() {
     let n = 0;
     try {
-      assetToMeshes.forEach((arr) => { n += (arr && arr.length) ? arr.length : 0; });
+      assetToMeshes.forEach((arr) => {
+        n += arr && arr.length ? arr.length : 0;
+      });
     } catch (_) {}
     return n;
   }
@@ -60,8 +69,8 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
         lastChange = now;
       }
 
-      const settled = (now - lastChange) >= quietMs;
-      const timeout = (now - start) >= maxWaitMs;
+      const settled = now - lastChange >= quietMs;
+      const timeout = now - start >= maxWaitMs;
 
       if (settled || timeout) resolve({ meshes: c, settled, timeout });
       else requestAnimationFrame(tick);
@@ -86,8 +95,11 @@ export function render(opts = {}) {
   debugLog('render() init', { selectMode, background, IA_Widgets });
 
   // 1) Core viewer
-  const _createViewer = (ViewerCore && (ViewerCore.createViewer || (ViewerCore.default && ViewerCore.default.createViewer))) || window.createViewer;
-  if (typeof _createViewer !== 'function') throw new Error('[urdf_viewer_main] createViewer not found (ESM export or UMD global).');
+  const _createViewer =
+    (ViewerCore && (ViewerCore.createViewer || (ViewerCore.default && ViewerCore.default.createViewer))) ||
+    window.createViewer;
+  if (typeof _createViewer !== 'function')
+    throw new Error('[urdf_viewer_main] createViewer not found (ESM export or UMD global).');
   const core = _createViewer({ container, background });
 
   // 2) Asset DB
@@ -223,7 +235,9 @@ export function render(opts = {}) {
       const keys = Array.from(assetToMeshes.keys());
       await off.primeAll(keys);
 
-      try { window.dispatchEvent(new Event('thumbnails_ready')); } catch (_) {}
+      try {
+        window.dispatchEvent(new Event('thumbnails_ready'));
+      } catch (_) {}
     } catch (e) {
       debugLog('[Thumbs] auto prime error', String(e));
     }
@@ -240,16 +254,30 @@ export function render(opts = {}) {
   // 11) Expose global
   if (typeof window !== 'undefined') {
     window.URDFViewer = window.URDFViewer || {};
-    try { window.URDFViewer.__app = app; } catch (_) {}
+    try {
+      window.URDFViewer.__app = app;
+    } catch (_) {}
   }
 
   const destroy = () => {
-    try { comps.destroy(); } catch (_) {}
-    try { tools.destroy(); } catch (_) {}
-    try { inter.destroy(); } catch (_) {}
-    try { off?.destroy?.(); } catch (_) {}
-    try { assetDB?.dispose?.(); } catch (_) {}
-    try { core.destroy(); } catch (_) {}
+    try {
+      comps.destroy();
+    } catch (_) {}
+    try {
+      tools.destroy();
+    } catch (_) {}
+    try {
+      inter.destroy();
+    } catch (_) {}
+    try {
+      off?.destroy?.();
+    } catch (_) {}
+    try {
+      assetDB?.dispose?.();
+    } catch (_) {}
+    try {
+      core.destroy();
+    } catch (_) {}
   };
 
   return { ...app, destroy };
@@ -262,11 +290,7 @@ function rebuildAssetMapFromRobot(robot, assetToMeshes) {
   robot.traverse((o) => {
     if (o && o.isMesh && o.geometry) {
       const k =
-        (o.userData &&
-          (o.userData.__assetKey ||
-            o.userData.assetKey ||
-            o.userData.filename)) ||
-        null;
+        (o.userData && (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) || null;
       if (!k) return;
       const arr = tmp.get(k) || [];
       arr.push(o);
@@ -311,7 +335,9 @@ function isolateAsset(core, assetToMeshes, assetKey) {
   core.robot.traverse((o) => {
     if (o.isMesh && o.geometry) o.visible = false;
   });
-  meshes.forEach((m) => { m.visible = true; });
+  meshes.forEach((m) => {
+    m.visible = true;
+  });
 
   frameMeshes(core, meshes);
 }
@@ -334,8 +360,10 @@ function frameMeshes(core, meshes) {
   meshes.forEach((m) => {
     if (!m) return;
     tmp.setFromObject(m);
-    if (!has) { box.copy(tmp); has = true; }
-    else box.union(tmp);
+    if (!has) {
+      box.copy(tmp);
+      has = true;
+    } else box.union(tmp);
   });
 
   if (!has) return;
@@ -348,7 +376,7 @@ function frameMeshes(core, meshes) {
   const ctrl = core.controls;
 
   if (cam.isPerspectiveCamera) {
-    const fov = (cam.fov || 60) * Math.PI / 180;
+    const fov = ((cam.fov || 60) * Math.PI) / 180;
     const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
 
     cam.near = Math.max(maxDim / 1000, 0.001);
@@ -377,7 +405,8 @@ function frameMeshes(core, meshes) {
 /* ============= Offscreen thumbnails: CARGA DAE + TEXTURAS ANTES ============= */
 
 function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
-  const OFF_W = 320, OFF_H = 320;
+  const OFF_W = 320,
+    OFF_H = 320;
   const BG = 0xf2f2f2;
 
   const thumbCache = new Map(); // assetKey -> dataURL
@@ -395,9 +424,16 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
 
   function destroySession() {
     if (!session) return;
-    try { session.rt?.dispose?.(); } catch (_) {}
-    try { session.scene?.clear?.(); } catch (_) {}
-    try { session.canvas2d = null; session.ctx2d = null; } catch (_) {}
+    try {
+      session.rt?.dispose?.();
+    } catch (_) {}
+    try {
+      session.scene?.clear?.();
+    } catch (_) {}
+    try {
+      session.canvas2d = null;
+      session.ctx2d = null;
+    } catch (_) {}
     session = null;
     closed = true;
   }
@@ -457,7 +493,9 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
   function cleanupLoaded(ses) {
     if (!ses) return;
     if (ses._loadedRoot) {
-      try { ses.scene.remove(ses._loadedRoot); } catch (_) {}
+      try {
+        ses.scene.remove(ses._loadedRoot);
+      } catch (_) {}
       // IMPORTANTE: NO hacemos dispose() agresivo porque texturas/materiales pueden estar cacheados por three.
       ses._loadedRoot = null;
       ses._loadedKey = null;
@@ -499,51 +537,100 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
     });
   }
 
+  // ✅ FIX CRÍTICO: ahora esperamos tanto el callback del ColladaLoader (scene)
+  // como el mgr.onLoad (todas las texturas/imágenes encoladas terminaron).
   async function loadDAEWithTextures(assetKey) {
-    const daeURL = assetDB?.getBlobURL?.(assetKey) || assetDB?.resolveURL?.(assetKey, null) || assetKey;
+    const daeURL =
+      assetDB?.getBlobURL?.(assetKey) || assetDB?.resolveURL?.(assetKey, null) || assetKey;
 
     return new Promise((resolve, reject) => {
+      if (!THREE || !THREE.ColladaLoader) {
+        reject(new Error('THREE.ColladaLoader no está disponible (¿cargaste 19ColladaLoader.js?)'));
+        return;
+      }
+
       const mgr = makeManagerForDAE(assetKey);
       const loader = new THREE.ColladaLoader(mgr);
 
-      let done = false;
+      let root = null;
+      let sceneReady = false;
+      let managerDone = false;
+      let finished = false;
+
+      const TIMEOUT_MS = 15000;
+      const t0 = performance.now();
+
+      function maybeFinish() {
+        if (finished) return;
+        // Terminamos cuando:
+        // - tenemos root (sceneReady) y
+        // - el LoadingManager reportó que terminó TODO (managerDone)
+        if (sceneReady && managerDone && root) {
+          finished = true;
+          // 1 frame extra para “ver” texturas listas en GPU
+          requestAnimationFrame(() => resolve(root));
+        }
+      }
+
+      const timer = setInterval(() => {
+        if (finished) {
+          clearInterval(timer);
+          return;
+        }
+        const dt = performance.now() - t0;
+        if (dt >= TIMEOUT_MS) {
+          clearInterval(timer);
+          // Si ya tenemos root, devolvemos igual (mejor que nada).
+          if (root) {
+            debugLog('[Thumbs] loadDAEWithTextures timeout, devolviendo root igual', assetKey);
+            finished = true;
+            requestAnimationFrame(() => resolve(root));
+            return;
+          }
+          finished = true;
+          reject(new Error('Timeout cargando DAE/texturas: ' + assetKey));
+        }
+      }, 250);
 
       mgr.onLoad = () => {
-        // OJO: onLoad dispara cuando terminó TODO lo encolado (incluye imágenes)
-        // Si el DAE ya cargó, podemos resolver.
-        // (Si el DAE aún no devolvió scene por alguna razón, fallback al callback del load.)
+        managerDone = true;
+        maybeFinish();
       };
 
       loader.load(
         daeURL,
         (collada) => {
-          if (done) return;
-          done = true;
-
-          const root = collada?.scene || collada;
+          root = collada?.scene || collada;
           if (!root) {
-            reject(new Error('ColladaLoader devolvió scene nula'));
+            clearInterval(timer);
+            if (!finished) {
+              finished = true;
+              reject(new Error('ColladaLoader devolvió scene nula'));
+            }
             return;
           }
 
           // Fixes para que NO quede “invisible”
           setMaterialVisibilityFix(root);
 
-          // Esperar un frame extra para que el renderer vea texturas listas en GPU
-          requestAnimationFrame(() => resolve(root));
+          sceneReady = true;
+          maybeFinish();
         },
         undefined,
         (err) => {
-          if (done) return;
-          done = true;
+          clearInterval(timer);
+          if (finished) return;
+          finished = true;
           reject(err || new Error('ColladaLoader error'));
-        }
+        },
       );
     });
   }
 
   function computeVisibleBoxFromObject(ses, obj) {
-    try { obj.updateWorldMatrix(true, true); } catch (_) {}
+    try {
+      obj.updateWorldMatrix(true, true);
+    } catch (_) {}
 
     const box = ses._box;
     box.makeEmpty();
@@ -555,8 +642,10 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
       if (!n || !n.isMesh || !n.visible) return;
       tmp.setFromObject(n);
       if (tmp.isEmpty()) return;
-      if (!has) { box.copy(tmp); has = true; }
-      else box.union(tmp);
+      if (!has) {
+        box.copy(tmp);
+        has = true;
+      } else box.union(tmp);
     });
 
     if (has) return box;
@@ -638,7 +727,6 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
     ses._loadedRoot = root;
     ses._loadedKey = assetKey;
 
-    // Centrar root (opcional: no tocamos transform; solo lo agregamos a escena)
     ses.scene.add(root);
     return root;
   }
@@ -845,11 +933,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
 
       let res;
       try {
-        res = await window.google.colab.kernel.invokeFunction(
-          'describe_component_images',
-          [entries],
-          {},
-        );
+        res = await window.google.colab.kernel.invokeFunction('describe_component_images', [entries], {});
         debugLog('[IA] invokeFunction OK', res);
       } catch (e) {
         debugLog('[IA] invokeFunction error', String(e));
@@ -877,20 +961,11 @@ function extractDescMap(res) {
 
   let data = res.data ?? res;
 
-  if (
-    data &&
-    typeof data === 'object' &&
-    data['application/json'] &&
-    typeof data['application/json'] === 'object'
-  ) {
+  if (data && typeof data === 'object' && data['application/json'] && typeof data['application/json'] === 'object') {
     return data['application/json'];
   }
 
-  if (
-    data &&
-    typeof data === 'object' &&
-    typeof data['text/plain'] === 'string'
-  ) {
+  if (data && typeof data === 'object' && typeof data['text/plain'] === 'string') {
     const raw = data['text/plain'].trim();
     const parsed = parseMaybePythonDict(raw);
     if (parsed) return parsed;
@@ -901,20 +976,11 @@ function extractDescMap(res) {
     if (parsed) return parsed;
   }
 
-  if (
-    data &&
-    typeof data === 'object' &&
-    !Array.isArray(data) &&
-    !(Object.keys(data).length === 1 && 'text/plain' in data)
-  ) {
+  if (data && typeof data === 'object' && !Array.isArray(data) && !(Object.keys(data).length === 1 && 'text/plain' in data)) {
     return data;
   }
 
-  if (
-    Array.isArray(data) &&
-    data.length &&
-    typeof data[0] === 'object'
-  ) {
+  if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
     return data[0];
   }
 
@@ -974,9 +1040,7 @@ function applyIaDescriptionsToApp(app, map) {
   }
 
   if (!app.__patchedGetComponentDescription) {
-    const orig = app.getComponentDescription
-      ? app.getComponentDescription.bind(app)
-      : null;
+    const orig = app.getComponentDescription ? app.getComponentDescription.bind(app) : null;
 
     app.getComponentDescription = function (assetKey, index = 0) {
       const cd = app.componentDescriptions || {};
@@ -1008,7 +1072,9 @@ function applyIaDescriptionsToApp(app, map) {
   const detail = { map: app.componentDescriptions };
 
   if (typeof app.emit === 'function') {
-    try { app.emit('ia_descriptions_ready', detail); } catch (_) {}
+    try {
+      app.emit('ia_descriptions_ready', detail);
+    } catch (_) {}
   }
 
   try {
@@ -1095,7 +1161,9 @@ function installClickSound(dataURL) {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-    try { src.start(); } catch (_) {}
+    try {
+      src.start();
+    } catch (_) {}
   }
 
   window.__urdf_click__ = play;
@@ -1105,7 +1173,9 @@ if (typeof window !== 'undefined') {
   window.URDFViewer = window.URDFViewer || {};
   window.URDFViewer.render = (opts) => {
     const app = render(opts);
-    try { window.URDFViewer.__app = app; } catch (_) {}
+    try {
+      window.URDFViewer.__app = app;
+    } catch (_) {}
     return app;
   };
 }
