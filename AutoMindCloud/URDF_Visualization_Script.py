@@ -281,7 +281,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
       )
 
 
-def URDF_visualization(
+def URDF_Visualization(
   folder_path: str = "Model",
   select_mode: str = "link",
   background: int | None = 0xFFFFFF,
@@ -300,23 +300,58 @@ def URDF_visualization(
   # --- Buscar directorios urdf / meshes ---
 
   def find_dirs(root: str):
-      u = os.path.join(root, "urdf")
+      # Layouts soportados:
+      #  1) NUEVO (preferido):
+      #       root/
+      #         meshes/
+      #         *.urdf
+      #  2) ANTIGUO:
+      #       root/
+      #         urdf/*.urdf
+      #         meshes/
+      #
+      # Devuelve: (urdf_dir, meshes_dir) donde urdf_dir es la carpeta que contiene los .urdf
+
+      def has_urdf_files(p: str) -> bool:
+          try:
+              return any(name.lower().endswith(".urdf") for name in os.listdir(p))
+          except Exception:
+              return False
+
+      # Root directo
       m = os.path.join(root, "meshes")
-      if os.path.isdir(u) and os.path.isdir(m):
-          return u, m
+      u = os.path.join(root, "urdf")
+      if os.path.isdir(m):
+          if has_urdf_files(root):
+              return root, m
+          if os.path.isdir(u) and has_urdf_files(u):
+              return u, m
+
+      # Buscar un nivel abajo
       if os.path.isdir(root):
-          for name in os.listdir(root):
-              cand = os.path.join(root, name)
-              uu = os.path.join(cand, "urdf")
-              mm = os.path.join(cand, "meshes")
-              if os.path.isdir(uu) and os.path.isdir(mm):
-                  return uu, mm
+          try:
+              for name in os.listdir(root):
+                  cand = os.path.join(root, name)
+                  if not os.path.isdir(cand):
+                      continue
+
+                  mm = os.path.join(cand, "meshes")
+                  uu = os.path.join(cand, "urdf")
+
+                  if os.path.isdir(mm):
+                      if has_urdf_files(cand):
+                          return cand, mm
+                      if os.path.isdir(uu) and has_urdf_files(uu):
+                          return uu, mm
+          except Exception:
+              pass
+
       return None, None
 
   urdf_dir, meshes_dir = find_dirs(folder_path)
   if not urdf_dir or not meshes_dir:
       return HTML(
-          f"<b style='color:red'>No se encontró /urdf y /meshes dentro de {folder_path}</b>"
+          f"<b style='color:red'>No se encontró .urdf (en root o /urdf) y /meshes dentro de {folder_path}</b>"
       )
 
   # --- URDF principal ---
@@ -474,9 +509,13 @@ def URDF_visualization(
 </head>
 <body>
   <div id="app"></div>
-  <div class="badge">
-    <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud.png" alt="AutoMind"/>
+  <div style="padding-left:20px; overflow:visible;">
+    <div class="badge" style="display:inline-block; transform:scale(2) translateX(-15px); transform-origin:top left; margin:0 70px 70px 0; overflow:visible;">
+      <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="AutoMind" style="display:block;"/>
+    </div>
   </div>
+
+
 
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
@@ -539,11 +578,13 @@ def URDF_visualization(
     const branch   = {json.dumps(branch)};
     const compFile = {json.dumps(compFile)};
 
-    // ==========================
-    //  AUTO-COMMIT (MIME OK)
-    //  Usa esm.sh para importar archivos de GitHub como ESM real.
-    // ==========================
-    async function latestShaFull() {{
+    // ============================================================
+    //  SISTEMA "ULTIMO COMMIT" (TOMADO DEL SCRIPT ANTIGUO)
+    //  - Busca el último SHA del branch por GitHub API
+    //  - Importa por jsdelivr usando ese SHA
+    //  - Si falla, cae a branch normal
+    // ============================================================
+    async function latestSha() {{
       try {{
         const url = 'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
         const r = await fetch(url, {{
@@ -552,16 +593,10 @@ def URDF_visualization(
         }});
         if (!r.ok) throw 0;
         const j = await r.json();
-        return (j.sha || '').trim();
+        return (j.sha || '').slice(0, 7) || branch;
       }} catch (_e) {{
-        return '';
+        return branch;
       }}
-    }}
-
-    function esmGitHubUrl(ref) {{
-      // ref: SHA completo o branch
-      const gh = 'https://github.com/' + repo + '/blob/' + ref + '/' + compFile;
-      return 'https://esm.sh/' + gh;
     }}
 
     const SELECT_MODE = {sel_js};
@@ -580,23 +615,16 @@ def URDF_visualization(
     }};
 
     let mod = null;
-
     try {{
-      const shaFull = await latestShaFull();
-      if (!shaFull) throw 0;
-      mod = await import(esmGitHubUrl(shaFull) + '?v=' + Date.now());
-      console.debug('[URDF] Módulo viewer desde commit', shaFull.slice(0, 10));
+      const sha = await latestSha();
+      const base = 'https://cdn.jsdelivr.net/gh/' + repo + '@' + sha + '/';
+      mod = await import(base + compFile + '?v=' + Date.now());
+      console.debug('[URDF] Módulo viewer desde', sha);
     }} catch (_e) {{
-      try {{
-        mod = await import(esmGitHubUrl(branch) + '?v=' + Date.now());
-        console.debug('[URDF] Fallback viewer desde branch', branch);
-      }} catch (_e2) {{
-        // último fallback: jsDelivr (puede cachear)
-        mod = await import(
-          'https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now()
-        );
-        console.debug('[URDF] Último fallback jsDelivr', branch);
-      }}
+      console.debug('[URDF] Fallback branch', branch);
+      mod = await import(
+        'https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now()
+      );
     }}
 
     if (!mod || typeof mod.render !== 'function') {{
