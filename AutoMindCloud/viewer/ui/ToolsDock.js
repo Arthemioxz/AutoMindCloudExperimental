@@ -168,7 +168,8 @@ export function createToolsDock(app, theme) {
   });
 
   ui.title.textContent = 'Viewer Tools';
-  Object.assign(ui.title.style, { fontWeight: '800', color: theme.text });
+  Object.assign(ui.title.style, { fontWeight: '800', color: '#ffffff' });
+
 
   Object.assign(ui.body.style, { padding: '10px 12px' });
 
