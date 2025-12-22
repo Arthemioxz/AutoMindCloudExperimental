@@ -104,7 +104,12 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
         if (o && o.isMesh) {
           o.userData = o.userData || {};
           o.userData.__assetKey = assetKey;
-        }
+        
+          o.userData.assetKey = assetKey;
+          if (!o.userData.filename) {
+            const q = String(assetKey || '').split('?')[0].split('#')[0];
+            o.userData.filename = q.split('/').pop();
+          }}
       });
     },
   });
@@ -395,6 +400,52 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   // - NO hacemos dispose() de geometrías/texturas/materiales compartidos con el robot principal.
   const OFF_W = 320, OFF_H = 320;
 
+  function variantsForKey(path) {
+    const out = new Set();
+    const raw = String(path || '');
+    if (!raw) return [];
+    const noQuery = raw.split('?')[0].split('#')[0];
+    const norm = noQuery.replace(/\\/g, '/');
+    const lower = norm.toLowerCase();
+    const base = norm.split('/').pop();
+    const baseLower = lower.split('/').pop();
+
+    out.add(noQuery);
+    out.add(norm);
+    out.add(lower);
+    out.add(base);
+    out.add(baseLower);
+
+    // drop package://
+    const lowerNoQuery = lower;
+    const pkg = lowerNoQuery.startsWith('package://') ? lowerNoQuery.slice('package://'.length) : null;
+    const main = pkg || lowerNoQuery;
+    if (pkg) {
+      out.add(pkg);
+      out.add(pkg.split('/').pop());
+    }
+
+    // also add without leading folders (e.g. meshes/foo.dae -> foo.dae)
+    const parts = main.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const sub = parts.slice(i).join('/');
+      out.add(sub);
+      out.add(sub.split('/').pop());
+    }
+
+    return Array.from(out);
+  }
+
+  function getCloneMeshesForAssetKey(ses, assetKey) {
+    const vars = variantsForKey(assetKey);
+    for (const k of vars) {
+      const list = ses.cloneMap.get(k);
+      if (list && list.length) return list;
+    }
+    return null;
+  }
+
+
   const thumbCache = new Map(); // assetKey -> dataURL
   let isoCache = null;
 
@@ -438,7 +489,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
     // Escena de thumbnails (clon del robot)
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xffffff);
+    scene.background = new THREE.Color(0xf3f4f6);
 
     const amb = new THREE.AmbientLight(0xffffff, 0.85);
     const dir = new THREE.DirectionalLight(0xffffff, 0.75);
@@ -454,10 +505,13 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       if (!n || !n.isMesh) return;
       n.castShadow = false;
       n.receiveShadow = false;
-      const key = n.userData && n.userData.assetKey;
-      if (!key) return;
-      if (!cloneMap.has(key)) cloneMap.set(key, []);
-      cloneMap.get(key).push(n);
+      const keyRaw = n.userData && (n.userData.__assetKey || n.userData.assetKey || n.userData.filename);
+      if (!keyRaw) return;
+      const keys = variantsForKey(keyRaw);
+      for (const key of keys) {
+        if (!cloneMap.has(key)) cloneMap.set(key, []);
+        cloneMap.get(key).push(n);
+      }
     });
     scene.add(robotClone);
 
@@ -492,7 +546,14 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       });
       return;
     }
-    const list = ses.cloneMap.get(assetKey) || [];
+    const list = getCloneMeshesForAssetKey(ses, assetKey);
+    if (!list || !list.length) {
+      // Si no encontramos meshes para esta clave, mostramos todo para evitar thumbnails en blanco.
+      ses.robotClone.traverse((n) => {
+        if (n && n.isMesh) n.visible = true;
+      });
+      return;
+    }
     list.forEach(m => { if (m) m.visible = true; });
   }
 
@@ -552,7 +613,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       r.setViewport(0, 0, OFF_W, OFF_H);
       r.setScissor(0, 0, OFF_W, OFF_H);
       r.setScissorTest(false);
-      r.setClearColor(0xffffff, 1);
+      r.setClearColor(0xf3f4f6, 1);
       r.clear(true, true, true);
       r.render(ses.scene, ses.camera);
 
