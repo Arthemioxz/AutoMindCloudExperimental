@@ -579,8 +579,9 @@ def URDF_Visualization(
     const compFile = {json.dumps(compFile)};
 
     // ============================================================
-    //  SISTEMA "ULTIMO COMMIT" (TOMADO DEL SCRIPT ANTIGUO)
+    //  SISTEMA "ULTIMO COMMIT" (FIX)
     //  - Busca el último SHA del branch por GitHub API
+    //  - IMPORTANTE: usa SHA COMPLETO (no 7 chars) para jsDelivr
     //  - Importa por jsdelivr usando ese SHA
     //  - Si falla, cae a branch normal
     // ============================================================
@@ -593,7 +594,7 @@ def URDF_Visualization(
         }});
         if (!r.ok) throw 0;
         const j = await r.json();
-        return (j.sha || '').slice(0, 7) || branch;
+        return (j.sha || '') || branch;   // <-- FIX: SHA completo
       }} catch (_e) {{
         return branch;
       }}
