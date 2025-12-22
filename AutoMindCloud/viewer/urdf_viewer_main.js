@@ -395,7 +395,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   // - Pausamos el render loop del viewer mientras capturamos thumbnails (evita renders en blanco).
   // - NO hacemos dispose() de geometrías/texturas/materiales compartidos con el robot principal.
   const OFF_W = 320, OFF_H = 320;
-  const BG = 0x2a2a2a; // fondo oscuro para piezas blancas
+  const BG = 0xf2f2f2; // fondo claro para ver materiales/texturas
 
   function normalizeAssetKey(s) {
     if (!s) return '';
@@ -502,32 +502,35 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
     const robotClone = core.robot.clone(true);
 
-    // 🔧 Forzar materiales visibles en el CLON (evita thumbnails blancos/invisibles)
-    robotClone.traverse((n) => {
-      if (!n || !n.isMesh) return;
+    // 🔧 Hacer materiales visibles en el CLON SIN destruir apariencia original.
+// Objetivo: evitar thumbnails invisibles (alpha=0, backface culling, etc.)
+// pero preservar texturas/colores reales del componente.
+robotClone.traverse((n) => {
+  if (!n || !n.isMesh) return;
 
-      const mats = Array.isArray(n.material) ? n.material : [n.material];
-      mats.forEach((m) => {
-        if (!m) return;
+  const mats = Array.isArray(n.material) ? n.material : [n.material];
+  mats.forEach((m) => {
+    if (!m) return;
 
-        // Evita invisibilidad por alpha/transparency
-        m.transparent = false;
-        m.opacity = 1;
-        m.alphaTest = 0;
+    // Evita backface culling (caras invertidas)
+    m.side = THREE.DoubleSide;
 
-        // Evita backface culling (caras invertidas)
-        m.side = THREE.DoubleSide;
+    // Si venía "invisible" por opacity/alpha, corrige mínimo.
+    if (m.opacity !== undefined && m.opacity <= 0) m.opacity = 1;
+    if (m.transparent === true && m.opacity === 1) {
+      // Mantén transparent si realmente la usa (ej. vidrio), pero
+      // evita que quede totalmente invisible.
+      // No forzamos transparent=false para no romper materiales.
+    }
 
-        // Evita glitches de profundidad
-        m.depthWrite = true;
-        m.depthTest = true;
+    // Evita glitches de profundidad
+    m.depthWrite = true;
+    m.depthTest = true;
 
-        // Da un color/emissive mínimo si todo viene blanco
-        if (m.color) m.color.setRGB(0.65, 0.65, 0.65);
-        if (m.emissive) m.emissive.setRGB(0.18, 0.18, 0.18);
-
-        m.needsUpdate = true;
-      });
+    // NO tocar m.color / m.emissive: preserva textura y color real.
+    m.needsUpdate = true;
+  });
+});
     });
 
     // Map keyVariant -> [meshes...]
