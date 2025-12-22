@@ -395,7 +395,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   // - Pausamos el render loop del viewer mientras capturamos thumbnails (evita renders en blanco).
   // - NO hacemos dispose() de geometrías/texturas/materiales compartidos con el robot principal.
   const OFF_W = 320, OFF_H = 320;
-  const BG = 0x2a2a2a; // fondo oscuro para piezas blancas
+  const BG = 0xf2f2f2; // fondo claro para ver materiales/texturas
 
   function normalizeAssetKey(s) {
     if (!s) return '';
@@ -493,86 +493,44 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(BG);
 
+    const amb = new THREE.AmbientLight(0xffffff, 0.95);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+    dir.position.set(3, 5, 4);
+    scene.add(amb, dir);
 
-// Copiar Environment/HDR del viewer principal (clave para materiales PBR/metal/roughness)
-try {
-  if (core && core.scene) {
-    if (core.scene.environment) scene.environment = core.scene.environment;
-    // Si el scene principal usa background textura (HDRI), opcionalmente úsalo también.
-    // Si es solo Color, mantenemos BG para thumbs.
-    if (core.scene.background && core.scene.background.isTexture) {
-      scene.background = core.scene.background;
-    }
-  }
-} catch (e) {
-  debugLog('[Thumbs] copy environment/background error', String(e));
-}
-    // ===============================
-// Luces: copiar EXACTO el setup del viewer principal
-// (Theme.js solo define colores UI; las luces vienen del scene principal).
-// ===============================
-let __lightsCopied = 0;
-try {
-  if (core && core.scene && core.scene.traverse) {
-    core.scene.traverse((n) => {
-      if (!n) return;
-      // Copiar luces del scene principal (Ambient/Directional/Hemisphere/Point/Spot)
-      if (n.isLight) {
-        const c = n.clone();
-        // Mantener posición/dirección
-        c.position && c.position.copy(n.position);
-        if (c.target && n.target) {
-          c.target.position.copy(n.target.position);
-          scene.add(c.target);
-        }
-        scene.add(c);
-        __lightsCopied++;
-      }
-    });
-  }
-} catch (e) {
-  debugLog('[Thumbs] copy lights error', String(e));
-  __lightsCopied = 0;
-}
-
-// Fallback si el scene principal no tiene luces
-if (!__lightsCopied) {
-  const amb = new THREE.AmbientLight(0xffffff, 0.9);
-  const dir = new THREE.DirectionalLight(0xffffff, 0.9);
-  dir.position.set(3, 5, 4);
-  scene.add(amb, dir);
-}
-
-const camera = new THREE.PerspectiveCamera(40, OFF_W / OFF_H, 0.001, 2000);
+    const camera = new THREE.PerspectiveCamera(40, OFF_W / OFF_H, 0.001, 2000);
 
     const robotClone = core.robot.clone(true);
 
-    // 🔧 Forzar materiales visibles en el CLON (evita thumbnails blancos/invisibles)
-    robotClone.traverse((n) => {
-      if (!n || !n.isMesh) return;
+    // 🔧 Hacer materiales visibles en el CLON SIN destruir apariencia original.
+// Objetivo: evitar thumbnails invisibles (alpha=0, backface culling, etc.)
+// pero preservar texturas/colores reales del componente.
+robotClone.traverse((n) => {
+  if (!n || !n.isMesh) return;
 
-      const mats = Array.isArray(n.material) ? n.material : [n.material];
-      mats.forEach((m) => {
-        if (!m) return;
+  const mats = Array.isArray(n.material) ? n.material : [n.material];
+  mats.forEach((m) => {
+    if (!m) return;
 
-        // Evita invisibilidad por alpha/transparency
-        m.transparent = false;
-        m.opacity = 1;
-        m.alphaTest = 0;
+    // Evita backface culling (caras invertidas)
+    m.side = THREE.DoubleSide;
 
-        // Evita backface culling (caras invertidas)
-        m.side = THREE.DoubleSide;
+    // Si venía "invisible" por opacity/alpha, corrige mínimo.
+    if (m.opacity !== undefined && m.opacity <= 0) m.opacity = 1;
+    if (m.transparent === true && m.opacity === 1) {
+      // Mantén transparent si realmente la usa (ej. vidrio), pero
+      // evita que quede totalmente invisible.
+      // No forzamos transparent=false para no romper materiales.
+    }
 
-        // Evita glitches de profundidad
-        m.depthWrite = true;
-        m.depthTest = true;
+    // Evita glitches de profundidad
+    m.depthWrite = true;
+    m.depthTest = true;
 
-        // Da un color/emissive mínimo si todo viene blanco
-        if (m.color) m.color.setRGB(0.65, 0.65, 0.65);
-        if (m.emissive) m.emissive.setRGB(0.18, 0.18, 0.18);
-
-        m.needsUpdate = true;
-      });
+    // NO tocar m.color / m.emissive: preserva textura y color real.
+    m.needsUpdate = true;
+  });
+});
     });
 
     // Map keyVariant -> [meshes...]
