@@ -502,7 +502,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
     const robotClone = core.robot.clone(true);
 
-    // 🔧 Forzar materiales visibles en el CLON (evita thumbnails blancos/invisibles)
+    // 🔧 Parchar materiales en el CLON (thumbnails) sin destruir el look real (texturas / vertex-colors)
+    //    Antes se forzaba m.color/m.emissive SIEMPRE, lo que dejaba “siluetas” blancas.
     robotClone.traverse((n) => {
       if (!n || !n.isMesh) return;
 
@@ -510,24 +511,48 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       mats.forEach((m) => {
         if (!m) return;
 
-        // Evita invisibilidad por alpha/transparency
-        m.transparent = false;
-        m.opacity = 1;
-        m.alphaTest = 0;
-
-        // Evita backface culling (caras invertidas)
+        // Doble cara para evitar backface culling raro en algunos DAEs
         m.side = THREE.DoubleSide;
 
-        // Evita glitches de profundidad
+        // Evita invisibilidad accidental por alpha extremo (pero NO rompas materiales con mapa)
+        const hasMap = !!m.map;
+        const hasVertexColors = !!m.vertexColors;
+        if (typeof m.opacity === 'number' && m.opacity <= 0) m.opacity = 1;
+
+        if (m.transparent === true && typeof m.opacity === 'number' && m.opacity < 0.05) {
+          // Si quedó casi invisible por un alpha raro, lo forzamos a sólido
+          m.transparent = false;
+          m.opacity = 1;
+          m.alphaTest = 0;
+        }
+
+        // Profundidad sane
         m.depthWrite = true;
         m.depthTest = true;
 
-        // Da un color/emissive mínimo si todo viene blanco
-        if (m.color) m.color.setRGB(0.65, 0.65, 0.65);
-        if (m.emissive) m.emissive.setRGB(0.18, 0.18, 0.18);
+        // Mantener texturas: asegurar sRGB en mapas de color (Three r132)
+        try {
+          if (m.map) { m.map.encoding = THREE.sRGBEncoding; m.map.needsUpdate = true; }
+          if (m.emissiveMap) { m.emissiveMap.encoding = THREE.sRGBEncoding; m.emissiveMap.needsUpdate = true; }
+        } catch (_) {}
+
+        // SOLO si NO hay textura ni vertex-colors y viene blanco plano, baja un poco el blanco
+        // (para que la luz dibuje volumen). No tocamos materiales “reales”.
+        if (!hasMap && !hasVertexColors && m.color) {
+          const c = m.color;
+          const isWhite = (c.r > 0.99 && c.g > 0.99 && c.b > 0.99);
+          if (isWhite) m.color.setRGB(0.82, 0.82, 0.82);
+        }
+
+        // Emissive SOLO si no existe o está en cero absoluto (evita “lavar” el material)
+        if (m.emissive && (!m.emissive.r && !m.emissive.g && !m.emissive.b) && !m.emissiveMap) {
+          m.emissive.setRGB(0.03, 0.03, 0.03);
+        }
 
         m.needsUpdate = true;
       });
+    });
+
     });
 
     // Map keyVariant -> [meshes...]
