@@ -410,6 +410,10 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   });
   renderer.setPixelRatio(pixelRatio || window.devicePixelRatio || 1);
   renderer.setSize(rootEl.clientWidth || 1, rootEl.clientHeight || 1);
+  // Color management (Three r132): hace que texturas/colores se vean “reales” (no lavados)
+  try {
+    renderer.outputEncoding = THREE.sRGBEncoding;
+  } catch (_) {}
   renderer.domElement.style.width = '100%';
   renderer.domElement.style.height = '100%';
   renderer.domElement.style.display = 'block';
