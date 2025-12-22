@@ -392,8 +392,61 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   // IMPORTANTE:
   // - NO creamos otro WebGLRenderer (evita “Too many active WebGL contexts”).
   // - Renderizamos a un WebGLRenderTarget usando el MISMO renderer del viewer.
+  // - Pausamos el render loop del viewer mientras capturamos thumbnails (evita renders en blanco).
   // - NO hacemos dispose() de geometrías/texturas/materiales compartidos con el robot principal.
   const OFF_W = 320, OFF_H = 320;
+  const BG = 0x2a2a2a; // fondo oscuro para piezas blancas
+
+  function normalizeAssetKey(s) {
+    if (!s) return '';
+    let t = String(s).trim();
+    t = t.split('?')[0].split('#')[0];
+    t = t.replace(/^package:\/\//i, '');
+    t = t.replace(/\\/g, '/');
+    return t.trim();
+  }
+
+  function variantsForKey(path) {
+    const out = new Set();
+    const raw = String(path || '');
+    if (!raw) return [];
+    const clean = normalizeAssetKey(raw);
+    if (!clean) return [];
+    const lower = clean.toLowerCase();
+
+    const base = clean.split('/').pop();
+    const baseLower = lower.split('/').pop();
+
+    out.add(clean);
+    out.add(lower);
+    out.add(base);
+    out.add(baseLower);
+
+    // sin extensión
+    const dot1 = base.lastIndexOf('.');
+    if (dot1 > 0) out.add(base.slice(0, dot1));
+    const dot2 = baseLower.lastIndexOf('.');
+    if (dot2 > 0) out.add(baseLower.slice(0, dot2));
+
+    // agrega subpaths
+    const parts = lower.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const sub = parts.slice(i).join('/');
+      out.add(sub);
+      out.add(sub.split('/').pop());
+    }
+
+    return Array.from(out).filter(Boolean);
+  }
+
+  function getCloneMeshesForAssetKey(ses, assetKey) {
+    const vars = variantsForKey(assetKey);
+    for (const k of vars) {
+      const list = ses.cloneMap.get(k);
+      if (list && list.length) return list;
+    }
+    return null;
+  }
 
   const thumbCache = new Map(); // assetKey -> dataURL
   let isoCache = null;
@@ -438,26 +491,61 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
     // Escena de thumbnails (clon del robot)
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xffffff);
+    scene.background = new THREE.Color(BG);
 
-    const amb = new THREE.AmbientLight(0xffffff, 0.85);
-    const dir = new THREE.DirectionalLight(0xffffff, 0.75);
+    const amb = new THREE.AmbientLight(0xffffff, 0.95);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.9);
     dir.position.set(3, 5, 4);
     scene.add(amb, dir);
 
     const camera = new THREE.PerspectiveCamera(40, OFF_W / OFF_H, 0.001, 2000);
 
     const robotClone = core.robot.clone(true);
-    // Map assetKey -> [meshes...]
+
+    // 🔧 Forzar materiales visibles en el CLON (evita thumbnails blancos/invisibles)
+    robotClone.traverse((n) => {
+      if (!n || !n.isMesh) return;
+
+      const mats = Array.isArray(n.material) ? n.material : [n.material];
+      mats.forEach((m) => {
+        if (!m) return;
+
+        // Evita invisibilidad por alpha/transparency
+        m.transparent = false;
+        m.opacity = 1;
+        m.alphaTest = 0;
+
+        // Evita backface culling (caras invertidas)
+        m.side = THREE.DoubleSide;
+
+        // Evita glitches de profundidad
+        m.depthWrite = true;
+        m.depthTest = true;
+
+        // Da un color/emissive mínimo si todo viene blanco
+        if (m.color) m.color.setRGB(0.65, 0.65, 0.65);
+        if (m.emissive) m.emissive.setRGB(0.18, 0.18, 0.18);
+
+        m.needsUpdate = true;
+      });
+    });
+
+    // Map keyVariant -> [meshes...]
     const cloneMap = new Map();
     robotClone.traverse((n) => {
       if (!n || !n.isMesh) return;
       n.castShadow = false;
       n.receiveShadow = false;
-      const key = n.userData && n.userData.assetKey;
-      if (!key) return;
-      if (!cloneMap.has(key)) cloneMap.set(key, []);
-      cloneMap.get(key).push(n);
+
+      const ud = n.userData || {};
+      const keyRaw = ud.__assetKey || ud.assetKey || ud.filename || null;
+      if (!keyRaw) return;
+
+      const keys = variantsForKey(keyRaw);
+      for (const key of keys) {
+        if (!cloneMap.has(key)) cloneMap.set(key, []);
+        cloneMap.get(key).push(n);
+      }
     });
     scene.add(robotClone);
 
@@ -485,33 +573,49 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     ses.robotClone.traverse((n) => {
       if (n && n.isMesh) n.visible = false;
     });
+
+    // ISO / showAll
     if (!assetKey) {
-      // show all
       ses.robotClone.traverse((n) => {
         if (n && n.isMesh) n.visible = true;
       });
-      return;
+      return { usedFallback: false };
     }
-    const list = ses.cloneMap.get(assetKey) || [];
-    list.forEach(m => { if (m) m.visible = true; });
+
+    // lookup robusto
+    const list = getCloneMeshesForAssetKey(ses, assetKey);
+    if (!list || !list.length) {
+      // fallback anti-blanco: mostrar todo
+      ses.robotClone.traverse((n) => {
+        if (n && n.isMesh) n.visible = true;
+      });
+      return { usedFallback: true };
+    }
+
+    list.forEach((m) => { if (m) m.visible = true; });
+    return { usedFallback: false };
   }
 
-  function computeVisibleBox(ses, assetKey) {
+  function computeVisibleBox(ses) {
+    // Asegurar matrices world
+    try { ses.robotClone.updateWorldMatrix(true, true); } catch (_) {}
+
     const box = ses._box;
     const tmp = ses._tmpBox;
     box.makeEmpty();
 
-    const meshes = assetKey ? (ses.cloneMap.get(assetKey) || []) : null;
-    if (meshes && meshes.length) {
-      for (const m of meshes) {
-        if (!m) continue;
-        tmp.setFromObject(m);
-        if (!tmp.isEmpty()) box.union(tmp);
-      }
-      return box;
-    }
+    let has = false;
+    ses.robotClone.traverse((n) => {
+      if (!n || !n.isMesh || !n.visible) return;
+      tmp.setFromObject(n);
+      if (tmp.isEmpty()) return;
+      if (!has) { box.copy(tmp); has = true; }
+      else box.union(tmp);
+    });
 
-    // fallback: box de todo el clon
+    if (has) return box;
+
+    // fallback final: box de todo el clon
     tmp.setFromObject(ses.robotClone);
     return tmp;
   }
@@ -522,15 +626,16 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     box.getCenter(center);
     box.getSize(size);
 
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const dir = new THREE.Vector3(1, 1, 1).normalize();
+    let maxDim = Math.max(size.x, size.y, size.z);
+    if (!isFinite(maxDim) || maxDim <= 1e-6) maxDim = 1;
 
-    // Distancia basada en FOV
+    // más cerca que antes (anti-"miniatura")
+    const dir = new THREE.Vector3(1, 0.8, 1).normalize();
     const fov = (ses.camera.fov * Math.PI) / 180;
-    const dist = (maxDim * 0.6) / Math.tan(fov / 2) * 1.25;
+    const dist = (maxDim / Math.tan(Math.max(1e-6, fov / 2))) * 0.55;
 
-    ses.camera.position.copy(center).add(dir.multiplyScalar(dist));
-    ses.camera.near = Math.max(0.001, dist / 200);
+    ses.camera.position.copy(center).addScaledVector(dir, dist);
+    ses.camera.near = Math.max(0.001, dist / 100);
     ses.camera.far = dist * 200;
     ses.camera.updateProjectionMatrix();
     ses.camera.lookAt(center);
@@ -538,8 +643,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
   function renderToDataURL(ses) {
     const r = ses.renderer;
-
-    const pause = (core && typeof core.setPaused === 'function') ? core.setPaused.bind(core) : null;
 
     // Guardar estado renderer
     const prevRT = r.getRenderTarget();
@@ -550,13 +653,11 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const prevClearColor = r.getClearColor(new THREE.Color());
 
     try {
-      try { if (pause) pause(true); } catch (_) {}
-
       r.setRenderTarget(ses.rt);
       r.setViewport(0, 0, OFF_W, OFF_H);
       r.setScissor(0, 0, OFF_W, OFF_H);
       r.setScissorTest(false);
-      r.setClearColor(0xffffff, 1);
+      r.setClearColor(BG, 1);
       r.clear(true, true, true);
       r.render(ses.scene, ses.camera);
 
@@ -583,8 +684,13 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       r.setScissor(prevSc.x, prevSc.y, prevSc.z, prevSc.w);
       r.setScissorTest(prevScTest);
       r.setClearColor(prevClearColor, prevClearAlpha);
-      try { if (pause) pause(false); } catch (_) {}
     }
+  }
+
+  function pauseLoop(on) {
+    try {
+      if (core && typeof core.setPaused === 'function') core.setPaused(!!on);
+    } catch (_) {}
   }
 
   async function _thumbNoPrime(assetKey) {
@@ -595,16 +701,24 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     if (!ses) return null;
 
     return enqueue(async () => {
-      // Re-chequeo después de esperar la cola
       if (thumbCache.has(assetKey)) return thumbCache.get(assetKey);
 
-      setVisibleOnly(ses, assetKey);
-      const box = computeVisibleBox(ses, assetKey);
-      fitCameraIso(ses, box);
+      pauseLoop(true);
+      try {
+        const vis = setVisibleOnly(ses, assetKey);
+        const box = computeVisibleBox(ses);
+        fitCameraIso(ses, box);
 
-      const url = renderToDataURL(ses);
-      if (url) thumbCache.set(assetKey, url);
-      return url;
+        if (vis && vis.usedFallback) {
+          debugLog('[Thumbs] key mismatch → fallback showAll', { assetKey });
+        }
+
+        const url = renderToDataURL(ses);
+        if (url) thumbCache.set(assetKey, url);
+        return url;
+      } finally {
+        pauseLoop(false);
+      }
     });
   }
 
@@ -615,15 +729,20 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     if (!ses) return null;
 
     return enqueue(async () => {
-      if (isoCache) return isoCache;
+      pauseLoop(true);
+      try {
+        if (isoCache) return isoCache;
 
-      setVisibleOnly(ses, null);
-      const box = computeVisibleBox(ses, null);
-      fitCameraIso(ses, box);
+        setVisibleOnly(ses, null);
+        const box = computeVisibleBox(ses);
+        fitCameraIso(ses, box);
 
-      const url = renderToDataURL(ses);
-      if (url) isoCache = url;
-      return url;
+        const url = renderToDataURL(ses);
+        if (url) isoCache = url;
+        return url;
+      } finally {
+        pauseLoop(false);
+      }
     });
   }
 
@@ -632,20 +751,17 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
     priming = (async () => {
       try {
-        // Espera a que el URDF termine de poblar meshes -> assetToMeshes se estabiliza
-        if (assetToMeshes) await waitForAssetMapToSettle(assetToMeshes);
+        if (assetToMeshes) await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
 
         await _isoNoPrime();
 
         const keys = Array.isArray(assetKeys) ? assetKeys : [];
         for (const k of keys) {
-          // skip claves sin meshes (por ejemplo, STL falló)
           await _thumbNoPrime(k);
         }
 
         debugLog('[Thumbs] primeAll done', { wanted: keys.length, ok: thumbCache.size });
       } finally {
-        // Cerrar sesión para no mantener recursos extra
         destroySession();
       }
     })();
@@ -681,7 +797,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     _cache: thumbCache,
   };
 }
-
 
 
 /* ================= IA opt-in: describe_component_images ================= */
