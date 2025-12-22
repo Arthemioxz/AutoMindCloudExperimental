@@ -5,21 +5,41 @@
 //  - Reducción de thumbnails a ~5KB solo para IA
 //  - Parser robusto para el dict que llega desde Colab
 
+// /viewer/urdf_viewer_main.js
+// Viewer moderno + thumbnails + IA opt-in con:
+//  - Imagen ISO del robot completo (__robot_iso__)
+//  - Nombres + orden de componentes
+//  - Reducción de thumbnails a ~5KB solo para IA
+//  - Parser robusto para el dict que llega desde Colab
+
 import { THEME } from './Theme.js';
 
+// ⚠️ IMPORTACIÓN ROBUSTA: NUNCA named-import
 import * as ViewerCore from './core/ViewerCore.js';
+
+// Resolver createViewer desde cualquier formato posible
 const createViewer =
-  ViewerCore.createViewer ||
-  (ViewerCore.default && ViewerCore.default.createViewer) ||
-  ViewerCore.default ||
-  (typeof window !== 'undefined' ? window.createViewer : null);
+  (ViewerCore && typeof ViewerCore.createViewer === 'function' && ViewerCore.createViewer) ||
+  (ViewerCore &&
+    ViewerCore.default &&
+    typeof ViewerCore.default.createViewer === 'function' &&
+    ViewerCore.default.createViewer) ||
+  (ViewerCore && typeof ViewerCore.default === 'function' && ViewerCore.default) ||
+  (typeof window !== 'undefined' && typeof window.createViewer === 'function'
+    ? window.createViewer
+    : null);
 
 if (typeof createViewer !== 'function') {
+  console.error('ViewerCore import =', ViewerCore);
   throw new Error(
-    "ViewerCore: createViewer no encontrado. " +
-    "Revisa core/ViewerCore.js (export ESM) o window.createViewer (UMD)."
+    'ViewerCore: createViewer NO encontrado.\n' +
+    '- No existe export named\n' +
+    '- No existe default export válido\n' +
+    '- No existe window.createViewer\n' +
+    '➡️ Estás cargando otro ViewerCore.js (CDN / cache / ruta distinta).'
   );
 }
+
 
 import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
 import { attachInteraction } from './interaction/SelectionAndDrag.js';
