@@ -494,32 +494,35 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     scene.background = new THREE.Color(BG);
 
     // ===============================
-// MISMO THEME que el viewer principal (Theme.js)
-// - No tocamos materiales (no siluetas)
-// - Solo replicamos luces / renderer setup del theme
+// Luces: copiar EXACTO el setup del viewer principal
+// (Theme.js solo define colores UI; las luces vienen del scene principal).
 // ===============================
-let __themeApplied = false;
+let __lightsCopied = 0;
 try {
-  if (THEME && typeof THEME.applyToScene === 'function') {
-    THEME.applyToScene(scene, renderer);
-    __themeApplied = true;
-  } else if (THEME && typeof THEME.applyScene === 'function') {
-    THEME.applyScene(scene, renderer);
-    __themeApplied = true;
-  } else if (THEME && typeof THEME.apply === 'function') {
-    THEME.apply({ scene, renderer });
-    __themeApplied = true;
-  } else if (THEME && typeof THEME.installLights === 'function') {
-    THEME.installLights(scene);
-    __themeApplied = true;
+  if (core && core.scene && core.scene.traverse) {
+    core.scene.traverse((n) => {
+      if (!n) return;
+      // Copiar luces del scene principal (Ambient/Directional/Hemisphere/Point/Spot)
+      if (n.isLight) {
+        const c = n.clone();
+        // Mantener posición/dirección
+        c.position && c.position.copy(n.position);
+        if (c.target && n.target) {
+          c.target.position.copy(n.target.position);
+          scene.add(c.target);
+        }
+        scene.add(c);
+        __lightsCopied++;
+      }
+    });
   }
 } catch (e) {
-  debugLog('[Thumbs] THEME apply error', String(e));
-  __themeApplied = false;
+  debugLog('[Thumbs] copy lights error', String(e));
+  __lightsCopied = 0;
 }
 
-// Fallback: luces neutras (solo si el theme no proveyó luces)
-if (!__themeApplied) {
+// Fallback si el scene principal no tiene luces
+if (!__lightsCopied) {
   const amb = new THREE.AmbientLight(0xffffff, 0.9);
   const dir = new THREE.DirectionalLight(0xffffff, 0.9);
   dir.position.set(3, 5, 4);
@@ -528,14 +531,6 @@ if (!__themeApplied) {
 
 const camera = new THREE.PerspectiveCamera(40, OFF_W / OFF_H, 0.001, 2000);
 
-
-// Algunos themes ajustan camera/renderer; lo intentamos aquí también (opcional)
-try {
-  if (THEME && typeof THEME.applyToCamera === 'function') THEME.applyToCamera(camera, renderer, scene);
-  if (THEME && typeof THEME.applyToRenderer === 'function') THEME.applyToRenderer(renderer, scene, camera);
-} catch (e) {
-  debugLog('[Thumbs] THEME camera/renderer hook error', String(e));
-}
     const robotClone = core.robot.clone(true);
 
     // 🔧 Forzar materiales visibles en el CLON (evita thumbnails blancos/invisibles)
