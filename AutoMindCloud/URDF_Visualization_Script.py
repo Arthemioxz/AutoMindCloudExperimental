@@ -474,7 +474,7 @@ def URDF_Visualization(
 </head>
 <body>
   <div id="app"></div>
-  <div class="badge">
+  <div class="badge" style="display: inline-block; transform: scale(2); transform-origin: top left; margin-bottom: 50px; margin-right: 50px;">
     <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="AutoMind"/>
   </div>
 
