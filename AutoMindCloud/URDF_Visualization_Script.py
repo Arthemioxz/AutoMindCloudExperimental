@@ -183,9 +183,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
               # Construir lista de imágenes: primero ISO (si existe), luego componente
               images = []
               if iso_b64:
-                  images.append(
-                      {"image_b64": iso_b64, "mime": "image/png"}
-                  )
+                  images.append({"image_b64": iso_b64, "mime": "image/png"})
               images.append({"image_b64": img_b64, "mime": "image/png"})
 
               # Prompt con contexto fuerte
@@ -204,10 +202,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   "responde con un máximo de 2 frases."
               )
 
-              payload = {
-                  "text": prompt,
-                  "images": images,
-              }
+              payload = {"text": prompt, "images": images}
 
               try:
                   r = requests.post(infer_url, json=payload, timeout=timeout)
@@ -217,29 +212,20 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   continue
 
               if r.status_code != 200:
-                  print(
-                      f"[Colab] API {r.status_code} para {key}: {r.text[:200]}"
-                  )
+                  print(f"[Colab] API {r.status_code} para {key}: {r.text[:200]}")
                   results[key] = ""
                   continue
 
               txt = (r.text or "").strip()
 
-              # Si viene como JSON con campo 'text' o similar, intentar parsear
               try:
                   if txt.startswith("{") and txt.endswith("}"):
                       j = json.loads(txt)
                       if isinstance(j, dict):
-                          txt = (
-                              j.get("text")
-                              or j.get("message")
-                              or j.get("content")
-                              or txt
-                          )
+                          txt = j.get("text") or j.get("message") or j.get("content") or txt
               except Exception:
                   pass
 
-              # Si viene entre comillas, parsear como string JSON
               try:
                   if txt.startswith('"') and txt.endswith('"'):
                       txt = json.loads(txt)
@@ -248,37 +234,23 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
 
               results[key] = txt or ""
 
-          print(
-              f"[Colab] describe_component_images: descripciones devueltas "
-              f"para {len(results)} componentes."
-          )
+          print(f"[Colab] describe_component_images: descripciones devueltas para {len(results)} componentes.")
 
-          # Guardado automático del notebook (best-effort)
           try:
               from google.colab import _message  # type: ignore
-
               _message.blocking_request("notebook.save", {})
               print("[Colab] 💾 Notebook guardado tras recibir descripciones IA.")
           except Exception as e:
-              print(
-                  f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}"
-              )
+              print(f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}")
 
           return results
 
-      output.register_callback(
-          "describe_component_images", _describe_component_images
-      )
+      output.register_callback("describe_component_images", _describe_component_images)
       _COLAB_CALLBACK_REGISTERED = True
-      print(
-          "[Colab] ✅ Callback 'describe_component_images' registrado "
-          "(IA_Widgets=True, listo para usar tu API con GPT-5 + contexto ISO + secuencia)."
-      )
+      print("[Colab] ✅ Callback 'describe_component_images' registrado (IA_Widgets=True).")
 
   except Exception as e:
-      print(
-          f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}"
-      )
+      print(f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}")
 
 
 def URDF_Visualization(
@@ -297,28 +269,13 @@ def URDF_Visualization(
   if IA_Widgets:
       _register_colab_callback(api_base=api_base)
 
-  # --- Buscar directorios urdf / meshes ---
-
   def find_dirs(root: str):
-      # Layouts soportados:
-      #  1) NUEVO (preferido):
-      #       root/
-      #         meshes/
-      #         *.urdf
-      #  2) ANTIGUO:
-      #       root/
-      #         urdf/*.urdf
-      #         meshes/
-      #
-      # Devuelve: (urdf_dir, meshes_dir) donde urdf_dir es la carpeta que contiene los .urdf
-
       def has_urdf_files(p: str) -> bool:
           try:
               return any(name.lower().endswith(".urdf") for name in os.listdir(p))
           except Exception:
               return False
 
-      # Root directo
       m = os.path.join(root, "meshes")
       u = os.path.join(root, "urdf")
       if os.path.isdir(m):
@@ -327,17 +284,14 @@ def URDF_Visualization(
           if os.path.isdir(u) and has_urdf_files(u):
               return u, m
 
-      # Buscar un nivel abajo
       if os.path.isdir(root):
           try:
               for name in os.listdir(root):
                   cand = os.path.join(root, name)
                   if not os.path.isdir(cand):
                       continue
-
                   mm = os.path.join(cand, "meshes")
                   uu = os.path.join(cand, "urdf")
-
                   if os.path.isdir(mm):
                       if has_urdf_files(cand):
                           return cand, mm
@@ -350,22 +304,10 @@ def URDF_Visualization(
 
   urdf_dir, meshes_dir = find_dirs(folder_path)
   if not urdf_dir or not meshes_dir:
-      return HTML(
-          f"<b style='color:red'>No se encontró .urdf (en root o /urdf) y /meshes dentro de {folder_path}</b>"
-      )
+      return HTML(f"<b style='color:red'>No se encontró .urdf (en root o /urdf) y /meshes dentro de {folder_path}</b>")
 
-  # --- URDF principal ---
-
-  urdf_files = [
-      os.path.join(urdf_dir, f)
-      for f in os.listdir(urdf_dir)
-      if f.lower().endswith(".urdf")
-  ]
-
-  urdf_files.sort(
-      key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
-      reverse=True,
-  )
+  urdf_files = [os.path.join(urdf_dir, f) for f in os.listdir(urdf_dir) if f.lower().endswith(".urdf")]
+  urdf_files.sort(key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0, reverse=True)
 
   urdf_raw = ""
   mesh_refs: list[str] = []
@@ -374,9 +316,7 @@ def URDF_Visualization(
       try:
           with open(upath, "r", encoding="utf-8", errors="ignore") as f:
               txt = f.read().lstrip("\ufeff")
-          refs = re.findall(
-              r'filename="([^"]+\.(?:stl|dae|STL|DAE))"', txt, re.IGNORECASE
-          )
+          refs = re.findall(r'filename="([^"]+\.(?:stl|dae|STL|DAE))"', txt, re.IGNORECASE)
           if refs:
               urdf_raw = txt
               mesh_refs = list(dict.fromkeys(refs))
@@ -388,8 +328,6 @@ def URDF_Visualization(
       with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
           urdf_raw = f.read().lstrip("\ufeff")
 
-  # --- Construir meshDB embedido ---
-
   disk_files = []
   for root, _, files in os.walk(meshes_dir):
       for name in files:
@@ -399,11 +337,7 @@ def URDF_Visualization(
   meshes_root_abs = os.path.abspath(meshes_dir)
   by_rel, by_base = {}, {}
   for path in disk_files:
-      rel = (
-          os.path.relpath(os.path.abspath(path), meshes_root_abs)
-          .replace("\\", "/")
-          .lower()
-      )
+      rel = os.path.relpath(os.path.abspath(path), meshes_root_abs).replace("\\", "/").lower()
       by_rel[rel] = path
       by_base[os.path.basename(path).lower()] = path
 
@@ -430,11 +364,7 @@ def URDF_Visualization(
       rel = lower.lstrip("./")
       pkg = rel[len("package://"):] if rel.startswith("package://") else rel
 
-      cand = (
-          by_rel.get(rel)
-          or by_rel.get(pkg)
-          or by_base.get(base)
-      )
+      cand = by_rel.get(rel) or by_rel.get(pkg) or by_base.get(base)
       if cand:
           add_entry(raw, cand)
           add_entry(lower, cand)
@@ -446,12 +376,7 @@ def URDF_Visualization(
           add_entry(base_name, path)
 
   def esc_js(s: str) -> str:
-      return (
-          s.replace("\\", "\\\\")
-          .replace("`", "\\`")
-          .replace("$", "\\$")
-          .replace("</script>", "<\\/script>")
-      )
+      return s.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("</script>", "<\\/script>")
 
   urdf_js = esc_js(urdf_raw or "")
   mesh_js = json.dumps(mesh_db)
@@ -463,19 +388,13 @@ def URDF_Visualization(
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <meta name="viewport"
-        content="width=device-width, initial-scale=1, maximum-scale=1,
-                 user-scalable=no, viewport-fit=cover"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>
   <title>URDF Viewer</title>
   <style>
-    :root {{
-      --vh: 1vh;
-    }}
+    :root {{ --vh: 1vh; }}
     html, body {{
-      margin:0;
-      padding:0;
-      width:100%;
-      height:100dvh;
+      margin:0; padding:0;
+      width:100%; height:100dvh;
       overflow:hidden;
       background:#{int(background or 0xFFFFFF):06x};
     }}
@@ -489,36 +408,17 @@ def URDF_Visualization(
       padding-left: env(safe-area-inset-left);
     }}
     #app {{
-      position:fixed;
-      inset:0;
-      width:100vw;
-      height:100dvh;
+      position:fixed; inset:0;
+      width:100vw; height:100dvh;
       touch-action:none;
     }}
     @supports not (height: 100dvh) {{
       #app {{ height: calc(var(--vh) * 100); }}
     }}
-    .badge {{
-      position:fixed;
-      right:14px;
-      bottom:10px;
-      z-index:10;
-      user-select:none;
-      pointer-events:none;
-    }}
-    .badge img {{
-      max-height:40px;
-      display:block;
-    }}
   </style>
 </head>
 <body>
   <div id="app"></div>
-  <div style="padding-left:20px; overflow:visible;">
-    <div class="badge" style="display:inline-block; transform:scale(2) translateX(-15px); transform-origin:top left; margin:0 70px 70px 0; overflow:visible;">
-      <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="AutoMind" style="display:block;"/>
-    </div>
-  </div>
 
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
@@ -535,17 +435,8 @@ def URDF_Visualization(
     applyVHVar();
 
     function computeDesiredHeight() {{
-      const viewportH =
-        window.visualViewport?.height ||
-        window.innerHeight ||
-        document.documentElement.clientHeight ||
-        0;
-
-      const docScrollH = Math.max(
-        document.documentElement?.scrollHeight || 0,
-        document.body?.scrollHeight || 0
-      );
-
+      const viewportH = window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 0;
+      const docScrollH = Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0);
       return Math.max(viewportH, docScrollH, 600);
     }}
 
@@ -558,52 +449,55 @@ def URDF_Visualization(
       }} catch (_e) {{}}
     }}
 
-    const ro = new ResizeObserver(() => {{
-      applyVHVar();
-      setColabFrameHeight();
-    }});
+    const ro = new ResizeObserver(() => {{ applyVHVar(); setColabFrameHeight(); }});
     ro.observe(document.body);
-
-    window.addEventListener('resize', () => {{
-      applyVHVar();
-      setColabFrameHeight();
-    }});
+    window.addEventListener('resize', () => {{ applyVHVar(); setColabFrameHeight(); }});
     if (window.visualViewport) {{
-      window.visualViewport.addEventListener('resize', () => {{
-        applyVHVar();
-        setColabFrameHeight();
-      }});
+      window.visualViewport.addEventListener('resize', () => {{ applyVHVar(); setColabFrameHeight(); }});
     }}
-
     setTimeout(setColabFrameHeight, 60);
 
     const repo     = {json.dumps(repo)};
     const branch   = {json.dumps(branch)};
     const compFile = {json.dumps(compFile)};
 
+    function splitRepo(repoStr) {{
+      const parts = String(repoStr || '').split('/');
+      if (parts.length >= 2) return {{ user: parts[0], repo: parts[1] }};
+      return {{ user: '', repo: '' }};
+    }}
+
     async function resolveBranchToSha() {{
-      // 1) jsDelivr resolve (preferido)
+      const parts = splitRepo(repo);
+      if (!parts.user || !parts.repo) return null;
+
+      // ✅ Correct jsDelivr Data API endpoint
       try {{
-        const u = 'https://data.jsdelivr.com/v1/package/gh/' + repo + '@' + branch + '/resolved';
+        const u =
+          'https://data.jsdelivr.com/v1/packages/gh/' +
+          encodeURIComponent(parts.user) + '/' +
+          encodeURIComponent(parts.repo) +
+          '/resolved?specifier=' + encodeURIComponent(branch);
+
         const r = await fetch(u, {{ cache: 'no-store' }});
         if (r.ok) {{
           const j = await r.json();
-          if (j && j.resolved && typeof j.resolved === 'string' && j.resolved.length >= 40) {{
-            return j.resolved;
-          }}
+          const sha = (j && (j.resolved || (j.version && j.version.resolved) || j.commit)) || null;
+          if (typeof sha === 'string' && sha.length >= 40) return sha;
         }}
       }} catch (_) {{}}
 
-      // 2) GitHub fallback
+      // GitHub fallback
       try {{
         const u = 'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
         const r = await fetch(u, {{
           headers: {{ 'Accept': 'application/vnd.github+json' }},
           cache: 'no-store'
         }});
-        if (!r.ok) throw 0;
-        const j = await r.json();
-        if (j && j.sha && String(j.sha).length >= 40) return j.sha;
+        if (r.ok) {{
+          const j = await r.json();
+          if (j && typeof j.sha === 'string' && j.sha.length >= 40) return j.sha;
+        }}
       }} catch (_) {{}}
 
       return null;
@@ -627,17 +521,15 @@ def URDF_Visualization(
     let mod = null;
     try {{
       const sha = await resolveBranchToSha();
-      if (!sha) throw 0;
+      if (!sha) throw new Error('Could not resolve FULL SHA');
 
       const base = 'https://cdn.jsdelivr.net/gh/' + repo + '@' + sha + '/';
       mod = await import(base + compFile);
 
-      console.debug('[URDF] Loaded from FULL SHA', sha);
-    }} catch (_e) {{
-      console.debug('[URDF] Fallback to branch', branch);
-      mod = await import(
-        'https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now()
-      );
+      console.debug('[URDF] Loaded viewer from FULL SHA:', sha);
+    }} catch (e) {{
+      console.warn('[URDF] Fallback to branch:', branch, e);
+      mod = await import('https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now());
     }}
 
     if (!mod || typeof mod.render !== 'function') {{
@@ -648,30 +540,17 @@ def URDF_Visualization(
       function onResize() {{
         try {{
           if (!app || typeof app.resize !== 'function') return;
-          const w =
-            window.innerWidth ||
-            document.documentElement.clientWidth ||
-            document.body.clientWidth ||
-            800;
+          const w = window.innerWidth || document.documentElement.clientWidth || document.body.clientWidth || 800;
           const h = computeDesiredHeight();
           app.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
         }} catch (_e) {{}}
       }}
 
       window.addEventListener('resize', onResize);
-      if (window.visualViewport) {{
-        window.visualViewport.addEventListener('resize', onResize);
-      }}
+      if (window.visualViewport) window.visualViewport.addEventListener('resize', onResize);
 
-      setTimeout(() => {{
-        onResize();
-        setColabFrameHeight();
-      }}, 0);
-
-      setTimeout(() => {{
-        onResize();
-        setColabFrameHeight();
-      }}, 500);
+      setTimeout(() => {{ onResize(); setColabFrameHeight(); }}, 0);
+      setTimeout(() => {{ onResize(); setColabFrameHeight(); }}, 500);
     }}
   </script>
 </body>
@@ -688,10 +567,6 @@ def URDF_Render(folder_path: str = "Model",
                 compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
                 api_base: str = API_DEFAULT_BASE,
                 IA_Widgets: bool = False):
-  """
-  Alias compatible: tu notebook importa URDF_Render().
-  NO se cambian nombres de funciones.
-  """
   return URDF_Visualization(
       folder_path=folder_path,
       select_mode=select_mode,
