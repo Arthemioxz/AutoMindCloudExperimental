@@ -16,6 +16,198 @@ function assertThree() {
 /** Minor math helpers */
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
 
+// Viewer uses a GridHelper of size 10; keep ortho frustum large enough so the grid never clips.
+const GRID_SIZE = 10;
+const GRID_HALF = GRID_SIZE * 0.5;
+
+/**
+ * Minimal TrackballControls (r132-friendly) to allow full 360° rotation in any direction.
+ * Keeps the same public surface we rely on elsewhere: {"object","domElement","enabled","target","update()"}.
+ */
+class TrackballControls {
+  constructor(object, domElement) {
+    this.object = object;
+    this.domElement = domElement;
+
+    this.enabled = true;
+
+    this.rotateSpeed = 4.0;
+    this.zoomSpeed = 1.2;
+    this.panSpeed = 0.8;
+
+    this.staticMoving = false;
+    this.dynamicDampingFactor = 0.15;
+
+    this.target = new THREE.Vector3();
+
+    this._state = 0; // 0 none, 1 rotate, 2 zoom, 3 pan
+    this._rect = null;
+
+    this._start = new THREE.Vector2();
+    this._end = new THREE.Vector2();
+
+    this._touchId = null;
+
+    this._onContextMenu = (e) => e.preventDefault();
+    this._onWheel = (e) => {
+      if (!this.enabled) return;
+      e.preventDefault();
+      const delta = (e.deltaY || 0);
+      this._dolly(delta);
+      this.update();
+    };
+
+    this._onPointerDown = (e) => {
+      if (!this.enabled) return;
+      // Only track primary pointer
+      if (this._touchId !== null) return;
+      this._touchId = e.pointerId;
+
+      this._state = (e.button === 0) ? 1 : (e.button === 1) ? 2 : 3;
+
+      this._start.set(e.clientX, e.clientY);
+      this._end.copy(this._start);
+
+      try { this.domElement.setPointerCapture(e.pointerId); } catch (err) { }
+      window.addEventListener('pointermove', this._onPointerMove, true);
+      window.addEventListener('pointerup', this._onPointerUp, true);
+    };
+
+    this._onPointerMove = (e) => {
+      if (!this.enabled) return;
+      if (this._touchId !== e.pointerId) return;
+
+      this._end.set(e.clientX, e.clientY);
+
+      if (this._state === 1) {
+        this._rotate(this._start, this._end);
+      } else if (this._state === 2) {
+        const dy = (this._end.y - this._start.y);
+        this._dolly(dy * 4);
+      } else if (this._state === 3) {
+        this._pan(this._start, this._end);
+      }
+
+      this._start.copy(this._end);
+      this.update();
+    };
+
+    this._onPointerUp = (e) => {
+      if (this._touchId !== e.pointerId) return;
+      this._touchId = null;
+      this._state = 0;
+      window.removeEventListener('pointermove', this._onPointerMove, true);
+      window.removeEventListener('pointerup', this._onPointerUp, true);
+      try { this.domElement.releasePointerCapture(e.pointerId); } catch (err) { }
+    };
+
+    this.domElement.addEventListener('contextmenu', this._onContextMenu);
+    this.domElement.addEventListener('wheel', this._onWheel, { passive: false });
+    this.domElement.addEventListener('pointerdown', this._onPointerDown, true);
+  }
+
+  handleResize() {
+    this._rect = this.domElement.getBoundingClientRect();
+  }
+
+  update() {
+    if (!this._rect) this.handleResize();
+    this.object.lookAt(this.target);
+  }
+
+  _getNDC(clientX, clientY) {
+    if (!this._rect) this.handleResize();
+    const x = (clientX - this._rect.left) / Math.max(1, this._rect.width);
+    const y = (clientY - this._rect.top) / Math.max(1, this._rect.height);
+    // map to [-1,1]
+    return new THREE.Vector2(x * 2 - 1, -(y * 2 - 1));
+  }
+
+  _projectOnSphere(ndc) {
+    const v = new THREE.Vector3(ndc.x, ndc.y, 0);
+    const d2 = v.x * v.x + v.y * v.y;
+    if (d2 <= 1.0) {
+      v.z = Math.sqrt(1.0 - d2);
+    } else {
+      v.normalize();
+      v.z = 0.0;
+    }
+    return v;
+  }
+
+  _rotate(startPx, endPx) {
+    const a = this._projectOnSphere(this._getNDC(startPx.x, startPx.y));
+    const b = this._projectOnSphere(this._getNDC(endPx.x, endPx.y));
+
+    const axisCam = new THREE.Vector3().crossVectors(a, b);
+    const axisLen = axisCam.length();
+    if (axisLen < 1e-8) return;
+    axisCam.normalize();
+
+    const dot = THREE.MathUtils.clamp(a.dot(b), -1, 1);
+    const angle = Math.acos(dot) * this.rotateSpeed;
+
+    // Rotate around axis expressed in world space
+    const axisWorld = axisCam.clone().applyQuaternion(this.object.quaternion);
+
+    const q = new THREE.Quaternion().setFromAxisAngle(axisWorld, angle);
+
+    const eye = this.object.position.clone().sub(this.target);
+    eye.applyQuaternion(q);
+    this.object.up.applyQuaternion(q);
+    this.object.position.copy(this.target.clone().add(eye));
+  }
+
+  _dolly(delta) {
+    const zoomFactor = Math.pow(0.95, (delta * this.zoomSpeed) * 0.01);
+
+    if (this.object.isPerspectiveCamera) {
+      const eye = this.object.position.clone().sub(this.target);
+      const newLen = Math.max(1e-6, eye.length() * zoomFactor);
+      eye.setLength(newLen);
+      this.object.position.copy(this.target.clone().add(eye));
+    } else if (this.object.isOrthographicCamera) {
+      // Orthographic: zoom property is the right knob
+      this.object.zoom = Math.max(1e-3, this.object.zoom / zoomFactor);
+      this.object.updateProjectionMatrix();
+    }
+  }
+
+  _pan(startPx, endPx) {
+    if (!this._rect) this.handleResize();
+    const dx = (endPx.x - startPx.x);
+    const dy = (endPx.y - startPx.y);
+
+    const w = Math.max(1, this._rect.width);
+    const h = Math.max(1, this._rect.height);
+
+    let scale = 1.0;
+    if (this.object.isPerspectiveCamera) {
+      const eye = this.object.position.clone().sub(this.target);
+      const dist = eye.length();
+      const fov = (this.object.fov || 60) * Math.PI / 180;
+      const worldPerPixel = 2 * dist * Math.tan(fov / 2) / h;
+      scale = worldPerPixel;
+    } else if (this.object.isOrthographicCamera) {
+      const worldPerPixel = (this.object.top - this.object.bottom) / h;
+      scale = worldPerPixel;
+    }
+
+    const panX = -dx * scale * this.panSpeed;
+    const panY = dy * scale * this.panSpeed;
+
+    const te = this.object.matrix.elements;
+    const xAxis = new THREE.Vector3(te[0], te[1], te[2]);
+    const yAxis = new THREE.Vector3(te[4], te[5], te[6]);
+
+    const pan = xAxis.multiplyScalar(panX).add(yAxis.multiplyScalar(panY));
+
+    this.object.position.add(pan);
+    this.target.add(pan);
+  }
+}
+
+
 /** Ensure meshes are double-sided and shadows off by default */
 function applyDoubleSided(root) {
   root?.traverse?.(n => {
@@ -68,16 +260,18 @@ function fitAndCenter(camera, controls, object, pad = 1.08) {
     }
     camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
   } else if (camera.isOrthographicCamera) {
-    // set ortho frustum around object
+    // set ortho frustum around obj (ensure grid never clips)
     const aspect = Math.max(1e-6, (controls?.domElement?.clientWidth || 1) / (controls?.domElement?.clientHeight || 1));
-    camera.left = -maxDim * aspect;
-    camera.right = maxDim * aspect;
-    camera.top = maxDim;
-    camera.bottom = -maxDim;
-    camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far = Math.max(maxDim * 1500, 1500);
+    const minSpan = GRID_HALF * Math.SQRT2 * Math.max(1, 1 / aspect);
+    const span = Math.max(maxDim, minSpan);
+    camera.left = -span * aspect;
+    camera.right = span * aspect;
+    camera.top = span;
+    camera.bottom = -span;
+    camera.near = Math.max(span / 1000, 0.001);
+    camera.far = Math.max(span * 1500, 1500);
     camera.updateProjectionMatrix();
-    camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
+    camera.position.copy(center.clone().add(new THREE.Vector3(span, span * 0.9, span)));
   }
 
   controls.target.copy(center);
@@ -96,6 +290,7 @@ function buildHelpers() {
 
   // Ground (only useful if shadows are enabled)
   const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
+  groundMat.depthWrite = false;
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.0001;
@@ -167,9 +362,14 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   // Controls
-  const controls = new THREE.OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
+  const controls = new TrackballControls(camera, renderer.domElement);
+  controls.rotateSpeed = 4.0;
+  controls.zoomSpeed = 1.4;
+  controls.panSpeed = 0.8;
+  controls.staticMoving = false;
+  controls.dynamicDampingFactor = 0.15;
+  controls.target.set(0, 0, 0);
+  controls.update();
 
   // Lights
   const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.7);
@@ -196,10 +396,12 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
     const w = rootEl.clientWidth || 1;
     const h = rootEl.clientHeight || 1;
     const asp = Math.max(1e-6, w / h);
+    if (controls && typeof controls.handleResize === 'function') controls.handleResize();
     if (camera.isPerspectiveCamera) {
       camera.aspect = asp;
     } else {
-      const size = orthoSize;
+      const minSpan = GRID_HALF * Math.SQRT2 * Math.max(1, 1 / asp);
+      const size = Math.max(Math.abs(camera.top) || orthoSize, minSpan);
       camera.left = -size * asp;
       camera.right = size * asp;
       camera.top = size;
@@ -264,10 +466,17 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
       const dist = v.length();
       const dirN = v.clone().normalize();
 
-      ortho.left = -orthoSize * asp;
-      ortho.right = orthoSize * asp;
-      ortho.top = orthoSize;
-      ortho.bottom = -orthoSize;
+      // Match apparent scale from current perspective view, while ensuring model + grid do not clip.
+      let size = dist * Math.tan(Math.max(1e-6, ((camera.fov || 60) * Math.PI / 180) / 2));
+      const b = robotModel ? getObjectBounds(robotModel, 1.08) : null;
+      if (b && b.maxDim) size = Math.max(size, b.maxDim);
+      const minSpan = GRID_HALF * Math.SQRT2 * Math.max(1, 1 / asp);
+      size = Math.max(size, minSpan);
+
+      ortho.left = -size * asp;
+      ortho.right = size * asp;
+      ortho.top = size;
+      ortho.bottom = -size;
       ortho.near = Math.max(0.001, dist * 0.01);
       ortho.far = Math.max(1000, dist * 50);
       ortho.position.copy(t.clone().add(dirN.multiplyScalar(dist)));
