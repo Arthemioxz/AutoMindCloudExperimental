@@ -147,8 +147,10 @@ def Step_Visualization(Step_Name):
 </head>
 <body>
   <div id="app"></div>
-  <div class="badge">
-    <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud.png" alt="badge">
+  <div style="padding-left:20px; overflow:visible;">
+    <div class="badge" style="display:inline-block; transform:scale(2) translateX(-15px); transform-origin:top left; margin:0 70px 70px 0; overflow:visible;">
+      <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="AutoMind" style="display:block;"/>
+    </div>
   </div>
 
   <!-- Sistema de tamaño original: captura inicial y bloquea (solo puede crecer) -->
