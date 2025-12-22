@@ -1,989 +1,947 @@
-// /viewer/ui/ToolsDock.js / checkpoint   
-// Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
-/* global THREE */
+// /viewer/urdf_viewer_main.js
+// Viewer moderno + thumbnails + IA opt-in con:
+//  - Imagen ISO del robot completo (__robot_iso__)
+//  - Nombres + orden de componentes
+//  - Reducción de thumbnails a ~5KB solo para IA
+//  - Parser robusto para el dict que llega desde Colab
 
-export function createToolsDock(app, theme) {
-  if (!app || !app.camera || !app.controls || !app.renderer)
-    throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
-
-  // --- Normalize theme to flat keys (works with your Theme.js nested shape) ---
-  if (theme && theme.colors) {
-    theme.teal       ??= theme.colors.teal;
-    theme.tealSoft   ??= theme.colors.tealSoft;
-    theme.tealFaint  ??= theme.colors.tealFaint;
-    theme.bgPanel    ??= theme.colors.panelBg;
-    theme.bgCanvas   ??= theme.colors.canvasBg;
-    theme.stroke     ??= theme.colors.stroke;
-    theme.text       ??= theme.colors.text;
-    theme.textMuted  ??= theme.colors.textMuted;
-  }
-  if (theme && theme.shadows) {
-    theme.shadow ??= (theme.shadows.lg || theme.shadows.md || theme.shadows.sm);
-  }
-
-  // ---------- DOM ----------
-  const ui = {
-    root: document.createElement('div'),
-    dock: document.createElement('div'),
-    header: document.createElement('div'),
-    title: document.createElement('div'),
-    fitBtn: document.createElement('button'),
-    body: document.createElement('div'),
-    toggleBtn: document.createElement('button')
-  };
-
-  // ---------- Helpers (with hover animations intact) ----------
-  const mkButton = (label) => {
-    const b = document.createElement('button');
-    b.textContent = label;
-    Object.assign(b.style, {
-      padding: '8px 12px',
-      borderRadius: '12px',
-      border: `1px solid ${theme.stroke}`,
-      background: theme.bgPanel,
-      color: theme.text,
-      fontWeight: '700',
-      cursor: 'pointer',
-      pointerEvents: 'auto',
-      boxShadow: theme.shadow,
-      transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
-    });
-    // Hover/active animations (KEEP)
-    b.addEventListener('mouseenter', () => {
-      b.style.transform = 'translateY(-1px) scale(1.02)';
-      b.style.boxShadow = theme.shadow;
-      b.style.background = theme.tealFaint;
-      b.style.borderColor = theme.tealSoft ?? theme.teal;
-    });
-    b.addEventListener('mouseleave', () => {
-      b.style.transform = 'none';
-      b.style.boxShadow = theme.shadow;
-      b.style.background = theme.bgPanel;
-      b.style.borderColor = theme.stroke;
-    });
-    b.addEventListener('mousedown', () => {
-      b.style.transform = 'translateY(0) scale(0.99)';
-    });
-    b.addEventListener('mouseup', () => {
-      b.style.transform = 'translateY(-1px) scale(1.02)';
-    });
-    return b;
-  };
-
-  const mkRow = (label, child) => {
-    const row = document.createElement('div');
-    Object.assign(row.style, {
-      display: 'grid',
-      gridTemplateColumns: '120px 1fr',
-      gap: '10px',
-      alignItems: 'center',
-      margin: '6px 0'
-    });
-    const l = document.createElement('div');
-    l.textContent = label;
-    Object.assign(l.style, { color: theme.textMuted, fontWeight: '700' });
-    row.appendChild(l);
-    row.appendChild(child);
-    return row;
-  };
-
-  const mkSelect = (options, value) => {
-    const sel = document.createElement('select');
-    options.forEach(o => {
-      const opt = document.createElement('option');
-      opt.value = o; opt.textContent = o; sel.appendChild(opt);
-    });
-    sel.value = value;
-    Object.assign(sel.style, {
-      padding: '8px',
-      border: `1px solid ${theme.stroke}`,
-      borderRadius: '10px',
-      pointerEvents: 'auto',
-      background: theme.bgPanel,
-      color: theme.text,
-      transition: 'border-color 120ms ease, box-shadow 120ms ease'
-    });
-    sel.addEventListener('focus', () => {
-      sel.style.borderColor = theme.teal;
-      sel.style.boxShadow = theme.shadow;
-    });
-    sel.addEventListener('blur', () => {
-      sel.style.borderColor = theme.stroke;
-      sel.style.boxShadow = 'none';
-    });
-    return sel;
-  };
-
-  const mkSlider = (min, max, step, value) => {
-    const s = document.createElement('input');
-    s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
-    s.style.width = '100%';
-    s.style.accentColor = theme.teal;
-    return s;
-  };
-
-  const mkToggle = (label) => {
-    const wrap = document.createElement('label');
-    const cb = document.createElement('input'); cb.type = 'checkbox';
-    const span = document.createElement('span'); span.textContent = label;
-    Object.assign(wrap.style, { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', pointerEvents: 'auto' });
-    cb.style.accentColor = theme.teal;
-    Object.assign(span.style, { fontWeight: '700', color: theme.text });
-    wrap.appendChild(cb); wrap.appendChild(span);
-    return { wrap, cb };
-  };
-
-  // Root overlay
-  Object.assign(ui.root.style, {
-    position: 'absolute',
-    left: '0', top: '0',
-    width: '100%', height: '100%',
-    pointerEvents: 'none',
-    zIndex: '9999',
-    fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
-  });
-
-  // Dock
-  Object.assign(ui.dock.style, {
-    position: 'absolute',
-    right: '14px',
-    top: '14px',
-    width: '440px',
-    background: theme.bgPanel,
-    border: `1px solid ${theme.stroke}`,
-    borderRadius: '18px',
-    boxShadow: theme.shadow,
-    pointerEvents: 'auto',
-    overflow: 'hidden',
-    display: 'none'
-  });
-
-  Object.assign(ui.header.style, {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '10px 12px',
-    borderBottom: `1px solid ${theme.stroke}`,
-    background: '#0ea5a6'
-  });
-
-  ui.title.textContent = 'Viewer Tools';
-  Object.assign(ui.title.style, { fontWeight: '800', color: '#ffffff' });
+import { THEME } from './Theme.js';
+import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
+import { attachInteraction } from './interaction/SelectionAndDrag.js';
+import { createToolsDock } from './ui/ToolsDock.js';
+import { createComponentsPanel } from './ui/ComponentsPanel.js';
 
 
-  Object.assign(ui.body.style, { padding: '10px 12px' });
-
-  // Floating toggle button (with hover)
-  ui.toggleBtn.textContent = 'Open Tools';
-  Object.assign(ui.toggleBtn.style, {
-    position: 'absolute',
-    right: '14px',
-    top: '14px',
-    padding: '8px 12px',
-    borderRadius: '12px',
-    border: `1px solid ${theme.stroke}`,
-    background: theme.bgPanel,
-    color: theme.text,
-    fontWeight: '700',
-    boxShadow: theme.shadow,
-    pointerEvents: 'auto',
-    zIndex: '10000',
-    transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
-  });
-  ui.toggleBtn.addEventListener('mouseenter', () => {
-    ui.toggleBtn.style.transform = 'translateY(-1px) scale(1.02)';
-    ui.toggleBtn.style.background = theme.tealFaint;
-    ui.toggleBtn.style.borderColor = theme.tealSoft ?? theme.teal;
-  });
-  ui.toggleBtn.addEventListener('mouseleave', () => {
-    ui.toggleBtn.style.transform = 'none';
-    ui.toggleBtn.style.background = theme.bgPanel;
-    ui.toggleBtn.style.borderColor = theme.stroke;
-  });
-
-  // Header button (Snapshot)
-  ui.fitBtn = mkButton('Snapshot');
-  Object.assign(ui.fitBtn.style, { padding: '6px 10px', borderRadius: '10px' });
-
-  ui.header.appendChild(ui.title);
-  ui.header.appendChild(ui.fitBtn);
-  ui.dock.appendChild(ui.header);
-  ui.dock.appendChild(ui.body);
-  ui.root.appendChild(ui.dock);
-  ui.root.appendChild(ui.toggleBtn);
-
-  // Attach
-  const host = (app?.renderer?.domElement?.parentElement) || document.body;
-  host.appendChild(ui.root);
-
-  // ---------- Controls ----------
-  const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
-
-  // Explode (slider drives a smoothed spring tween; see ExplodeManager below)
-  const explodeSlider = mkSlider(0, 1, 0.01, 0);
-
-  // Section
-  const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
-  const secDist = mkSlider(-1, 1, 0.001, 0);
-  const secEnable = mkToggle('Enable section');
-  const secShowPlane = mkToggle('Show slice plane');
-
-  // Views row (NO per-row Snapshot button)
-  const rowCam = document.createElement('div');
-  Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
-  const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
-  [bIso, bTop, bFront, bRight].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
-
-  // Projection + Scene toggles
-  const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
-  const togGrid = mkToggle('Grid');
-  const togGround = mkToggle('Ground & shadows');
-  const togAxes = mkToggle('XYZ axes');
-
-  // Assemble rows
-  ui.body.appendChild(mkRow('Render mode', renderModeSel));
-  ui.body.appendChild(mkRow('Explode', explodeSlider));
-  ui.body.appendChild(mkRow('Section axis', axisSel));
-  ui.body.appendChild(mkRow('Section dist', secDist));
-  ui.body.appendChild(mkRow('', secEnable.wrap));
-  ui.body.appendChild(mkRow('', secShowPlane.wrap));
-  ui.body.appendChild(mkRow('Views', rowCam));
-  rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight);
-  ui.body.appendChild(mkRow('Projection', projSel));
-  ui.body.appendChild(mkRow('', togGrid.wrap));
-  ui.body.appendChild(mkRow('', togGround.wrap));
-  ui.body.appendChild(mkRow('', togAxes.wrap));
-
-  // ---------- Logic ----------
-
-// ------------------ CONFIG ------------------
-const CLOSED_TX = -520; // px, off-screen to the left
-let isOpen = false;
-
-// Prepare dock styles once
-Object.assign(ui.dock.style, {
-  display: 'block',
-  willChange: 'transform, opacity',
-  transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
-  transform: `translateX(${CLOSED_TX}px)`,
-  opacity: '0',
-  pointerEvents: 'none'
-});
-
-// ------------------ TWEEN LOGIC ------------------
-function set(open) {
-  isOpen = open;
-
-  if (open) {
-    // OPEN tween
-    ui.dock.style.opacity = '1';
-    ui.dock.style.transform = 'translateX(0)';
-    ui.dock.style.pointerEvents = 'auto';
-    ui.toggleBtn.textContent = 'Close Tools';
-    try { styleDockLeft(ui.dock); } catch(_) {}
-    //try { explode.prepare(); } catch(_) {}
-    syncExplodeUI();
-  } else {
-    // CLOSE tween
-    ui.dock.style.opacity = '0';
-    ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
-    ui.dock.style.pointerEvents = 'none';
-    ui.toggleBtn.textContent = 'Open Tools';
-  }
+// ViewerCore is loaded as a classic script (UMD) and defines window.createViewer.
+// We intentionally avoid importing ./core/ViewerCore.js as an ES module because it may not export symbols.
+const createViewer = (typeof window !== 'undefined' ? window.createViewer : null);
+if (!createViewer) {
+  throw new Error("[urdf_viewer_main] window.createViewer not found. Ensure core/ViewerCore.js is loaded before urdf_viewer_main.js.");
 }
 
-// Wrappers
-function openDock()  { set(true);  }
-function closeDock() { set(false); }
+export let Base64Images = [];
 
-// ------------------ EVENT ------------------
-ui.toggleBtn.addEventListener('click', () => set(!isOpen));
-//ui.toggleBtn.addEventListener('keydown', onHotkeyH, true);
-//set(!isOpen)
-// h
+/* ========================= Debug helper ========================= */
 
-  // Snapshot (header only)
-  // Snapshot (header only) — offscreen render target fallback (no preserveDrawingBuffer needed)
-ui.fitBtn.addEventListener('click', () => {
-  const { renderer, scene, camera, composer } = app;
-
-  // helper: download a URL/blob
-  const downloadURL = (url, isObjURL = false) => {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'snapshot.png';
-    document.body.appendChild(a);
-    a.click();
-    if (isObjURL) URL.revokeObjectURL(url);
-    a.remove();
-  };
-
-  // try fast path first (works if preserveDrawingBuffer=true and no CORS taint)
+function debugLog(...args) {
   try {
-    renderer.setRenderTarget(null);
-    if (composer) composer.render(); else renderer.render(scene, camera);
-    const url = renderer.domElement.toDataURL('image/png');
-    // if we got here, it worked
-    downloadURL(url);
-    return;
-  } catch (e) {
-    // fall through to robust path
-    console.warn('[Snapshot] fast path failed, trying offscreen RT.', e);
-  }
-
-  // robust path: render to offscreen target and read pixels
+    console.log('[URDF_DEBUG]', ...args);
+  } catch (_) {}
   try {
-    const size = renderer.getSize(new THREE.Vector2());
-    const dpr  = renderer.getPixelRatio();
-    const w = Math.max(1, Math.floor(size.x * dpr));
-    const h = Math.max(1, Math.floor(size.y * dpr));
-
-    const oldTarget = renderer.getRenderTarget();
-    const rt = new THREE.WebGLRenderTarget(w, h, { samples: 0 });
-    renderer.setRenderTarget(rt);
-    if (composer) composer.render(); else renderer.render(scene, camera);
-
-    const buffer = new Uint8Array(w * h * 4);
-    renderer.readRenderTargetPixels(rt, 0, 0, w, h, buffer);
-
-    // flip Y and pack into a canvas
-    const canvas = document.createElement('canvas');
-    canvas.width = w; canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    const imgData = ctx.createImageData(w, h);
-
-    // flip vertically: WebGL origin is bottom-left; 2D canvas is top-left
-    for (let y = 0; y < h; y++) {
-      const src = (h - 1 - y) * w * 4;
-      const dst = y * w * 4;
-      imgData.data.set(buffer.subarray(src, src + w * 4), dst);
+    if (typeof window !== 'undefined') {
+      window.URDF_DEBUG_LOGS = window.URDF_DEBUG_LOGS || [];
+      window.URDF_DEBUG_LOGS.push(args);
     }
-    ctx.putImageData(imgData, 0, 0);
+  } catch (_) {}
+}
 
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        alert('Snapshot failed. Check CORS headers on textures/assets.');
-        return;
-      }
-      downloadURL(URL.createObjectURL(blob), true);
-    }, 'image/png');
+/* ============================ Render ============================ */
 
-    // restore + cleanup
-    renderer.setRenderTarget(oldTarget);
-    rt.dispose();
-  } catch (e) {
-    console.error('[Snapshot] offscreen capture failed:', e);
-    alert('Snapshot error. Likely CORS-blocked textures. Ensure servers send Access-Control-Allow-Origin and loaders use crossOrigin="anonymous".');
+export function render(opts = {}) {
+  const {
+    container,
+    urdfContent = '',
+    meshDB = {},
+    selectMode = 'link',
+    background = THEME.bgCanvas || 0xffffff,
+    clickAudioDataURL = null,
+    IA_Widgets = false,
+  } = opts;
+
+  debugLog('render() init', { selectMode, background, IA_Widgets });
+
+  // 1) Core viewer
+  const core = createViewer({ container, background });
+
+  // 2) Asset DB
+  const assetDB = buildAssetDB(meshDB);
+  const assetToMeshes = new Map(); // assetKey -> Mesh[]
+
+  const loadMeshCb = createLoadMeshCb(assetDB, {
+    onMeshTag(obj, assetKey) {
+      const list = assetToMeshes.get(assetKey) || [];
+      obj.traverse((o) => {
+        if (o && o.isMesh && o.geometry) list.push(o);
+      });
+      assetToMeshes.set(assetKey, list);
+
+      obj.traverse((o) => {
+        if (o && o.isMesh) {
+          o.userData = o.userData || {};
+          o.userData.__assetKey = assetKey;
+        }
+      });
+    },
+  });
+
+  // 3) Cargar URDF
+  const robot = core.loadURDF(urdfContent, { loadMeshCb });
+  debugLog('Robot loaded', { hasRobot: !!robot });
+
+  if (robot && !assetToMeshes.size) {
+    debugLog('assetToMeshes vacío, reconstruyendo desde userData');
+    rebuildAssetMapFromRobot(robot, assetToMeshes);
   }
-});
 
+  debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
 
-  // Render mode
-  renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
-  function setRenderMode(mode) {
-    const root = app.robot || app.scene;
-    if (!root) return;
-    root.traverse(o => {
-      if (o.isMesh && o.material) {
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        for (const m of mats) {
-          m.wireframe = (mode === 'Wireframe');
-          if (mode === 'X-Ray') {
-            m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.depthTest = true;
-          } else if (mode === 'Ghost') {
-            m.transparent = true; m.opacity = 0.70; m.depthWrite = false; m.depthTest = true;
-          } else {
-            m.transparent = false; m.opacity = 1.0; m.depthWrite = true; m.depthTest = true;
-          }
-          m.needsUpdate = true;
+  // 4) Offscreen thumbnails
+  const off = buildOffscreenForThumbnails(core);
+  if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
+
+  // 5) Interacción
+  const inter = attachInteraction({
+    scene: core.scene,
+    camera: core.camera,
+    renderer: core.renderer,
+    controls: core.controls,
+    robot,
+    selectMode,
+  });
+
+  // 6) Facade app para UI + IA
+  const app = {
+    ...core,
+    robot,
+    IA_Widgets,
+    assets: {
+      list: () => listAssets(assetToMeshes),
+      thumbnail: (assetKey) => off?.thumbnail(assetKey),
+    },
+    isolate: {
+      asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey),
+      clear: () => showAll(core),
+    },
+    showAll: () => showAll(core),
+
+    openTools(open = true) {
+      tools.set(!!open);
+    },
+
+    componentDescriptions: {},
+
+    getComponentDescription(assetKey, index) {
+      const src = app.componentDescriptions || {};
+      if (!src) return '';
+
+      if (assetKey && src[assetKey]) return src[assetKey];
+
+      const baseFull = (assetKey || '').split(/[\\/]/).pop();
+      if (baseFull && src[baseFull]) return src[baseFull];
+
+      const base = baseFull ? baseFull.split('.')[0] : '';
+      if (base && src[base]) return src[base];
+
+      if (Array.isArray(src) && typeof index === 'number') {
+        return src[index] || '';
+      }
+      return '';
+    },
+
+    async collectAllThumbnails() {
+      const items = app.assets.list();
+      Base64Images.length = 0;
+
+      for (const it of items) {
+        try {
+          const url = await app.assets.thumbnail(it.assetKey);
+          if (!url || typeof url !== 'string') continue;
+          const base64 = url.split(',')[1] || '';
+          if (base64) Base64Images.push(base64);
+        } catch (e) {
+          debugLog('collectAllThumbnails error', it.assetKey, String(e));
         }
       }
-    });
+
+      if (typeof window !== 'undefined') {
+        window.Base64Images = Base64Images;
+      }
+
+      debugLog('collectAllThumbnails done', { count: Base64Images.length });
+      return Base64Images;
+    },
+  };
+
+  // 7) UI
+  const tools = createToolsDock(app, THEME);
+  const comps = createComponentsPanel(app, THEME);
+
+  // 8) Click sound opcional
+  if (clickAudioDataURL) {
+    try {
+      installClickSound(clickAudioDataURL);
+    } catch (e) {
+      debugLog('installClickSound error', String(e));
+    }
   }
 
-  // ---------- Section plane ----------
-  let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
-  let sectionPlane = null, secVisual = null;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// IMPORTANT: We apply clipping ONLY to the robot materials (NOT global renderer.clippingPlanes),
-// so helpers like Grid/Axes won't be cut.
-function clearSectionClipping() {
-  if (!app.robot) return;
-  app.robot.traverse((obj) => {
-    if (!obj || !obj.isMesh) return;
-    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-    mats.forEach((mat) => {
-      if (!mat) return;
-      mat.clippingPlanes = null;
-      mat.needsUpdate = true;
-    });
-  });
-}
-
-function applySectionPlaneToRobot(plane) {
-  if (!app.robot || !plane) return;
-  app.robot.traverse((obj) => {
-    if (!obj || !obj.isMesh) return;
-    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-    mats.forEach((mat) => {
-      if (!mat) return;
-      mat.clippingPlanes = [plane];
-      mat.needsUpdate = true;
-    });
-  });
-}
-
-function ensureSectionVisual() {
-  if (secVisual) return secVisual;
-
-  const THICK = 0.001;                   // requested thickness
-  const geom  = new THREE.BoxGeometry(1, 1, THICK); // X=width, Y=height, Z=thickness
-
-  const makeMat = (side) => new THREE.MeshBasicMaterial({
-    color: theme.teal,
-    transparent: true,
-    opacity: 0.4,
-    depthWrite: false,                  // don't dirty Z
-    depthTest: true,                    // stable against scene
-    toneMapped: false,
-    premultipliedAlpha: true,
-    side
-  });
-
-  const back  = new THREE.Mesh(geom.clone(),  makeMat(THREE.BackSide));
-  const front = new THREE.Mesh(geom.clone(),  makeMat(THREE.FrontSide));
-
-  // draw order: back first, then front (prevents the far face from vanishing)
-  back.renderOrder  = 9999;
-  front.renderOrder = 10000;
-
-  // group handle (move/rotate/scale this one like your old mesh)
-  secVisual = new THREE.Group();
-  secVisual.add(back, front);
-
-  secVisual.visible = false;            // your code toggles this elsewhere
-  secVisual.renderOrder = 10000;        // keep high so it draws late
-  secVisual.frustumCulled = false;
-
-  app.scene.add(secVisual);
-  return secVisual;
-}
-
-
-
-
-
-
-
-
-
-  
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  
-
-
-
-
-
-  function refreshSectionVisual(maxDim, center) {
-    if (!secVisual) return;
-    const size = Math.max(1e-6, maxDim || 1);
-    secVisual.scale.set(size * 1.2, size * 1.2, 1);
-    if (center) secVisual.position.copy(center);
+  // 9) IA opt-in
+  if (IA_Widgets) {
+    debugLog('[IA] IA_Widgets=true → bootstrap IA');
+    bootstrapComponentDescriptions(app, assetToMeshes, off);
+  } else {
+    debugLog('[IA] IA_Widgets=false → sin IA');
   }
 
-  function updateSectionPlane() {
-    const renderer = app.renderer;
-    if (!secEnabled || !app.robot) {
-      renderer.localClippingEnabled = false;
-      sectionPlane = null;
-      clearSectionClipping();
-      if (secVisual) secVisual.visible = false;
-      return;}
+  // 10) Expose global
+  if (typeof window !== 'undefined') {
+    window.URDFViewer = window.URDFViewer || {};
+    try {
+      window.URDFViewer.__app = app;
+    } catch (_) {}
+  }
 
-    const n = new THREE.Vector3(
-      secAxis === 'X' ? 1 : 0,
-      secAxis === 'Y' ? 1 : 0,
-      secAxis === 'Z' ? 1 : 0
+  const destroy = () => {
+    try { comps.destroy(); } catch (_) {}
+    try { tools.destroy(); } catch (_) {}
+    try { inter.destroy(); } catch (_) {}
+    try { off?.destroy?.(); } catch (_) {}
+    try { core.destroy(); } catch (_) {}
+  };
+
+  return { ...app, destroy };
+}
+
+/* ======================= Helpers: assets / isolate ======================= */
+
+function rebuildAssetMapFromRobot(robot, assetToMeshes) {
+  const tmp = new Map();
+  robot.traverse((o) => {
+    if (o && o.isMesh && o.geometry) {
+      const k =
+        (o.userData &&
+          (o.userData.__assetKey ||
+            o.userData.assetKey ||
+            o.userData.filename)) ||
+        null;
+      if (!k) return;
+      const arr = tmp.get(k) || [];
+      arr.push(o);
+      tmp.set(k, arr);
+    }
+  });
+  tmp.forEach((arr, k) => {
+    if (arr && arr.length) assetToMeshes.set(k, arr);
+  });
+}
+
+function listAssets(assetToMeshes) {
+  const items = [];
+  assetToMeshes.forEach((meshes, assetKey) => {
+    if (!meshes || meshes.length === 0) return;
+    const { base, ext } = splitName(assetKey);
+    items.push({ assetKey, base, ext, count: meshes.length });
+  });
+  items.sort((a, b) =>
+    a.base.localeCompare(b.base, undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    }),
+  );
+  return items;
+}
+
+function splitName(key) {
+  const clean = String(key || '').split('?')[0].split('#')[0];
+  const base = clean.split('/').pop();
+  const dot = base.lastIndexOf('.');
+  return {
+    base: dot >= 0 ? base.slice(0, dot) : base,
+    ext: dot >= 0 ? base.slice(dot + 1).toLowerCase() : '',
+  };
+}
+
+function isolateAsset(core, assetToMeshes, assetKey) {
+  const meshes = assetToMeshes.get(assetKey) || [];
+  if (!core.robot) return;
+
+  core.robot.traverse((o) => {
+    if (o.isMesh && o.geometry) o.visible = false;
+  });
+  meshes.forEach((m) => {
+    m.visible = true;
+  });
+
+  frameMeshes(core, meshes);
+}
+
+function showAll(core) {
+  if (!core.robot) return;
+  core.robot.traverse((o) => {
+    if (o.isMesh && o.geometry) o.visible = true;
+  });
+  if (core.fitAndCenter) core.fitAndCenter(core.robot, 1.06);
+}
+
+function frameMeshes(core, meshes) {
+  if (!meshes || meshes.length === 0) return;
+
+  const box = new THREE.Box3();
+  const tmp = new THREE.Box3();
+  let has = false;
+
+  meshes.forEach((m) => {
+    if (!m) return;
+    tmp.setFromObject(m);
+    if (!has) {
+      box.copy(tmp);
+      has = true;
+    } else {
+      box.union(tmp);
+    }
+  });
+
+  if (!has) return;
+
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+
+  const cam = core.camera;
+  const ctrl = core.controls;
+
+  if (cam.isPerspectiveCamera) {
+    const fov = (cam.fov || 60) * Math.PI / 180;
+    const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
+
+    cam.near = Math.max(maxDim / 1000, 0.001);
+    cam.far = Math.max(maxDim * 1500, 1500);
+    cam.updateProjectionMatrix();
+
+    const dir = new THREE.Vector3(1, 0.7, 1).normalize();
+    cam.position.copy(center.clone().add(dir.multiplyScalar(dist)));
+  } else {
+    cam.left = -maxDim;
+    cam.right = maxDim;
+    cam.top = maxDim;
+    cam.bottom = -maxDim;
+    cam.near = Math.max(maxDim / 1000, 0.001);
+    cam.far = Math.max(maxDim * 1500, 1500);
+    cam.updateProjectionMatrix();
+    cam.position.copy(
+      center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)),
     );
-    const box = new THREE.Box3().setFromObject(app.robot);
-    if (box.isEmpty()) { renderer.localClippingEnabled = false; if (secVisual) secVisual.visible = false; return; }
+  }
+
+  if (ctrl) {
+    ctrl.target.copy(center);
+    ctrl.update();
+  }
+}
+
+/* ============= Offscreen thumbnails: componente + ISO robot ============= */
+
+function buildOffscreenForThumbnails(core) {
+  if (!core.robot) return null;
+
+  const OFF_W = 640;
+  const OFF_H = 480;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = OFF_W;
+  canvas.height = OFF_H;
+
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    preserveDrawingBuffer: true,
+  });
+
+  renderer.setSize(OFF_W, OFF_H, false);
+
+  if (core.renderer) {
+    renderer.physicallyCorrectLights =
+      core.renderer.physicallyCorrectLights ?? true;
+    renderer.toneMapping = core.renderer.toneMapping;
+    renderer.toneMappingExposure =
+      core.renderer.toneMappingExposure ?? 1.0;
+
+    if ('outputColorSpace' in renderer && 'outputColorSpace' in core.renderer) {
+      renderer.outputColorSpace = core.renderer.outputColorSpace;
+    } else if ('outputEncoding' in renderer && 'outputEncoding' in core.renderer) {
+      renderer.outputEncoding = core.renderer.outputEncoding;
+    }
+
+    renderer.shadowMap.enabled = core.renderer.shadowMap?.enabled ?? false;
+    renderer.shadowMap.type = core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
+  }
+
+  const baseScene = new THREE.Scene();
+  baseScene.background =
+    core.scene?.background ?? new THREE.Color(0xffffff);
+  baseScene.environment = core.scene?.environment ?? null;
+
+  const amb = new THREE.AmbientLight(0xffffff, 0.95);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+  dir.position.set(2.5, 2.5, 2.5);
+  baseScene.add(amb, dir);
+
+  const camera = new THREE.PerspectiveCamera(
+    60,
+    OFF_W / OFF_H,
+    0.01,
+    10000,
+  );
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const ready = (async () => {
+    await sleep(400);
+    renderer.render(baseScene, camera);
+    debugLog('[Thumbs] Offscreen primed');
+  })();
+
+  function buildCloneAndMap() {
+    const scene = baseScene.clone();
+    scene.background = baseScene.background;
+    scene.environment = baseScene.environment;
+
+    const robotClone = core.robot.clone(true);
+    scene.add(robotClone);
+
+    robotClone.traverse((o) => {
+      if (o.isMesh && o.material) {
+        if (Array.isArray(o.material)) {
+          o.material = o.material.map((m) => m.clone());
+        } else {
+          o.material = o.material.clone();
+        }
+        o.material.needsUpdate = true;
+      }
+    });
+
+    const cloneMap = new Map();
+    robotClone.traverse((o) => {
+      const key = o?.userData?.__assetKey;
+      if (key && o.isMesh && o.geometry) {
+        const arr = cloneMap.get(key) || [];
+        arr.push(o);
+        cloneMap.set(key, arr);
+      }
+    });
+
+    return { scene, robotClone, cloneMap };
+  }
+
+  function snapshotRobotIso() {
+    const scene = baseScene.clone();
+    scene.background = baseScene.background;
+    scene.environment = baseScene.environment;
+
+    const robotClone = core.robot.clone(true);
+    scene.add(robotClone);
+
+    robotClone.traverse((o) => {
+      if (o.isMesh && o.material) {
+        if (Array.isArray(o.material)) {
+          o.material = o.material.map((m) => m.clone());
+        } else {
+          o.material = o.material.clone();
+        }
+        o.material.needsUpdate = true;
+      }
+    });
+
+    const box = new THREE.Box3().setFromObject(robotClone);
+    if (!isFinite(box.max.x) || !isFinite(box.max.y) || !isFinite(box.max.z)) {
+      debugLog('[Thumbs] snapshotRobotIso box inválido');
+      return null;
+    }
+
+    const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const dist = maxDim * 2.4;
+
+    camera.near = Math.max(maxDim / 1000, 0.001);
+    camera.far = Math.max(maxDim * 1500, 1500);
+    camera.updateProjectionMatrix();
+
+    const az = Math.PI * 0.28;
+    const el = Math.PI * 0.22;
+    const dirV = new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az),
+    ).multiplyScalar(dist);
+
+    camera.position.copy(center.clone().add(dirV));
+    camera.lookAt(center);
+
+    renderer.render(scene, camera);
+    const url = canvas.toDataURL('image/png');
+    return url;
+  }
+
+  function snapshotAsset(assetKey) {
+    const { scene, robotClone, cloneMap } = buildCloneAndMap();
+    const meshes = cloneMap.get(assetKey) || [];
+
+    if (!meshes.length) {
+      debugLog('[Thumbs] snapshotAsset sin meshes para', assetKey);
+      return null;
+    }
+
+    robotClone.traverse((o) => {
+      if (o.isMesh && o.geometry) o.visible = false;
+    });
+    meshes.forEach((m) => {
+      m.visible = true;
+    });
+
+    const box = new THREE.Box3();
+    const tmp = new THREE.Box3();
+    let has = false;
+
+    meshes.forEach((m) => {
+      tmp.setFromObject(m);
+      if (!has) {
+        box.copy(tmp);
+        has = true;
+      } else {
+        box.union(tmp);
+      }
+    });
+
+    if (!has) {
+      debugLog('[Thumbs] snapshotAsset box vacío para', assetKey);
+      return null;
+    }
+
     const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const dist = maxDim * 2.0;
 
-    const dist = (Number(secDist.value) || 0) * maxDim * 0.5;
-    const plane = new THREE.Plane(n, -center.dot(n) - dist);
+    camera.near = Math.max(maxDim / 1000, 0.001);
+    camera.far = Math.max(maxDim * 1000, 1000);
+    camera.updateProjectionMatrix();
 
-    renderer.localClippingEnabled = true;
-    // Keep global clippingPlanes empty so the grid/helpers are never cut.
-    renderer.clippingPlanes = [];
-    sectionPlane = plane;
-    clearSectionClipping();
-    applySectionPlaneToRobot(plane);
+    const az = Math.PI * 0.25;
+    const el = Math.PI * 0.20;
+    const dirV = new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az),
+    ).multiplyScalar(dist);
 
-    ensureSectionVisual();
-    refreshSectionVisual(maxDim, center);
-    secVisual.visible = !!secPlaneVisible;
+    camera.position.copy(center.clone().add(dirV));
+    camera.lookAt(center);
 
-    // Orient the teal plane to match clipping plane normal
-    const look = new THREE.Vector3().copy(n);
-    const up = new THREE.Vector3(0, 1, 0);
-    if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
-    const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0, 0, 0), look, up);
-    const q = new THREE.Quaternion().setFromRotationMatrix(m);
-    secVisual.setRotationFromQuaternion(q);
-    const p0 = n.clone().multiplyScalar(-plane.constant);
-    secVisual.position.copy(p0);
+    renderer.render(scene, camera);
+    const url = canvas.toDataURL('image/png');
+    return url;
   }
 
-  axisSel.addEventListener('change', () => { secAxis = axisSel.value; updateSectionPlane(); });
-  secDist.addEventListener('input', () => updateSectionPlane());
-  secEnable.cb.addEventListener('change', () => { secEnabled = !!secEnable.cb.checked; updateSectionPlane(); });
-  secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
-
-  // ---------- Views (animated) ----------
-  const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
-
-  function currentAzEl(cam, target) {
-    const v = cam.position.clone().sub(target);
-    const len = Math.max(1e-9, v.length());
-    return { el: Math.asin(v.y / len), az: Math.atan2(v.z, v.x), r: len };
-  }
-
-  function tweenOrbits(cam, ctrl, toPos, toTarget = null, ms = 700) {
-    const p0 = cam.position.clone(), t0 = ctrl.target.clone(), tStart = performance.now();
-    ctrl.enabled = false; cam.up.set(0, 1, 0);
-    const moveTarget = (toTarget !== null);
-    function step(t) {
-      const u = Math.min(1, (t - tStart) / ms), e = easeInOutCubic(u);
-      cam.position.set(
-        p0.x + (toPos.x - p0.x) * e,
-        p0.y + (toPos.y - p0.y) * e,
-        p0.z + (toPos.z - p0.z) * e
-      );
-      if (moveTarget) ctrl.target.set(
-        t0.x + (toTarget.x - t0.x) * e,
-        t0.y + (toTarget.y - t0.y) * e,
-        t0.z + (toTarget.z - t0.z) * e
-      );
-      ctrl.update(); app.renderer.render(app.scene, cam);
-      if (u < 1) requestAnimationFrame(step); else ctrl.enabled = true;
-    }
-    requestAnimationFrame(step);
-  }
-
-
-// Store default distance once (at init)
-let DEFAULT_RADIUS = null;
-
-function initDefaultRadius(app) {
-  const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
-  const cur = currentAzEl(cam, t);
-  DEFAULT_RADIUS = cur.r;   // save the startup distance
-}
-
-// -------------------------------
-  // Put these helpers near your other view utils (above viewEndPosition)
-
-// Compute world-space bounds and a nice “fit” sphere (you already have this)
-function getRobotFitSphere(app) {
-  const root = app.robot || app.scene;
-  if (!root) return null;
-  const box = new THREE.Box3().setFromObject(root);
-  if (box.isEmpty()) return null;
-  const center = box.getCenter(new THREE.Vector3());
-  const size   = box.getSize(new THREE.Vector3());
-  const radius = size.length() * 0.5 * (1 / Math.sqrt(3));
-  return { center, size, radius };
-}
-
-// Distance needed to fit the sphere in the view for a given camera & aspect
-function distanceToFitSphere(cam, radius, pad = 3) {
-  const r = Math.max(1e-6, radius) * pad;
-
-  if (cam.isOrthographicCamera) {
-    // In ortho, distance doesn’t change framing; return something sensible
-    // so near/far and fog behave. Tweak MIN/MAX below if you want.
-    return THREE.MathUtils.clamp(r * 2.0, 0.25, 1e6);
-  }
-
-  // Perspective: fit by vertical & horizontal FOV, take the stricter one
-  const vFov = THREE.MathUtils.degToRad(cam.fov);
-  const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * (cam.aspect || 1));
-  const dV = r / Math.tan(vFov * 0.5);
-  const dH = r / Math.tan(hFov * 0.5);
-  return Math.max(dV, dH);
-}
-
-// Optional clamp so tiny robots aren’t viewed from absurdly close,
-// and huge robots don’t push the camera miles away.
-const AUTO_RADIUS_MIN = 0.35;   // set to 1.0 if you want a 1-unit floor
-const AUTO_RADIUS_MAX = 1e4;    // raise/lower if needed
-
-// -------------------------------
-// Replace your viewEndPosition with this:
-
-function viewEndPose(kind) {
-  const cam = app.camera, ctrl = app.controls;
-  const s = getRobotFitSphere(app);
-  const target = s ? s.center.clone() : ctrl.target.clone(); // <- move target to robot center
-
-  // derive current az/el relative to new target (so the tween is smooth)
-  const curVec = cam.position.clone().sub(target);
-  const len = Math.max(1e-9, curVec.length());
-  const cur = { el: Math.asin(curVec.y / len), az: Math.atan2(curVec.z, curVec.x) };
-
-  // pick destination az/el
-  let az = cur.az, el = cur.el;
-  const topEps = 1e-3;
-  if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.20; }
-  if (kind === 'top')   { az = Math.round(cur.az / (Math.PI/2)) * (Math.PI/2); el = Math.PI/2 - topEps; }
-  if (kind === 'front') { az = Math.PI / 2; el = 0; }
-  if (kind === 'right') { az = 0; el = 0; }
-
-  // pick a distance that fits (persp) or a sensible offset (ortho)
-  let fitR = 4;
-  if (s) {
-    fitR = distanceToFitSphere(cam, s.radius, 3); // you already have distanceToFitSphere()
-  }
-
-  const dir = new THREE.Vector3(
-    Math.cos(el) * Math.cos(az),
-    Math.sin(el),
-    Math.cos(el) * Math.sin(az)
-  ).normalize();
-
-  const pos = target.clone().add(dir.multiplyScalar(fitR));
-  return { pos, target };
-}
-
-
-
-  const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
-
-  const to = (kind) => viewEndPose(kind);
-
- bIsoEl.addEventListener('click',   () => { const v = to('iso');   tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
- bTopEl.addEventListener('click',   () => { const v = to('top');   tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
- bFrontEl.addEventListener('click', () => { const v = to('front'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
- bRightEl.addEventListener('click', () => { const v = to('right'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
-
-  // ---------- Projection ----------
-  projSel.addEventListener('change', () => {
-    const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
-    try { app.setProjection?.(mode); } catch (_) {}
-  });
-
-  // ---------- Scene toggles ----------
-  togGrid.cb.addEventListener('change', () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
-  togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
-  togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
-
-  // ============================================================
-  //                       EXPLODE MANAGER
-  //  Smooth, spring-tweened explode with robust calibration
-  //  - Stable per-part vectors in **parent local space**
-  //  - No double-application on nested meshes
-  //  - Recalibrates baseline when amount≈0 or on demand
-  // ============================================================
-
-   function amount() {
-    // Use `current` so the UI reflects the settled spring position.
-    // (If you prefer the intended position, return `target` instead.)
-    return current;
-  }
-  
-  function makeExplodeManager() {
-    // Internals
-    const registry = []; // { node, baseLocal:Vector3, dirLocal:Vector3 }
-    const marker = new WeakSet(); // mark chosen top parts to avoid nesting
-    let maxDim = 1;
-    let prepared = false;
-
-    // spring state
-    let current = 0;            // current explode amount [0..1]
-    let target = 0;             // target explode amount [0..1]
-    let vel = 0;                // velocity in "amount units / s"
-    let raf = null;
-    let lastT = 0;
-    const stiffness = 18;       // rad/s (ω) — higher snappier
-    const damping   = 2 * Math.sqrt(stiffness); // critical damping
-
-    // recalibration timer when at zero
-    let zeroSince = null;
-
-    function worldDirToParentLocal(parent, dirWorld) {
-      // Convert direction vector from world to parent's local (ignore translation)
-      const m = new THREE.Matrix4().copy(parent.matrixWorld).invert();
-      const n = new THREE.Matrix3().setFromMatrix4(m); // normal matrix
-      return dirWorld.clone().applyMatrix3(n).normalize();
-    }
-
-    function chooseTopPartFor(mesh) {
-      // climb up until we reach a node whose parent either is the robot root
-      // or has already been selected as a part
-      let n = mesh;
-      while (n && n !== app.robot) {
-        if (marker.has(n)) return n; // already chosen
-        if (n.parent === app.robot) return n;
-        n = n.parent;
+  return {
+    async thumbnail(assetKey) {
+      try {
+        await ready;
+        const url = snapshotAsset(assetKey);
+        debugLog('[Thumbs] thumbnail', assetKey, !!url);
+        return url;
+      } catch (e) {
+        debugLog('[Thumbs] Error thumbnail', assetKey, String(e));
+        return null;
       }
-      return mesh.parent || mesh;
-    }
-
-    function computeBounds() {
-      const box = new THREE.Box3().setFromObject(app.robot);
-      if (box.isEmpty()) return null;
-      return { center: box.getCenter(new THREE.Vector3()), size: box.getSize(new THREE.Vector3()) };
-    }
-
-    function prepare() {
-      registry.length = 0;
-      markClear();
-      if (!app.robot) { prepared = false; return; }
-
-      const R = computeBounds();
-      if (!R) { prepared = false; return; }
-      maxDim = Math.max(R.size.x, R.size.y, R.size.z) || 1;
-
-      // collect parts (top-most parents with geometry)
-      const parts = new Set();
-      const seen = new WeakSet();
-      app.robot.traverse((o) => {
-        if (o.isMesh && o.geometry && o.visible && !o.userData.__isHoverOverlay) {
-          const top = chooseTopPartFor(o);
-          if (!seen.has(top)) { parts.add(top); seen.add(top); marker.add(top); }
-        }
-      });
-
-      // capture base & dir in parent local space
-      parts.forEach((node) => {
-        const parent = node.parent || app.robot;
-        const baseLocal = node.position.clone();
-
-        const box = new THREE.Box3().setFromObject(node);
-        if (box.isEmpty()) return;
-        const cWorld = box.getCenter(new THREE.Vector3());
-        const dirWorld = cWorld.sub(R.center).normalize();
-        if (!isFinite(dirWorld.x + dirWorld.y + dirWorld.z)) return;
-
-        const dirLocal = worldDirToParentLocal(parent, dirWorld);
-        // if degenerate, jitter slightly
-        if (!isFinite(dirLocal.x + dirLocal.y + dirLocal.z) || dirLocal.lengthSq() < 1e-12) {
-          dirLocal.set((Math.random()*2-1), (Math.random()*2-1), (Math.random()*2-1)).normalize();
-        }
-
-        registry.push({ node, parent, baseLocal, dirLocal });
-      });
-
-      prepared = true;
-      zeroSince = performance.now(); // fresh baseline considered "zero"
-    }
-
-    function markClear() {
-      // (no-op now, we simply let WeakSets be GC'd)
-    }
-
-    function applyAmount(a01) {
-      if (!prepared) prepare();
-      const f = Math.max(0, Math.min(1, a01 || 0));
-      const maxOffset = maxDim * 0.6;
-
-      for (const rec of registry) {
-        const { node, baseLocal, dirLocal } = rec;
-        node.position.copy(baseLocal).addScaledVector(dirLocal, f * maxOffset);
+    },
+    async iso() {
+      try {
+        await ready;
+        const url = snapshotRobotIso();
+        debugLog('[Thumbs] iso robot', !!url);
+        return url;
+      } catch (e) {
+        debugLog('[Thumbs] iso error', String(e));
+        return null;
       }
-
-      // keep section visuals and other helpers in sync
-      updateSectionPlane?.();
-      // render one frame so it feels responsive even if main loop is paused
-      try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch(_) {}
-    }
-
-    function tickSpring(now) {
-      if (!lastT) lastT = now;
-      const dt = Math.min(0.05, (now - lastT) / 1000); // clamp 50ms for stability
-      lastT = now;
-
-      // critically damped spring to target
-      const x = current, v = vel, xT = target;
-      const a = stiffness * (xT - x) - damping * v;
-      vel = v + a * dt;
-      current = x + vel * dt;
-
-      // snap when close
-      if (Math.abs(current - target) < 0.0005 && Math.abs(vel) < 0.0005) {
-        current = target; vel = 0;
-      }
-
-      applyAmount(current);
-
-      // auto-recalibrate baseline if user keeps it at ~0 for a moment
-      if (current === 0) {
-        zeroSince ??= now;
-        if (now - zeroSince > 300) { // 300ms stable at zero → recapture as new baseline
-          const keepTarget = target; // preserve intent
-          prepare();                 // new base from current joint pose
-          applyAmount(current);      // re-apply exact zero after recalibration
-          target = keepTarget;
-          zeroSince = now;
-        }
-      } else {
-        zeroSince = null;
-      }
-
-      if (current !== target || vel !== 0) {
-        raf = requestAnimationFrame(tickSpring);
-      } else {
-        raf = null; // stop when settled
-      }
-    }
-
-    function setTarget(a01) {
-      target = Math.max(0, Math.min(1, Number(a01) || 0));
-      if (!prepared) prepare();
-      if (!raf) { lastT = 0; raf = requestAnimationFrame(tickSpring); }
-    }
-
-    function immediate(a01) {
-      target = current = Math.max(0, Math.min(1, Number(a01) || 0));
-      vel = 0;
-      if (!prepared) prepare();
-      applyAmount(current);
-    }
-
-    function recalibrate() {
-      // public: recalc baseline to current (useful after big joint moves)
-      prepare();
-      applyAmount(current);
-    }
-
-    function destroy() {
-      if (raf) cancelAnimationFrame(raf);
-      raf = null;
-    }
-
-    return { prepare, setTarget, immediate, recalibrate, destroy, amount };
-  }
-
-  const explode = makeExplodeManager();
-
-  // Expose a hook so other parts (e.g., joint-drag code) can request recalibration:
-  try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
-
-  // Drive explode from slider (smooth spring tween)
-  explodeSlider.addEventListener('input', () => {
-    explode.setTarget(Number(explodeSlider.value) || 0);
-  });
-
-  // Double-click label area to recalibrate baseline instantly (optional UX)
-  // (Assumes the row label is the first child of the row grid)
-  // You can comment this if unwanted.
-  // ui.body.querySelectorAll('div').forEach(div => {
-  //   if (div.textContent === 'Explode') {
-  //     div.addEventListener('dblclick', () => explode.recalibrate());
-  //   }
-  // });
-
-  function syncExplodeUI() {
-  try {
-    const a = explode.amount();
-    if (!Number.isNaN(a)) explodeSlider.value = String(Math.max(0, Math.min(1, a)));
-  } catch {}
+    },
+    destroy() {
+      try { renderer.dispose(); } catch (_) {}
+      try { baseScene.clear(); } catch (_) {}
+    },
+  };
 }
 
-  // ---------- Utilities ----------
-  function styleDockLeft(dockEl) {
-    dockEl.classList.add('viewer-dock-fix');
-    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
+/* ================= IA opt-in: describe_component_images ================= */
+
+function bootstrapComponentDescriptions(app, assetToMeshes, off) {
+  debugLog('[IA] bootstrapComponentDescriptions start');
+
+  if (!off || typeof off.thumbnail !== 'function') {
+    debugLog('[IA] Offscreen no disponible; cancelando IA');
+    return;
   }
 
-  // Defaults
-  togGrid.cb.checked = false;
-  togGround.cb.checked = false;
-  togAxes.cb.checked = false;
+  const hasColab =
+    typeof window !== 'undefined' &&
+    window.google &&
+    window.google.colab &&
+    window.google.colab.kernel &&
+    typeof window.google.colab.kernel.invokeFunction === 'function';
 
-  // Start closed
-  set(false);
+  debugLog('[IA] Colab bridge?', hasColab);
+  if (!hasColab) return;
 
-  //
+  const items = listAssets(assetToMeshes);
+  debugLog('[IA] Componentes a describir', items.length);
+  if (!items.length) return;
 
-  // 1) Hotkey handler: ONLY detects "h" and calls the tween
-//function onHotkeyH(e) {set(!isOpen)}
-
-function onHotkeyH(e) {
-  const tag = (e.target && e.target.tagName || '').toLowerCase();
-  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
-
-  if (e.key === 't' || e.key === 'T' || e.code === 'KeyT') {
-    e.preventDefault();
-    try { console.log('pressed t'); } catch {}
-
-    // Call the tween function (pass your own elements/params)
-    set(!isOpen);
-  }
-}
-  
-// Wire the hotkey:
-document.addEventListener('keydown', onHotkeyH, true);
-  
-  //
-  // Public API
-  function destroy() {
-    try { ui.toggleBtn.remove(); } catch (_) {}
-    try { ui.dock.remove(); } catch (_) {}
-    try { ui.root.remove(); } catch (_) {}
+  (async () => {
     try {
-      app.renderer.localClippingEnabled = false;
-      app.renderer.clippingPlanes = [];
-      try { clearSectionClipping(); } catch (_) {}
-      if (secVisual) app.scene.remove(secVisual);
-    } catch (_) {}
-    explode.destroy();
+      const entries = [];
+
+      // 1) ISO del robot completo
+      if (typeof off.iso === 'function') {
+        try {
+          const isoUrl = await off.iso();
+          if (isoUrl) {
+            const isoB64 = await makeApproxSizedBase64(isoUrl, 8);
+            if (isoB64) {
+              entries.push({
+                key: '__robot_iso__',
+                name: 'robot_iso',
+                index: -1,
+                image_b64: isoB64,
+              });
+              debugLog('[IA] __robot_iso__ agregado al payload IA');
+            }
+          }
+        } catch (e) {
+          debugLog('[IA] Error generando ISO robot', String(e));
+        }
+      }
+
+      // 2) Componentes
+      let idx = 0;
+      for (const ent of items) {
+        try {
+          const url = await off.thumbnail(ent.assetKey);
+          if (!url) continue;
+
+          const b64 = await makeApproxSizedBase64(url, 5);
+          if (!b64) continue;
+
+          entries.push({
+            key: ent.assetKey,
+            name: ent.base,
+            index: idx,
+            image_b64: b64,
+          });
+          idx += 1;
+        } catch (e) {
+          debugLog('[IA] Error thumb IA', ent.assetKey, String(e));
+        }
+      }
+
+      debugLog('[IA] entries generadas', entries.length);
+      if (!entries.length) return;
+
+      let res;
+      try {
+        res = await window.google.colab.kernel.invokeFunction(
+          'describe_component_images',
+          [entries],
+          {},
+        );
+        debugLog('[IA] invokeFunction OK', res);
+      } catch (e) {
+        debugLog('[IA] invokeFunction error', String(e));
+        return;
+      }
+
+      const map = extractDescMap(res);
+      debugLog('[IA] parsed map', map);
+
+      if (map && typeof map === 'object' && Object.keys(map).length) {
+        applyIaDescriptionsToApp(app, map);
+      } else {
+        debugLog('[IA] Respuesta IA sin mapa utilizable');
+      }
+    } catch (err) {
+      debugLog('[IA] Error en bootstrapComponentDescriptions', String(err));
+    }
+  })();
+}
+
+/* ====== extractDescMap / parseMaybePythonDict / applyIaDescriptions ===== */
+
+function extractDescMap(res) {
+  if (!res) return null;
+
+  let data = res.data ?? res;
+
+  // Caso Colab típico: data['application/json']
+  if (
+    data &&
+    typeof data === 'object' &&
+    data['application/json'] &&
+    typeof data['application/json'] === 'object'
+  ) {
+    return data['application/json'];
   }
 
-  return { open: openDock, close: closeDock, set, destroy };
+  // Caso actual: data['text/plain'] = "{'base.dae': '...'}"
+  if (
+    data &&
+    typeof data === 'object' &&
+    typeof data['text/plain'] === 'string'
+  ) {
+    const raw = data['text/plain'].trim();
+    const parsed = parseMaybePythonDict(raw);
+    if (parsed) return parsed;
+  }
+
+  // Si es string plano, intentar parsear igual
+  if (typeof data === 'string') {
+    const parsed = parseMaybePythonDict(data.trim());
+    if (parsed) return parsed;
+  }
+
+  // Si ya es objeto razonable, úsalo
+  if (
+    data &&
+    typeof data === 'object' &&
+    !Array.isArray(data) &&
+    !(Object.keys(data).length === 1 && 'text/plain' in data)
+  ) {
+    return data;
+  }
+
+  // Array de objetos: tomar el primero
+  if (
+    Array.isArray(data) &&
+    data.length &&
+    typeof data[0] === 'object'
+  ) {
+    return data[0];
+  }
+
+  return null;
+}
+
+/**
+ * ✅ Nueva versión robusta:
+ *  - Soporta dict Python: {'base.dae': '...'}
+ *  - Soporta JSON válido.
+ *  - Fallback con Function(...) sólo en este contexto controlado.
+ */
+function parseMaybePythonDict(raw) {
+  if (!raw) return null;
+  raw = String(raw).trim();
+  if (!raw.startsWith('{') || !raw.endsWith('}')) return null;
+
+  // 1) Intento JSON directo
+  try {
+    const j = JSON.parse(raw);
+    if (j && typeof j === 'object') return j;
+  } catch (_) {}
+
+  // 2) Intento: reemplazar sintaxis Python -> JS y evaluar de forma controlada
+  try {
+    let expr = raw;
+
+    // Normalizar booleanos / None
+    expr = expr.replace(/\bNone\b/g, 'null');
+    expr = expr.replace(/\bTrue\b/g, 'true');
+    expr = expr.replace(/\bFalse\b/g, 'false');
+
+    // Si usa comillas simples tipo dict Python, no lo tocamos a mano campo por campo:
+    // dejamos que el motor JS lo evalue como objeto literal.
+    // Ejemplo: {'base.dae': 'texto'} es válido en new Function("return (...)").
+    const obj = new Function('return (' + expr + ')')();
+    if (obj && typeof obj === 'object') return obj;
+  } catch (_) {}
+
+  // 3) Fallback muy simple: intentar extraer pares 'k': 'v'
+  try {
+    const out = {};
+    const inner = raw.slice(1, -1);
+    const regex = /'([^']+)'\s*:\s*'([^']*)'/g;
+    let m;
+    while ((m = regex.exec(inner))) {
+      const key = m[1];
+      let val = m[2] || '';
+      val = val.replace(/\\n/g, '\n');
+      out[key] = val;
+    }
+    if (Object.keys(out).length) return out;
+  } catch (_) {}
+
+  return null;
+}
+
+function applyIaDescriptionsToApp(app, map) {
+  if (!map || typeof map !== 'object') return;
+
+  if (!app.componentDescriptions || typeof app.componentDescriptions !== 'object') {
+    app.componentDescriptions = {};
+  }
+
+  const store = app.componentDescriptions;
+
+  for (const [k, v] of Object.entries(map)) {
+    if (typeof v === 'string' && v.trim()) {
+      store[String(k).toLowerCase()] = v.trim();
+    }
+  }
+
+  if (!app.__patchedGetComponentDescription) {
+    const orig = app.getComponentDescription
+      ? app.getComponentDescription.bind(app)
+      : null;
+
+    app.getComponentDescription = function (assetKey, index = 0) {
+      const cd = app.componentDescriptions || {};
+      const values = Object.values(cd);
+
+      if (assetKey) {
+        const key = String(assetKey).toLowerCase();
+        if (cd[key]) return cd[key];
+
+        const base = key.split(/[\\/]/).pop();
+        if (cd[base]) return cd[base];
+
+        for (const k of Object.keys(cd)) {
+          if (k.endsWith('/' + base)) return cd[k];
+        }
+      }
+
+      if (orig) {
+        const fromOrig = orig(assetKey, index);
+        if (fromOrig) return fromOrig;
+      }
+
+      return values[index] || values[0] || '';
+    };
+
+    app.__patchedGetComponentDescription = true;
+  }
+
+  const detail = { map: app.componentDescriptions };
+
+  if (typeof app.emit === 'function') {
+    try {
+      app.emit('ia_descriptions_ready', detail);
+    } catch (_) {}
+  }
+
+  try {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('ia_descriptions_ready', { detail }),
+      );
+    }
+  } catch (_) {}
+
+  debugLog(
+    '[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido',
+    detail,
+  );
+}
+
+/* =================== Reducción thumbnails ~5KB =================== */
+
+async function makeApproxSizedBase64(dataURL, targetKB = 5) {
+  try {
+    const maxBytes = targetKB * 1024;
+
+    const resp = await fetch(dataURL);
+    const blob = await resp.blob();
+
+    const img = document.createElement('img');
+    const u = URL.createObjectURL(blob);
+
+    await new Promise((res, rej) => {
+      img.onload = () => res();
+      img.onerror = rej;
+      img.src = u;
+    });
+
+    const ratio = Math.min(
+      1,
+      Math.max(0.05, maxBytes / (blob.size || maxBytes)),
+    );
+    const scale = Math.sqrt(ratio);
+
+    const w = Math.max(32, Math.floor(img.width * scale));
+    const h = Math.max(32, Math.floor(img.height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+
+    URL.revokeObjectURL(u);
+
+    const out = canvas.toDataURL('image/png');
+    const b64 = out.split(',')[1] || '';
+    if (!b64) return null;
+
+    debugLog(
+      '[IA] makeApproxSizedBase64 bytes ~',
+      Math.floor((b64.length * 3) / 4),
+    );
+    return b64;
+  } catch (e) {
+    debugLog('[IA] makeApproxSizedBase64 error', String(e));
+    return null;
+  }
+}
+
+/* ================= Click sound + global hook ================= */
+
+function installClickSound(dataURL) {
+  if (!dataURL || typeof dataURL !== 'string') return;
+
+  let ctx = null;
+  let buf = null;
+
+  async function ensure() {
+    if (!ctx) {
+      ctx =
+        new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (!buf) {
+      const resp = await fetch(dataURL);
+      const arr = await resp.arrayBuffer();
+      buf = await ctx.decodeAudioData(arr);
+    }
+  }
+
+  function play() {
+    if (!ctx) {
+      ctx =
+        new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+
+    if (!buf) {
+      ensure().then(play).catch(() => {});
+      return;
+    }
+
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    try {
+      src.start();
+    } catch (_) {}
+  }
+
+  window.__urdf_click__ = play;
+}
+
+if (typeof window !== 'undefined') {
+  window.URDFViewer = window.URDFViewer || {};
+  window.URDFViewer.render = (opts) => {
+    const app = render(opts);
+    try {
+      window.URDFViewer.__app = app;
+    } catch (_) {}
+    return app;
+  };
 }
