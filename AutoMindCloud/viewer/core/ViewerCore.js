@@ -602,10 +602,12 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
 
   // Animation loop
   let raf = null;
+  let paused = false;
+  function setPaused(v) { paused = !!v; }
   function animate() {
     raf = requestAnimationFrame(animate);
     controls.update();
-    renderer.render(scene, camera);
+    if (!paused) renderer.render(scene, camera);
   }
   animate();
 
@@ -635,6 +637,7 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
     get robot() { return robotModel; },
 
     // APIs
+    setPaused,
     loadURDF,
     fitAndCenter: (obj, pad) => fitAndCenter(camera, controls, obj || robotModel, pad),
     setProjection,
