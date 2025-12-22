@@ -475,7 +475,7 @@ def URDF_Visualization(
 <body>
   <div id="app"></div>
   <div class="badge">
-    <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud.png" alt="AutoMind"/>
+    <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="AutoMind"/>
   </div>
 
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
