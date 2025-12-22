@@ -11,13 +11,8 @@
 //  - Nombres + orden de componentes
 //  - Reducción de thumbnails a ~5KB solo para IA
 //  - Parser robusto para el dict que llega desde Colab
-
-import { THEME } from './Theme.js';
-
-// ⚠️ IMPORTACIÓN ROBUSTA: NUNCA named-import
 import * as ViewerCore from './core/ViewerCore.js';
 
-// Resolver createViewer desde cualquier formato posible
 const createViewer =
   (ViewerCore && typeof ViewerCore.createViewer === 'function' && ViewerCore.createViewer) ||
   (ViewerCore &&
@@ -28,6 +23,11 @@ const createViewer =
   (typeof window !== 'undefined' && typeof window.createViewer === 'function'
     ? window.createViewer
     : null);
+
+if (!createViewer) {
+  throw new Error("[URDF] ViewerCore loaded but createViewer wasn't found.");
+}
+
 
 if (typeof createViewer !== 'function') {
   console.error('ViewerCore import =', ViewerCore);
