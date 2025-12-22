@@ -1,647 +1,989 @@
-// /viewer/core/ViewerCore.js
-// Three.js r132 compatible core for a URDF viewer
-// Exports: createViewer({ container, background, pixelRatio })
+// /viewer/ui/ToolsDock.js / checkpoint   
+// Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
+/* global THREE */
 
-/* global THREE, URDFLoader */
+export function createToolsDock(app, theme) {
+  if (!app || !app.camera || !app.controls || !app.renderer)
+    throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
 
-function assertThree() {
-  if (typeof THREE === 'undefined') {
-    throw new Error('[ViewerCore] THREE is not defined. Load three.js before ViewerCore.js');
+  // --- Normalize theme to flat keys (works with your Theme.js nested shape) ---
+  if (theme && theme.colors) {
+    theme.teal       ??= theme.colors.teal;
+    theme.tealSoft   ??= theme.colors.tealSoft;
+    theme.tealFaint  ??= theme.colors.tealFaint;
+    theme.bgPanel    ??= theme.colors.panelBg;
+    theme.bgCanvas   ??= theme.colors.canvasBg;
+    theme.stroke     ??= theme.colors.stroke;
+    theme.text       ??= theme.colors.text;
+    theme.textMuted  ??= theme.colors.textMuted;
   }
-  if (typeof URDFLoader === 'undefined') {
-    throw new Error('[ViewerCore] URDFLoader is not defined. Load urdf-loader UMD before ViewerCore.js');
+  if (theme && theme.shadows) {
+    theme.shadow ??= (theme.shadows.lg || theme.shadows.md || theme.shadows.sm);
+  }
+
+  // ---------- DOM ----------
+  const ui = {
+    root: document.createElement('div'),
+    dock: document.createElement('div'),
+    header: document.createElement('div'),
+    title: document.createElement('div'),
+    fitBtn: document.createElement('button'),
+    body: document.createElement('div'),
+    toggleBtn: document.createElement('button')
+  };
+
+  // ---------- Helpers (with hover animations intact) ----------
+  const mkButton = (label) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    Object.assign(b.style, {
+      padding: '8px 12px',
+      borderRadius: '12px',
+      border: `1px solid ${theme.stroke}`,
+      background: theme.bgPanel,
+      color: theme.text,
+      fontWeight: '700',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      boxShadow: theme.shadow,
+      transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
+    });
+    // Hover/active animations (KEEP)
+    b.addEventListener('mouseenter', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.tealFaint;
+      b.style.borderColor = theme.tealSoft ?? theme.teal;
+    });
+    b.addEventListener('mouseleave', () => {
+      b.style.transform = 'none';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.bgPanel;
+      b.style.borderColor = theme.stroke;
+    });
+    b.addEventListener('mousedown', () => {
+      b.style.transform = 'translateY(0) scale(0.99)';
+    });
+    b.addEventListener('mouseup', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
+    });
+    return b;
+  };
+
+  const mkRow = (label, child) => {
+    const row = document.createElement('div');
+    Object.assign(row.style, {
+      display: 'grid',
+      gridTemplateColumns: '120px 1fr',
+      gap: '10px',
+      alignItems: 'center',
+      margin: '6px 0'
+    });
+    const l = document.createElement('div');
+    l.textContent = label;
+    Object.assign(l.style, { color: theme.textMuted, fontWeight: '700' });
+    row.appendChild(l);
+    row.appendChild(child);
+    return row;
+  };
+
+  const mkSelect = (options, value) => {
+    const sel = document.createElement('select');
+    options.forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o; opt.textContent = o; sel.appendChild(opt);
+    });
+    sel.value = value;
+    Object.assign(sel.style, {
+      padding: '8px',
+      border: `1px solid ${theme.stroke}`,
+      borderRadius: '10px',
+      pointerEvents: 'auto',
+      background: theme.bgPanel,
+      color: theme.text,
+      transition: 'border-color 120ms ease, box-shadow 120ms ease'
+    });
+    sel.addEventListener('focus', () => {
+      sel.style.borderColor = theme.teal;
+      sel.style.boxShadow = theme.shadow;
+    });
+    sel.addEventListener('blur', () => {
+      sel.style.borderColor = theme.stroke;
+      sel.style.boxShadow = 'none';
+    });
+    return sel;
+  };
+
+  const mkSlider = (min, max, step, value) => {
+    const s = document.createElement('input');
+    s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
+    s.style.width = '100%';
+    s.style.accentColor = theme.teal;
+    return s;
+  };
+
+  const mkToggle = (label) => {
+    const wrap = document.createElement('label');
+    const cb = document.createElement('input'); cb.type = 'checkbox';
+    const span = document.createElement('span'); span.textContent = label;
+    Object.assign(wrap.style, { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', pointerEvents: 'auto' });
+    cb.style.accentColor = theme.teal;
+    Object.assign(span.style, { fontWeight: '700', color: theme.text });
+    wrap.appendChild(cb); wrap.appendChild(span);
+    return { wrap, cb };
+  };
+
+  // Root overlay
+  Object.assign(ui.root.style, {
+    position: 'absolute',
+    left: '0', top: '0',
+    width: '100%', height: '100%',
+    pointerEvents: 'none',
+    zIndex: '9999',
+    fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
+  });
+
+  // Dock
+  Object.assign(ui.dock.style, {
+    position: 'absolute',
+    right: '14px',
+    top: '14px',
+    width: '440px',
+    background: theme.bgPanel,
+    border: `1px solid ${theme.stroke}`,
+    borderRadius: '18px',
+    boxShadow: theme.shadow,
+    pointerEvents: 'auto',
+    overflow: 'hidden',
+    display: 'none'
+  });
+
+  Object.assign(ui.header.style, {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '10px 12px',
+    borderBottom: `1px solid ${theme.stroke}`,
+    background: '#0ea5a6'
+  });
+
+  ui.title.textContent = 'Viewer Tools';
+  Object.assign(ui.title.style, { fontWeight: '800', color: '#ffffff' });
+
+
+  Object.assign(ui.body.style, { padding: '10px 12px' });
+
+  // Floating toggle button (with hover)
+  ui.toggleBtn.textContent = 'Open Tools';
+  Object.assign(ui.toggleBtn.style, {
+    position: 'absolute',
+    right: '14px',
+    top: '14px',
+    padding: '8px 12px',
+    borderRadius: '12px',
+    border: `1px solid ${theme.stroke}`,
+    background: theme.bgPanel,
+    color: theme.text,
+    fontWeight: '700',
+    boxShadow: theme.shadow,
+    pointerEvents: 'auto',
+    zIndex: '10000',
+    transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
+  });
+  ui.toggleBtn.addEventListener('mouseenter', () => {
+    ui.toggleBtn.style.transform = 'translateY(-1px) scale(1.02)';
+    ui.toggleBtn.style.background = theme.tealFaint;
+    ui.toggleBtn.style.borderColor = theme.tealSoft ?? theme.teal;
+  });
+  ui.toggleBtn.addEventListener('mouseleave', () => {
+    ui.toggleBtn.style.transform = 'none';
+    ui.toggleBtn.style.background = theme.bgPanel;
+    ui.toggleBtn.style.borderColor = theme.stroke;
+  });
+
+  // Header button (Snapshot)
+  ui.fitBtn = mkButton('Snapshot');
+  Object.assign(ui.fitBtn.style, { padding: '6px 10px', borderRadius: '10px' });
+
+  ui.header.appendChild(ui.title);
+  ui.header.appendChild(ui.fitBtn);
+  ui.dock.appendChild(ui.header);
+  ui.dock.appendChild(ui.body);
+  ui.root.appendChild(ui.dock);
+  ui.root.appendChild(ui.toggleBtn);
+
+  // Attach
+  const host = (app?.renderer?.domElement?.parentElement) || document.body;
+  host.appendChild(ui.root);
+
+  // ---------- Controls ----------
+  const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
+
+  // Explode (slider drives a smoothed spring tween; see ExplodeManager below)
+  const explodeSlider = mkSlider(0, 1, 0.01, 0);
+
+  // Section
+  const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
+  const secDist = mkSlider(-1, 1, 0.001, 0);
+  const secEnable = mkToggle('Enable section');
+  const secShowPlane = mkToggle('Show slice plane');
+
+  // Views row (NO per-row Snapshot button)
+  const rowCam = document.createElement('div');
+  Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
+  const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
+  [bIso, bTop, bFront, bRight].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
+
+  // Projection + Scene toggles
+  const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
+  const togGrid = mkToggle('Grid');
+  const togGround = mkToggle('Ground & shadows');
+  const togAxes = mkToggle('XYZ axes');
+
+  // Assemble rows
+  ui.body.appendChild(mkRow('Render mode', renderModeSel));
+  ui.body.appendChild(mkRow('Explode', explodeSlider));
+  ui.body.appendChild(mkRow('Section axis', axisSel));
+  ui.body.appendChild(mkRow('Section dist', secDist));
+  ui.body.appendChild(mkRow('', secEnable.wrap));
+  ui.body.appendChild(mkRow('', secShowPlane.wrap));
+  ui.body.appendChild(mkRow('Views', rowCam));
+  rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight);
+  ui.body.appendChild(mkRow('Projection', projSel));
+  ui.body.appendChild(mkRow('', togGrid.wrap));
+  ui.body.appendChild(mkRow('', togGround.wrap));
+  ui.body.appendChild(mkRow('', togAxes.wrap));
+
+  // ---------- Logic ----------
+
+// ------------------ CONFIG ------------------
+const CLOSED_TX = -520; // px, off-screen to the left
+let isOpen = false;
+
+// Prepare dock styles once
+Object.assign(ui.dock.style, {
+  display: 'block',
+  willChange: 'transform, opacity',
+  transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
+  transform: `translateX(${CLOSED_TX}px)`,
+  opacity: '0',
+  pointerEvents: 'none'
+});
+
+// ------------------ TWEEN LOGIC ------------------
+function set(open) {
+  isOpen = open;
+
+  if (open) {
+    // OPEN tween
+    ui.dock.style.opacity = '1';
+    ui.dock.style.transform = 'translateX(0)';
+    ui.dock.style.pointerEvents = 'auto';
+    ui.toggleBtn.textContent = 'Close Tools';
+    try { styleDockLeft(ui.dock); } catch(_) {}
+    //try { explode.prepare(); } catch(_) {}
+    syncExplodeUI();
+  } else {
+    // CLOSE tween
+    ui.dock.style.opacity = '0';
+    ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
+    ui.dock.style.pointerEvents = 'none';
+    ui.toggleBtn.textContent = 'Open Tools';
   }
 }
 
-/** Minor math helpers */
-const clamp01 = (x) => Math.max(0, Math.min(1, x));
+// Wrappers
+function openDock()  { set(true);  }
+function closeDock() { set(false); }
 
-/** Ensure meshes are double-sided and shadows off by default */
-function applyDoubleSided(root) {
-  root?.traverse?.(n => {
-    if (n.isMesh && n.geometry) {
-      if (Array.isArray(n.material)) n.material.forEach(m => (m.side = THREE.DoubleSide));
-      else if (n.material) n.material.side = THREE.DoubleSide;
-      n.castShadow = true;
-      n.receiveShadow = true;
-      n.geometry.computeVertexNormals?.();
+// ------------------ EVENT ------------------
+ui.toggleBtn.addEventListener('click', () => set(!isOpen));
+//ui.toggleBtn.addEventListener('keydown', onHotkeyH, true);
+//set(!isOpen)
+// h
+
+  // Snapshot (header only)
+  // Snapshot (header only) — offscreen render target fallback (no preserveDrawingBuffer needed)
+ui.fitBtn.addEventListener('click', () => {
+  const { renderer, scene, camera, composer } = app;
+
+  // helper: download a URL/blob
+  const downloadURL = (url, isObjURL = false) => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'snapshot.png';
+    document.body.appendChild(a);
+    a.click();
+    if (isObjURL) URL.revokeObjectURL(url);
+    a.remove();
+  };
+
+  // try fast path first (works if preserveDrawingBuffer=true and no CORS taint)
+  try {
+    renderer.setRenderTarget(null);
+    if (composer) composer.render(); else renderer.render(scene, camera);
+    const url = renderer.domElement.toDataURL('image/png');
+    // if we got here, it worked
+    downloadURL(url);
+    return;
+  } catch (e) {
+    // fall through to robust path
+    console.warn('[Snapshot] fast path failed, trying offscreen RT.', e);
+  }
+
+  // robust path: render to offscreen target and read pixels
+  try {
+    const size = renderer.getSize(new THREE.Vector2());
+    const dpr  = renderer.getPixelRatio();
+    const w = Math.max(1, Math.floor(size.x * dpr));
+    const h = Math.max(1, Math.floor(size.y * dpr));
+
+    const oldTarget = renderer.getRenderTarget();
+    const rt = new THREE.WebGLRenderTarget(w, h, { samples: 0 });
+    renderer.setRenderTarget(rt);
+    if (composer) composer.render(); else renderer.render(scene, camera);
+
+    const buffer = new Uint8Array(w * h * 4);
+    renderer.readRenderTargetPixels(rt, 0, 0, w, h, buffer);
+
+    // flip Y and pack into a canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    const imgData = ctx.createImageData(w, h);
+
+    // flip vertically: WebGL origin is bottom-left; 2D canvas is top-left
+    for (let y = 0; y < h; y++) {
+      const src = (h - 1 - y) * w * 4;
+      const dst = y * w * 4;
+      imgData.data.set(buffer.subarray(src, src + w * 4), dst);
     }
+    ctx.putImageData(imgData, 0, 0);
+
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        alert('Snapshot failed. Check CORS headers on textures/assets.');
+        return;
+      }
+      downloadURL(URL.createObjectURL(blob), true);
+    }, 'image/png');
+
+    // restore + cleanup
+    renderer.setRenderTarget(oldTarget);
+    rt.dispose();
+  } catch (e) {
+    console.error('[Snapshot] offscreen capture failed:', e);
+    alert('Snapshot error. Likely CORS-blocked textures. Ensure servers send Access-Control-Allow-Origin and loaders use crossOrigin="anonymous".');
+  }
+});
+
+
+  // Render mode
+  renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
+  function setRenderMode(mode) {
+    const root = app.robot || app.scene;
+    if (!root) return;
+    root.traverse(o => {
+      if (o.isMesh && o.material) {
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) {
+          m.wireframe = (mode === 'Wireframe');
+          if (mode === 'X-Ray') {
+            m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.depthTest = true;
+          } else if (mode === 'Ghost') {
+            m.transparent = true; m.opacity = 0.70; m.depthWrite = false; m.depthTest = true;
+          } else {
+            m.transparent = false; m.opacity = 1.0; m.depthWrite = true; m.depthTest = true;
+          }
+          m.needsUpdate = true;
+        }
+      }
+    });
+  }
+
+  // ---------- Section plane ----------
+  let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
+  let sectionPlane = null, secVisual = null;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// IMPORTANT: We apply clipping ONLY to the robot materials (NOT global renderer.clippingPlanes),
+// so helpers like Grid/Axes won't be cut.
+function clearSectionClipping() {
+  if (!app.robot) return;
+  app.robot.traverse((obj) => {
+    if (!obj || !obj.isMesh) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    mats.forEach((mat) => {
+      if (!mat) return;
+      mat.clippingPlanes = null;
+      mat.needsUpdate = true;
+    });
   });
 }
 
-/** Many URDF assets come Z-up; we rectify to Y-up (Three default) once. */
-function rectifyUpForward(obj) {
-  if (!obj || obj.userData.__rectified) return;
-  obj.rotateX(-Math.PI / 2);
-  obj.userData.__rectified = true;
-  obj.updateMatrixWorld(true);
+function applySectionPlaneToRobot(plane) {
+  if (!app.robot || !plane) return;
+  app.robot.traverse((obj) => {
+    if (!obj || !obj.isMesh) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    mats.forEach((mat) => {
+      if (!mat) return;
+      mat.clippingPlanes = [plane];
+      mat.needsUpdate = true;
+    });
+  });
 }
 
-/** Compute a padded bounding box for an object */
-function getObjectBounds(object, pad = 1.0) {
-  const box = new THREE.Box3().setFromObject(object);
+function ensureSectionVisual() {
+  if (secVisual) return secVisual;
+
+  const THICK = 0.001;                   // requested thickness
+  const geom  = new THREE.BoxGeometry(1, 1, THICK); // X=width, Y=height, Z=thickness
+
+  const makeMat = (side) => new THREE.MeshBasicMaterial({
+    color: theme.teal,
+    transparent: true,
+    opacity: 0.4,
+    depthWrite: false,                  // don't dirty Z
+    depthTest: true,                    // stable against scene
+    toneMapped: false,
+    premultipliedAlpha: true,
+    side
+  });
+
+  const back  = new THREE.Mesh(geom.clone(),  makeMat(THREE.BackSide));
+  const front = new THREE.Mesh(geom.clone(),  makeMat(THREE.FrontSide));
+
+  // draw order: back first, then front (prevents the far face from vanishing)
+  back.renderOrder  = 9999;
+  front.renderOrder = 10000;
+
+  // group handle (move/rotate/scale this one like your old mesh)
+  secVisual = new THREE.Group();
+  secVisual.add(back, front);
+
+  secVisual.visible = false;            // your code toggles this elsewhere
+  secVisual.renderOrder = 10000;        // keep high so it draws late
+  secVisual.frustumCulled = false;
+
+  app.scene.add(secVisual);
+  return secVisual;
+}
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+
+  function refreshSectionVisual(maxDim, center) {
+    if (!secVisual) return;
+    const size = Math.max(1e-6, maxDim || 1);
+    secVisual.scale.set(size * 1.2, size * 1.2, 1);
+    if (center) secVisual.position.copy(center);
+  }
+
+  function updateSectionPlane() {
+    const renderer = app.renderer;
+    if (!secEnabled || !app.robot) {
+      renderer.localClippingEnabled = false;
+      sectionPlane = null;
+      clearSectionClipping();
+      if (secVisual) secVisual.visible = false;
+      return;}
+
+    const n = new THREE.Vector3(
+      secAxis === 'X' ? 1 : 0,
+      secAxis === 'Y' ? 1 : 0,
+      secAxis === 'Z' ? 1 : 0
+    );
+    const box = new THREE.Box3().setFromObject(app.robot);
+    if (box.isEmpty()) { renderer.localClippingEnabled = false; if (secVisual) secVisual.visible = false; return; }
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const center = box.getCenter(new THREE.Vector3());
+
+    const dist = (Number(secDist.value) || 0) * maxDim * 0.5;
+    const plane = new THREE.Plane(n, -center.dot(n) - dist);
+
+    renderer.localClippingEnabled = true;
+    // Keep global clippingPlanes empty so the grid/helpers are never cut.
+    renderer.clippingPlanes = [];
+    sectionPlane = plane;
+    clearSectionClipping();
+    applySectionPlaneToRobot(plane);
+
+    ensureSectionVisual();
+    refreshSectionVisual(maxDim, center);
+    secVisual.visible = !!secPlaneVisible;
+
+    // Orient the teal plane to match clipping plane normal
+    const look = new THREE.Vector3().copy(n);
+    const up = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
+    const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0, 0, 0), look, up);
+    const q = new THREE.Quaternion().setFromRotationMatrix(m);
+    secVisual.setRotationFromQuaternion(q);
+    const p0 = n.clone().multiplyScalar(-plane.constant);
+    secVisual.position.copy(p0);
+  }
+
+  axisSel.addEventListener('change', () => { secAxis = axisSel.value; updateSectionPlane(); });
+  secDist.addEventListener('input', () => updateSectionPlane());
+  secEnable.cb.addEventListener('change', () => { secEnabled = !!secEnable.cb.checked; updateSectionPlane(); });
+  secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
+
+  // ---------- Views (animated) ----------
+  const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
+
+  function currentAzEl(cam, target) {
+    const v = cam.position.clone().sub(target);
+    const len = Math.max(1e-9, v.length());
+    return { el: Math.asin(v.y / len), az: Math.atan2(v.z, v.x), r: len };
+  }
+
+  function tweenOrbits(cam, ctrl, toPos, toTarget = null, ms = 700) {
+    const p0 = cam.position.clone(), t0 = ctrl.target.clone(), tStart = performance.now();
+    ctrl.enabled = false; cam.up.set(0, 1, 0);
+    const moveTarget = (toTarget !== null);
+    function step(t) {
+      const u = Math.min(1, (t - tStart) / ms), e = easeInOutCubic(u);
+      cam.position.set(
+        p0.x + (toPos.x - p0.x) * e,
+        p0.y + (toPos.y - p0.y) * e,
+        p0.z + (toPos.z - p0.z) * e
+      );
+      if (moveTarget) ctrl.target.set(
+        t0.x + (toTarget.x - t0.x) * e,
+        t0.y + (toTarget.y - t0.y) * e,
+        t0.z + (toTarget.z - t0.z) * e
+      );
+      ctrl.update(); app.renderer.render(app.scene, cam);
+      if (u < 1) requestAnimationFrame(step); else ctrl.enabled = true;
+    }
+    requestAnimationFrame(step);
+  }
+
+
+// Store default distance once (at init)
+let DEFAULT_RADIUS = null;
+
+function initDefaultRadius(app) {
+  const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
+  const cur = currentAzEl(cam, t);
+  DEFAULT_RADIUS = cur.r;   // save the startup distance
+}
+
+// -------------------------------
+  // Put these helpers near your other view utils (above viewEndPosition)
+
+// Compute world-space bounds and a nice “fit” sphere (you already have this)
+function getRobotFitSphere(app) {
+  const root = app.robot || app.scene;
+  if (!root) return null;
+  const box = new THREE.Box3().setFromObject(root);
   if (box.isEmpty()) return null;
   const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3()).multiplyScalar(pad);
-  const maxDim = Math.max(size.x, size.y, size.z) || 1;
-  return { box, center, size, maxDim };
+  const size   = box.getSize(new THREE.Vector3());
+  const radius = size.length() * 0.5 * (1 / Math.sqrt(3));
+  return { center, size, radius };
 }
 
-/** Fit an object to the given camera+controls */
-function fitAndCenter(camera, controls, object, pad = 1.08) {
-  const b = getObjectBounds(object, pad);
-  if (!b) return false;
+// Distance needed to fit the sphere in the view for a given camera & aspect
+function distanceToFitSphere(cam, radius, pad = 3) {
+  const r = Math.max(1e-6, radius) * pad;
 
-  const { center, maxDim } = b;
-
-  if (camera.isPerspectiveCamera) {
-    // distance heuristic robust across FOVs
-    const fov = (camera.fov || 60) * Math.PI / 180;
-    const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
-    camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far = Math.max(maxDim * 1500, 1500);
-    camera.updateProjectionMatrix();
-    // keep direction (if any); otherwise use iso-ish
-    const dir = camera.position.clone().sub(controls.target || new THREE.Vector3()).normalize();
-    if (!isFinite(dir.lengthSq()) || dir.lengthSq() < 1e-10) {
-      dir.set(1, 0.7, 1).normalize();
-    }
-    camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
-  } else if (camera.isOrthographicCamera) {
-    // set ortho frustum around object (and at least around grid size 10 => half 5)
-    const aspect = Math.max(1e-6, (controls?.domElement?.clientWidth || 1) / (controls?.domElement?.clientHeight || 1));
-    const minSpan = 5 * Math.SQRT2;
-    const span = Math.max(maxDim, minSpan);
-    camera.left = -span * aspect;
-    camera.right = span * aspect;
-    camera.top = span;
-    camera.bottom = -span;
-    camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far = Math.max(maxDim * 1500, 1500);
-    camera.updateProjectionMatrix();
-    camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
+  if (cam.isOrthographicCamera) {
+    // In ortho, distance doesn’t change framing; return something sensible
+    // so near/far and fog behave. Tweak MIN/MAX below if you want.
+    return THREE.MathUtils.clamp(r * 2.0, 0.25, 1e6);
   }
 
-  controls.target.copy(center);
-  controls.update();
-  return true;
+  // Perspective: fit by vertical & horizontal FOV, take the stricter one
+  const vFov = THREE.MathUtils.degToRad(cam.fov);
+  const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * (cam.aspect || 1));
+  const dV = r / Math.tan(vFov * 0.5);
+  const dH = r / Math.tan(hFov * 0.5);
+  return Math.max(dV, dH);
 }
 
-/** Build ground, grid, axes helpers (hidden by default) */
-function buildHelpers() {
-  const group = new THREE.Group();
+// Optional clamp so tiny robots aren’t viewed from absurdly close,
+// and huge robots don’t push the camera miles away.
+const AUTO_RADIUS_MIN = 0.35;   // set to 1.0 if you want a 1-unit floor
+const AUTO_RADIUS_MAX = 1e4;    // raise/lower if needed
 
-  // Grid (teal-ish defaults; can be recolored by UI later)
-  const grid = new THREE.GridHelper(10, 20, 0x0ea5a6, 0x14b8b9);
-  grid.visible = false;
-  group.add(grid);
+// -------------------------------
+// Replace your viewEndPosition with this:
 
-  // Ground (only useful if shadows are enabled)
-  const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
-  groundMat.depthWrite = false; // IMPORTANT: prevents “cutting” artifacts with transparent modes + shadows
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -0.0001;
-  ground.receiveShadow = false;
-  ground.visible = false;
-  group.add(ground);
+function viewEndPose(kind) {
+  const cam = app.camera, ctrl = app.controls;
+  const s = getRobotFitSphere(app);
+  const target = s ? s.center.clone() : ctrl.target.clone(); // <- move target to robot center
 
-  // Axes
-  const axes = new THREE.AxesHelper(1);
-  axes.visible = false;
-  group.add(axes);
+  // derive current az/el relative to new target (so the tween is smooth)
+  const curVec = cam.position.clone().sub(target);
+  const len = Math.max(1e-9, curVec.length());
+  const cur = { el: Math.asin(curVec.y / len), az: Math.atan2(curVec.z, curVec.x) };
 
-  return { group, grid, ground, axes };
+  // pick destination az/el
+  let az = cur.az, el = cur.el;
+  const topEps = 1e-3;
+  if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.20; }
+  if (kind === 'top')   { az = Math.round(cur.az / (Math.PI/2)) * (Math.PI/2); el = Math.PI/2 - topEps; }
+  if (kind === 'front') { az = Math.PI / 2; el = 0; }
+  if (kind === 'right') { az = 0; el = 0; }
+
+  // pick a distance that fits (persp) or a sensible offset (ortho)
+  let fitR = 4;
+  if (s) {
+    fitR = distanceToFitSphere(cam, s.radius, 3); // you already have distanceToFitSphere()
+  }
+
+  const dir = new THREE.Vector3(
+    Math.cos(el) * Math.cos(az),
+    Math.sin(el),
+    Math.cos(el) * Math.sin(az)
+  ).normalize();
+
+  const pos = target.clone().add(dir.multiplyScalar(fitR));
+  return { pos, target };
 }
 
-/**
- * Minimal TrackballControls (UMD-friendly) to allow full 360° rotation in any direction,
- * while keeping the SAME “smooth” feel (inertia) for rotate + pan + zoom.
- * API surface used by this project:
- *  - controls.object
- *  - controls.domElement
- *  - controls.enabled
- *  - controls.target (THREE.Vector3)
- *  - controls.update()
- *  - controls.handleResize() (optional)
- */
-class TrackballControls {
-  constructor(object, domElement) {
-    this.object = object;
-    this.domElement = domElement;
 
-    this.enabled = true;
 
-    this.rotateSpeed = 4.0;
-    this.zoomSpeed = 1.2;
-    this.panSpeed = 0.8;
+  const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
 
-    // If false -> inertia after releasing pointer (smooth)
-    this.staticMoving = false;
-    this.dynamicDampingFactor = 0.15;
+  const to = (kind) => viewEndPose(kind);
 
-    this.target = new THREE.Vector3();
+ bIsoEl.addEventListener('click',   () => { const v = to('iso');   tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+ bTopEl.addEventListener('click',   () => { const v = to('top');   tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+ bFrontEl.addEventListener('click', () => { const v = to('front'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+ bRightEl.addEventListener('click', () => { const v = to('right'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
 
-    this._state = 0; // 0 none, 1 rotate, 2 zoom, 3 pan
-    this._rect = null;
-
-    this._start = new THREE.Vector2();
-    this._end = new THREE.Vector2();
-
-    this._pointerId = null;
-
-    // inertia (rotate + pan + zoom)
-    this._lastAxis = new THREE.Vector3(1, 0, 0);
-    this._lastAngle = 0;
-    this._lastPan = new THREE.Vector3(0, 0, 0);
-    this._lastDolly = 0;
-
-    this._onContextMenu = (e) => e.preventDefault();
-
-    this._onWheel = (e) => {
-      if (!this.enabled) return;
-      e.preventDefault();
-
-      // FIX: wheel was inverted — invert delta so it matches the original feel
-      const delta = -(e.deltaY || 0);
-
-      this._dolly(delta);
-      this.update();
-    };
-
-    this._onPointerDown = (e) => {
-      if (!this.enabled) return;
-      if (this._pointerId !== null) return;
-      this._pointerId = e.pointerId;
-
-      // match common CAD defaults: L=rotate, M=zoom, R=pan
-      this._state = (e.button === 0) ? 1 : (e.button === 1) ? 2 : 3;
-
-      this._start.set(e.clientX, e.clientY);
-      this._end.copy(this._start);
-
-      // stop inertia when user re-engages
-      this._lastAngle = 0;
-      this._lastPan.set(0, 0, 0);
-      this._lastDolly = 0;
-
-      try { this.domElement.setPointerCapture(e.pointerId); } catch (_) {}
-      window.addEventListener('pointermove', this._onPointerMove, true);
-      window.addEventListener('pointerup', this._onPointerUp, true);
-    };
-
-    this._onPointerMove = (e) => {
-      if (!this.enabled) return;
-      if (this._pointerId !== e.pointerId) return;
-
-      this._end.set(e.clientX, e.clientY);
-
-      if (this._state === 1) {
-        this._rotate(this._start, this._end);
-      } else if (this._state === 2) {
-        const dy = (this._end.y - this._start.y);
-        // Keep zoom drag consistent with wheel (up = zoom in)
-        this._dolly(-dy * 4);
-      } else if (this._state === 3) {
-        this._pan(this._start, this._end);
-      }
-
-      this._start.copy(this._end);
-      this.update();
-    };
-
-    this._onPointerUp = (e) => {
-      if (this._pointerId !== e.pointerId) return;
-      this._pointerId = null;
-      this._state = 0;
-
-      window.removeEventListener('pointermove', this._onPointerMove, true);
-      window.removeEventListener('pointerup', this._onPointerUp, true);
-      try { this.domElement.releasePointerCapture(e.pointerId); } catch (_) {}
-    };
-
-    this.domElement.addEventListener('contextmenu', this._onContextMenu);
-    this.domElement.addEventListener('wheel', this._onWheel, { passive: false });
-    this.domElement.addEventListener('pointerdown', this._onPointerDown, true);
-  }
-
-  handleResize() {
-    this._rect = this.domElement.getBoundingClientRect();
-  }
-
-  update() {
-    // apply inertia (smooth) after release — rotate + pan + zoom
-    if (!this.staticMoving && this._state === 0) {
-
-      // ROTATE inertia
-      if (Math.abs(this._lastAngle) > 1e-6) {
-        this._applyRotation(this._lastAxis, this._lastAngle);
-        this._lastAngle *= (1.0 - this.dynamicDampingFactor);
-        if (Math.abs(this._lastAngle) < 1e-6) this._lastAngle = 0;
-      }
-
-      // PAN inertia
-      if (this._lastPan.lengthSq() > 1e-12) {
-        this.object.position.add(this._lastPan);
-        this.target.add(this._lastPan);
-
-        this._lastPan.multiplyScalar(1.0 - this.dynamicDampingFactor);
-        if (this._lastPan.lengthSq() < 1e-12) this._lastPan.set(0, 0, 0);
-      }
-
-      // ZOOM inertia
-      if (Math.abs(this._lastDolly) > 1e-6) {
-        this._dolly(this._lastDolly);
-        this._lastDolly *= (1.0 - this.dynamicDampingFactor);
-        if (Math.abs(this._lastDolly) < 1e-6) this._lastDolly = 0;
-      }
-    }
-
-    this.object.lookAt(this.target);
-  }
-
-  _getRect() {
-    if (!this._rect) this.handleResize();
-    return this._rect;
-  }
-
-  _getNDC(clientX, clientY) {
-    const r = this._getRect();
-    const x = (clientX - r.left) / Math.max(1, r.width);
-    const y = (clientY - r.top) / Math.max(1, r.height);
-    return new THREE.Vector2(x * 2 - 1, -(y * 2 - 1));
-  }
-
-  _projectOnSphere(ndc) {
-    const v = new THREE.Vector3(ndc.x, ndc.y, 0);
-    const d2 = v.x * v.x + v.y * v.y;
-    if (d2 <= 1.0) {
-      v.z = Math.sqrt(1.0 - d2);
-    } else {
-      v.normalize();
-      v.z = 0.0;
-    }
-    return v;
-  }
-
-  _applyRotation(axisWorld, angle) {
-    const q = new THREE.Quaternion().setFromAxisAngle(axisWorld, angle);
-
-    const eye = this.object.position.clone().sub(this.target);
-    eye.applyQuaternion(q);
-
-    this.object.up.applyQuaternion(q);
-    this.object.position.copy(this.target.clone().add(eye));
-  }
-
-  _rotate(startPx, endPx) {
-    const a = this._projectOnSphere(this._getNDC(startPx.x, startPx.y));
-    const b = this._projectOnSphere(this._getNDC(endPx.x, endPx.y));
-
-    const axisCam = new THREE.Vector3().crossVectors(a, b);
-    const axisLen = axisCam.length();
-    if (axisLen < 1e-8) return;
-    axisCam.normalize();
-
-    const dot = THREE.MathUtils.clamp(a.dot(b), -1, 1);
-    let angle = Math.acos(dot) * this.rotateSpeed;
-
-    // dragging right should feel like model rotates “with” the drag (CAD-like)
-    angle = -angle;
-
-    // axis in world space
-    const axisWorld = axisCam.clone().applyQuaternion(this.object.quaternion).normalize();
-
-    this._applyRotation(axisWorld, angle);
-
-    // inertia seed
-    this._lastAxis.copy(axisWorld);
-    this._lastAngle = angle;
-  }
-
-  _dolly(delta) {
-    const zoomFactor = Math.pow(0.95, (delta * this.zoomSpeed) * 0.01);
-
-    if (this.object.isPerspectiveCamera) {
-      const eye = this.object.position.clone().sub(this.target);
-      const newLen = Math.max(1e-6, eye.length() * zoomFactor);
-      eye.setLength(newLen);
-      this.object.position.copy(this.target.clone().add(eye));
-    } else if (this.object.isOrthographicCamera) {
-      this.object.zoom = Math.max(1e-3, this.object.zoom / zoomFactor);
-      this.object.updateProjectionMatrix();
-    }
-
-    // inertia seed
-    this._lastDolly = delta;
-  }
-
-  _pan(startPx, endPx) {
-    const r = this._getRect();
-    const dx = (endPx.x - startPx.x);
-    const dy = (endPx.y - startPx.y);
-
-    const h = Math.max(1, r.height);
-
-    let scale = 1.0;
-    if (this.object.isPerspectiveCamera) {
-      const eye = this.object.position.clone().sub(this.target);
-      const dist = eye.length();
-      const fov = (this.object.fov || 60) * Math.PI / 180;
-      const worldPerPixel = 2 * dist * Math.tan(fov / 2) / h;
-      scale = worldPerPixel;
-    } else if (this.object.isOrthographicCamera) {
-      const worldPerPixel = (this.object.top - this.object.bottom) / h;
-      scale = worldPerPixel;
-    }
-
-    const panX = -dx * scale * this.panSpeed;
-    const panY = dy * scale * this.panSpeed;
-
-    const te = this.object.matrix.elements;
-    const xAxis = new THREE.Vector3(te[0], te[1], te[2]);
-    const yAxis = new THREE.Vector3(te[4], te[5], te[6]);
-
-    const pan = xAxis.multiplyScalar(panX).add(yAxis.multiplyScalar(panY));
-
-    this.object.position.add(pan);
-    this.target.add(pan);
-
-    // inertia seed
-    this._lastPan.copy(pan);
-  }
-}
-
-export function createViewer({ container, background = 0xffffff, pixelRatio } = {}) {
-  assertThree();
-
-  const rootEl = container || document.body;
-  if (getComputedStyle(rootEl).position === 'static') {
-    rootEl.style.position = 'relative';
-  }
-
-  // Scene
-  const scene = new THREE.Scene();
-  if (background === null || typeof background === 'undefined') {
-    scene.background = null;
-  } else {
-    scene.background = new THREE.Color(background);
-  }
-
-  // Cameras
-  const aspect = Math.max(1e-6, (rootEl.clientWidth || 1) / (rootEl.clientHeight || 1));
-  const persp = new THREE.PerspectiveCamera(75, aspect, 0.01, 10000);
-  persp.position.set(0, 0, 3);
-
-  const orthoSize = 2.5;
-  const ortho = new THREE.OrthographicCamera(
-    -orthoSize * aspect, orthoSize * aspect,
-    orthoSize, -orthoSize,
-    0.01, 10000
-  );
-  ortho.position.set(0, 0, 3);
-
-  let camera = persp;
-
-  // Renderer
-  const renderer = new THREE.WebGLRenderer({
-    antialias: true,
-    preserveDrawingBuffer: false
+  // ---------- Projection ----------
+  projSel.addEventListener('change', () => {
+    const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
+    try { app.setProjection?.(mode); } catch (_) {}
   });
-  renderer.setPixelRatio(pixelRatio || window.devicePixelRatio || 1);
-  renderer.setSize(rootEl.clientWidth || 1, rootEl.clientHeight || 1);
-  renderer.domElement.style.width = '100%';
-  renderer.domElement.style.height = '100%';
-  renderer.domElement.style.display = 'block';
-  renderer.domElement.style.touchAction = 'none';
-  rootEl.appendChild(renderer.domElement);
 
-  // Shadows OFF by default
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // ---------- Scene toggles ----------
+  togGrid.cb.addEventListener('change', () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
+  togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
+  togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
-  // Controls
-  const controls = new TrackballControls(camera, renderer.domElement);
-  controls.rotateSpeed = 4.0;
-  controls.zoomSpeed = 1.4;
-  controls.panSpeed = 0.8;
-  controls.staticMoving = false;
-  controls.dynamicDampingFactor = 0.15;
+  // ============================================================
+  //                       EXPLODE MANAGER
+  //  Smooth, spring-tweened explode with robust calibration
+  //  - Stable per-part vectors in **parent local space**
+  //  - No double-application on nested meshes
+  //  - Recalibrates baseline when amount≈0 or on demand
+  // ============================================================
 
-  // Lights
-  const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.7);
-  const dir = new THREE.DirectionalLight(0xffffff, 1.05);
-  dir.position.set(3, 4, 2);
-  dir.castShadow = false;
-  dir.shadow.mapSize.set(2048, 2048);
-  dir.shadow.camera.near = 0.1;
-  dir.shadow.camera.far = 1000;
-  scene.add(hemi);
-  scene.add(dir);
-
-  // Helpers
-  const helpers = buildHelpers();
-  scene.add(helpers.group);
-
-  function sizeAxesHelper(maxDim, center) {
-    helpers.axes.scale.setScalar(maxDim * 0.75);
-    helpers.axes.position.copy(center || new THREE.Vector3());
+   function amount() {
+    // Use `current` so the UI reflects the settled spring position.
+    // (If you prefer the intended position, return `target` instead.)
+    return current;
   }
+  
+  function makeExplodeManager() {
+    // Internals
+    const registry = []; // { node, baseLocal:Vector3, dirLocal:Vector3 }
+    const marker = new WeakSet(); // mark chosen top parts to avoid nesting
+    let maxDim = 1;
+    let prepared = false;
 
-  // Handle resizes
-  function onResize() {
-    const w = rootEl.clientWidth || 1;
-    const h = rootEl.clientHeight || 1;
-    const asp = Math.max(1e-6, w / h);
-    if (camera.isPerspectiveCamera) {
-      camera.aspect = asp;
-    } else {
-      const size = Math.abs(camera.top) || orthoSize;
-      camera.left = -size * asp;
-      camera.right = size * asp;
-      camera.top = size;
-      camera.bottom = -size;
-    }
-    camera.updateProjectionMatrix();
-    renderer.setSize(w, h);
-    if (controls && typeof controls.handleResize === 'function') controls.handleResize();
-  }
-  window.addEventListener('resize', onResize);
+    // spring state
+    let current = 0;            // current explode amount [0..1]
+    let target = 0;             // target explode amount [0..1]
+    let vel = 0;                // velocity in "amount units / s"
+    let raf = null;
+    let lastT = 0;
+    const stiffness = 18;       // rad/s (ω) — higher snappier
+    const damping   = 2 * Math.sqrt(stiffness); // critical damping
 
-  // URDF loader & current robot
-  const urdfLoader = new URDFLoader();
-  let robotModel = null;
+    // recalibration timer when at zero
+    let zeroSince = null;
 
-  /** Load URDF content (string) with an external loadMeshCb(path, manager, onComplete) */
-  function loadURDF(urdfText, { loadMeshCb } = {}) {
-    if (robotModel) {
-      try { scene.remove(robotModel); } catch (_) {}
-      robotModel = null;
-    }
-    if (!urdfText || typeof urdfText !== 'string') return null;
-
-    if (typeof loadMeshCb === 'function') {
-      urdfLoader.loadMeshCb = loadMeshCb;
+    function worldDirToParentLocal(parent, dirWorld) {
+      // Convert direction vector from world to parent's local (ignore translation)
+      const m = new THREE.Matrix4().copy(parent.matrixWorld).invert();
+      const n = new THREE.Matrix3().setFromMatrix4(m); // normal matrix
+      return dirWorld.clone().applyMatrix3(n).normalize();
     }
 
-    let robot = null;
-    try {
-      robot = urdfLoader.parse(urdfText);
-    } catch (e) {
-      console.warn('[ViewerCore] URDF parse error:', e);
-      return null;
+    function chooseTopPartFor(mesh) {
+      // climb up until we reach a node whose parent either is the robot root
+      // or has already been selected as a part
+      let n = mesh;
+      while (n && n !== app.robot) {
+        if (marker.has(n)) return n; // already chosen
+        if (n.parent === app.robot) return n;
+        n = n.parent;
+      }
+      return mesh.parent || mesh;
     }
 
-    if (robot && robot.isObject3D) {
-      robotModel = robot;
-      scene.add(robotModel);
-      rectifyUpForward(robotModel);
-      applyDoubleSided(robotModel);
+    function computeBounds() {
+      const box = new THREE.Box3().setFromObject(app.robot);
+      if (box.isEmpty()) return null;
+      return { center: box.getCenter(new THREE.Vector3()), size: box.getSize(new THREE.Vector3()) };
+    }
 
-      // First fit
-      setTimeout(() => {
-        if (!robotModel) return;
-        const ok = fitAndCenter(camera, controls, robotModel, 1.06);
-        if (ok) {
-          const b = getObjectBounds(robotModel);
-          if (b) sizeAxesHelper(b.maxDim, b.center);
+    function prepare() {
+      registry.length = 0;
+      markClear();
+      if (!app.robot) { prepared = false; return; }
+
+      const R = computeBounds();
+      if (!R) { prepared = false; return; }
+      maxDim = Math.max(R.size.x, R.size.y, R.size.z) || 1;
+
+      // collect parts (top-most parents with geometry)
+      const parts = new Set();
+      const seen = new WeakSet();
+      app.robot.traverse((o) => {
+        if (o.isMesh && o.geometry && o.visible && !o.userData.__isHoverOverlay) {
+          const top = chooseTopPartFor(o);
+          if (!seen.has(top)) { parts.add(top); seen.add(top); marker.add(top); }
         }
-      }, 50);
+      });
+
+      // capture base & dir in parent local space
+      parts.forEach((node) => {
+        const parent = node.parent || app.robot;
+        const baseLocal = node.position.clone();
+
+        const box = new THREE.Box3().setFromObject(node);
+        if (box.isEmpty()) return;
+        const cWorld = box.getCenter(new THREE.Vector3());
+        const dirWorld = cWorld.sub(R.center).normalize();
+        if (!isFinite(dirWorld.x + dirWorld.y + dirWorld.z)) return;
+
+        const dirLocal = worldDirToParentLocal(parent, dirWorld);
+        // if degenerate, jitter slightly
+        if (!isFinite(dirLocal.x + dirLocal.y + dirLocal.z) || dirLocal.lengthSq() < 1e-12) {
+          dirLocal.set((Math.random()*2-1), (Math.random()*2-1), (Math.random()*2-1)).normalize();
+        }
+
+        registry.push({ node, parent, baseLocal, dirLocal });
+      });
+
+      prepared = true;
+      zeroSince = performance.now(); // fresh baseline considered "zero"
     }
-    return robotModel;
-  }
 
-  /** Switch projection mode (Perspective|Orthographic) while preserving view as much as possible */
-  function setProjection(mode = 'Perspective') {
-    const w = rootEl.clientWidth || 1, h = rootEl.clientHeight || 1;
-    const asp = Math.max(1e-6, w / h);
-
-    if (mode === 'Orthographic' && camera.isPerspectiveCamera) {
-      const t = controls.target.clone();
-      const v = camera.position.clone().sub(t);
-      const dist = v.length();
-      const dirN = v.clone().normalize();
-
-      const b = robotModel ? getObjectBounds(robotModel, 1.0) : null;
-      const minSpan = 5 * Math.SQRT2; // ensures grid size 10 never clips
-      const span = Math.max(orthoSize, (b ? b.maxDim : 0), minSpan);
-
-      ortho.left = -span * asp;
-      ortho.right = span * asp;
-      ortho.top = span;
-      ortho.bottom = -span;
-      ortho.near = Math.max(0.001, dist * 0.01);
-      ortho.far = Math.max(1000, dist * 50);
-      ortho.position.copy(t.clone().add(dirN.multiplyScalar(dist)));
-      ortho.updateProjectionMatrix();
-
-      controls.object = ortho;
-      camera = ortho;
-      controls.target.copy(t);
-      controls.update();
-    } else if (mode === 'Perspective' && camera.isOrthographicCamera) {
-      const t = controls.target.clone();
-      const v = camera.position.clone().sub(t);
-      const dist = v.length();
-      const dirN = v.clone().normalize();
-
-      persp.aspect = asp;
-      persp.near = Math.max(0.001, dist * 0.01);
-      persp.far = Math.max(1000, dist * 50);
-      persp.position.copy(t.clone().add(dirN.multiplyScalar(dist)));
-      persp.updateProjectionMatrix();
-
-      controls.object = persp;
-      camera = persp;
-      controls.target.copy(t);
-      controls.update();
+    function markClear() {
+      // (no-op now, we simply let WeakSets be GC'd)
     }
-  }
 
-  /** Toggle helpers and shadows from upper layers (UI) */
-  function setSceneToggles({ grid, ground, axes, shadows } = {}) {
-    if (typeof grid === 'boolean') helpers.grid.visible = grid;
-    if (typeof ground === 'boolean') helpers.ground.visible = ground;
+    function applyAmount(a01) {
+      if (!prepared) prepare();
+      const f = Math.max(0, Math.min(1, a01 || 0));
+      const maxOffset = maxDim * 0.6;
 
-    if (typeof axes === 'boolean') helpers.axes.visible = axes;
+      for (const rec of registry) {
+        const { node, baseLocal, dirLocal } = rec;
+        node.position.copy(baseLocal).addScaledVector(dirLocal, f * maxOffset);
+      }
 
-    if (typeof shadows === 'boolean') {
-      renderer.shadowMap.enabled = !!shadows;
-      dir.castShadow = !!shadows;
-      if (robotModel) {
-        robotModel.traverse(o => {
-          if (o.isMesh && o.geometry) {
-            o.castShadow = !!shadows;
-            o.receiveShadow = !!shadows;
-          }
-        });
+      // keep section visuals and other helpers in sync
+      updateSectionPlane?.();
+      // render one frame so it feels responsive even if main loop is paused
+      try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch(_) {}
+    }
+
+    function tickSpring(now) {
+      if (!lastT) lastT = now;
+      const dt = Math.min(0.05, (now - lastT) / 1000); // clamp 50ms for stability
+      lastT = now;
+
+      // critically damped spring to target
+      const x = current, v = vel, xT = target;
+      const a = stiffness * (xT - x) - damping * v;
+      vel = v + a * dt;
+      current = x + vel * dt;
+
+      // snap when close
+      if (Math.abs(current - target) < 0.0005 && Math.abs(vel) < 0.0005) {
+        current = target; vel = 0;
+      }
+
+      applyAmount(current);
+
+      // auto-recalibrate baseline if user keeps it at ~0 for a moment
+      if (current === 0) {
+        zeroSince ??= now;
+        if (now - zeroSince > 300) { // 300ms stable at zero → recapture as new baseline
+          const keepTarget = target; // preserve intent
+          prepare();                 // new base from current joint pose
+          applyAmount(current);      // re-apply exact zero after recalibration
+          target = keepTarget;
+          zeroSince = now;
+        }
+      } else {
+        zeroSince = null;
+      }
+
+      if (current !== target || vel !== 0) {
+        raf = requestAnimationFrame(tickSpring);
+      } else {
+        raf = null; // stop when settled
       }
     }
-    // Resize axes to object
-    if (helpers.axes.visible && robotModel) {
-      const b = getObjectBounds(robotModel);
-      if (b) sizeAxesHelper(b.maxDim, b.center);
+
+    function setTarget(a01) {
+      target = Math.max(0, Math.min(1, Number(a01) || 0));
+      if (!prepared) prepare();
+      if (!raf) { lastT = 0; raf = requestAnimationFrame(tickSpring); }
     }
-  }
 
-  /** Set background (int color) or null for transparent */
-  function setBackground(colorIntOrNull) {
-    if (colorIntOrNull === null || typeof colorIntOrNull === 'undefined') {
-      scene.background = null;
-    } else {
-      scene.background = new THREE.Color(colorIntOrNull);
+    function immediate(a01) {
+      target = current = Math.max(0, Math.min(1, Number(a01) || 0));
+      vel = 0;
+      if (!prepared) prepare();
+      applyAmount(current);
     }
+
+    function recalibrate() {
+      // public: recalc baseline to current (useful after big joint moves)
+      prepare();
+      applyAmount(current);
+    }
+
+    function destroy() {
+      if (raf) cancelAnimationFrame(raf);
+      raf = null;
+    }
+
+    return { prepare, setTarget, immediate, recalibrate, destroy, amount };
   }
 
-  /** Allow upper layer to adjust pixel ratio (e.g., for performance) */
-  function setPixelRatio(r) {
-    const pr = Math.max(0.5, Math.min(3, r || window.devicePixelRatio || 1));
-    renderer.setPixelRatio(pr);
-    onResize();
+  const explode = makeExplodeManager();
+
+  // Expose a hook so other parts (e.g., joint-drag code) can request recalibration:
+  try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
+
+  // Drive explode from slider (smooth spring tween)
+  explodeSlider.addEventListener('input', () => {
+    explode.setTarget(Number(explodeSlider.value) || 0);
+  });
+
+  // Double-click label area to recalibrate baseline instantly (optional UX)
+  // (Assumes the row label is the first child of the row grid)
+  // You can comment this if unwanted.
+  // ui.body.querySelectorAll('div').forEach(div => {
+  //   if (div.textContent === 'Explode') {
+  //     div.addEventListener('dblclick', () => explode.recalibrate());
+  //   }
+  // });
+
+  function syncExplodeUI() {
+  try {
+    const a = explode.amount();
+    if (!Number.isNaN(a)) explodeSlider.value = String(Math.max(0, Math.min(1, a)));
+  } catch {}
+}
+
+  // ---------- Utilities ----------
+  function styleDockLeft(dockEl) {
+    dockEl.classList.add('viewer-dock-fix');
+    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
   }
 
-  // Animation loop
-  let raf = null;
-  function animate() {
-    raf = requestAnimationFrame(animate);
-    controls.update();
-    renderer.render(scene, camera);
-  }
-  animate();
+  // Defaults
+  togGrid.cb.checked = false;
+  togGround.cb.checked = false;
+  togAxes.cb.checked = false;
 
-  // Cleanup
+  // Start closed
+  set(false);
+
+  //
+
+  // 1) Hotkey handler: ONLY detects "h" and calls the tween
+//function onHotkeyH(e) {set(!isOpen)}
+
+function onHotkeyH(e) {
+  const tag = (e.target && e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+
+  if (e.key === 't' || e.key === 'T' || e.code === 'KeyT') {
+    e.preventDefault();
+    try { console.log('pressed t'); } catch {}
+
+    // Call the tween function (pass your own elements/params)
+    set(!isOpen);
+  }
+}
+  
+// Wire the hotkey:
+document.addEventListener('keydown', onHotkeyH, true);
+  
+  //
+  // Public API
   function destroy() {
-    try { cancelAnimationFrame(raf); } catch (_) {}
-    try { window.removeEventListener('resize', onResize); } catch (_) {}
+    try { ui.toggleBtn.remove(); } catch (_) {}
+    try { ui.dock.remove(); } catch (_) {}
+    try { ui.root.remove(); } catch (_) {}
     try {
-      const el = renderer?.domElement;
-      if (el && el.parentNode) el.parentNode.removeChild(el);
+      app.renderer.localClippingEnabled = false;
+      app.renderer.clippingPlanes = [];
+      try { clearSectionClipping(); } catch (_) {}
+      if (secVisual) app.scene.remove(secVisual);
     } catch (_) {}
-    try { renderer?.dispose?.(); } catch (_) {}
+    explode.destroy();
   }
 
-  // Public facade
-  return {
-    // Core Three.js objects
-    scene,
-    get camera() { return camera; },
-    renderer,
-    controls,
-
-    // Helpers group (in case UI needs references)
-    helpers,
-
-    // Current robot getter
-    get robot() { return robotModel; },
-
-    // APIs
-    loadURDF,
-    fitAndCenter: (obj, pad) => fitAndCenter(camera, controls, obj || robotModel, pad),
-    setProjection,
-    setSceneToggles,
-    setBackground,
-    setPixelRatio,
-    onResize,
-    destroy
-  };
+  return { open: openDock, close: closeDock, set, destroy };
 }
