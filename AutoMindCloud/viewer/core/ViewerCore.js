@@ -1,947 +1,647 @@
-// /viewer/urdf_viewer_main.js
-// Viewer moderno + thumbnails + IA opt-in con:
-//  - Imagen ISO del robot completo (__robot_iso__)
-//  - Nombres + orden de componentes
-//  - Reducción de thumbnails a ~5KB solo para IA
-//  - Parser robusto para el dict que llega desde Colab
+// /viewer/core/ViewerCore.js
+// Three.js r132 compatible core for a URDF viewer
+// Exports: createViewer({ container, background, pixelRatio })
 
-import { THEME } from './Theme.js';
-import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
-import { attachInteraction } from './interaction/SelectionAndDrag.js';
-import { createToolsDock } from './ui/ToolsDock.js';
-import { createComponentsPanel } from './ui/ComponentsPanel.js';
+/* global THREE, URDFLoader */
 
-
-// ViewerCore is loaded as a classic script (UMD) and defines window.createViewer.
-// We intentionally avoid importing ./core/ViewerCore.js as an ES module because it may not export symbols.
-const createViewer = (typeof window !== 'undefined' ? window.createViewer : null);
-if (!createViewer) {
-  throw new Error("[urdf_viewer_main] window.createViewer not found. Ensure core/ViewerCore.js is loaded before urdf_viewer_main.js.");
+function assertThree() {
+  if (typeof THREE === 'undefined') {
+    throw new Error('[ViewerCore] THREE is not defined. Load three.js before ViewerCore.js');
+  }
+  if (typeof URDFLoader === 'undefined') {
+    throw new Error('[ViewerCore] URDFLoader is not defined. Load urdf-loader UMD before ViewerCore.js');
+  }
 }
 
-export let Base64Images = [];
+/** Minor math helpers */
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
 
-/* ========================= Debug helper ========================= */
-
-function debugLog(...args) {
-  try {
-    console.log('[URDF_DEBUG]', ...args);
-  } catch (_) {}
-  try {
-    if (typeof window !== 'undefined') {
-      window.URDF_DEBUG_LOGS = window.URDF_DEBUG_LOGS || [];
-      window.URDF_DEBUG_LOGS.push(args);
-    }
-  } catch (_) {}
-}
-
-/* ============================ Render ============================ */
-
-export function render(opts = {}) {
-  const {
-    container,
-    urdfContent = '',
-    meshDB = {},
-    selectMode = 'link',
-    background = THEME.bgCanvas || 0xffffff,
-    clickAudioDataURL = null,
-    IA_Widgets = false,
-  } = opts;
-
-  debugLog('render() init', { selectMode, background, IA_Widgets });
-
-  // 1) Core viewer
-  const core = createViewer({ container, background });
-
-  // 2) Asset DB
-  const assetDB = buildAssetDB(meshDB);
-  const assetToMeshes = new Map(); // assetKey -> Mesh[]
-
-  const loadMeshCb = createLoadMeshCb(assetDB, {
-    onMeshTag(obj, assetKey) {
-      const list = assetToMeshes.get(assetKey) || [];
-      obj.traverse((o) => {
-        if (o && o.isMesh && o.geometry) list.push(o);
-      });
-      assetToMeshes.set(assetKey, list);
-
-      obj.traverse((o) => {
-        if (o && o.isMesh) {
-          o.userData = o.userData || {};
-          o.userData.__assetKey = assetKey;
-        }
-      });
-    },
-  });
-
-  // 3) Cargar URDF
-  const robot = core.loadURDF(urdfContent, { loadMeshCb });
-  debugLog('Robot loaded', { hasRobot: !!robot });
-
-  if (robot && !assetToMeshes.size) {
-    debugLog('assetToMeshes vacío, reconstruyendo desde userData');
-    rebuildAssetMapFromRobot(robot, assetToMeshes);
-  }
-
-  debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
-
-  // 4) Offscreen thumbnails
-  const off = buildOffscreenForThumbnails(core);
-  if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
-
-  // 5) Interacción
-  const inter = attachInteraction({
-    scene: core.scene,
-    camera: core.camera,
-    renderer: core.renderer,
-    controls: core.controls,
-    robot,
-    selectMode,
-  });
-
-  // 6) Facade app para UI + IA
-  const app = {
-    ...core,
-    robot,
-    IA_Widgets,
-    assets: {
-      list: () => listAssets(assetToMeshes),
-      thumbnail: (assetKey) => off?.thumbnail(assetKey),
-    },
-    isolate: {
-      asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey),
-      clear: () => showAll(core),
-    },
-    showAll: () => showAll(core),
-
-    openTools(open = true) {
-      tools.set(!!open);
-    },
-
-    componentDescriptions: {},
-
-    getComponentDescription(assetKey, index) {
-      const src = app.componentDescriptions || {};
-      if (!src) return '';
-
-      if (assetKey && src[assetKey]) return src[assetKey];
-
-      const baseFull = (assetKey || '').split(/[\\/]/).pop();
-      if (baseFull && src[baseFull]) return src[baseFull];
-
-      const base = baseFull ? baseFull.split('.')[0] : '';
-      if (base && src[base]) return src[base];
-
-      if (Array.isArray(src) && typeof index === 'number') {
-        return src[index] || '';
-      }
-      return '';
-    },
-
-    async collectAllThumbnails() {
-      const items = app.assets.list();
-      Base64Images.length = 0;
-
-      for (const it of items) {
-        try {
-          const url = await app.assets.thumbnail(it.assetKey);
-          if (!url || typeof url !== 'string') continue;
-          const base64 = url.split(',')[1] || '';
-          if (base64) Base64Images.push(base64);
-        } catch (e) {
-          debugLog('collectAllThumbnails error', it.assetKey, String(e));
-        }
-      }
-
-      if (typeof window !== 'undefined') {
-        window.Base64Images = Base64Images;
-      }
-
-      debugLog('collectAllThumbnails done', { count: Base64Images.length });
-      return Base64Images;
-    },
-  };
-
-  // 7) UI
-  const tools = createToolsDock(app, THEME);
-  const comps = createComponentsPanel(app, THEME);
-
-  // 8) Click sound opcional
-  if (clickAudioDataURL) {
-    try {
-      installClickSound(clickAudioDataURL);
-    } catch (e) {
-      debugLog('installClickSound error', String(e));
-    }
-  }
-
-  // 9) IA opt-in
-  if (IA_Widgets) {
-    debugLog('[IA] IA_Widgets=true → bootstrap IA');
-    bootstrapComponentDescriptions(app, assetToMeshes, off);
-  } else {
-    debugLog('[IA] IA_Widgets=false → sin IA');
-  }
-
-  // 10) Expose global
-  if (typeof window !== 'undefined') {
-    window.URDFViewer = window.URDFViewer || {};
-    try {
-      window.URDFViewer.__app = app;
-    } catch (_) {}
-  }
-
-  const destroy = () => {
-    try { comps.destroy(); } catch (_) {}
-    try { tools.destroy(); } catch (_) {}
-    try { inter.destroy(); } catch (_) {}
-    try { off?.destroy?.(); } catch (_) {}
-    try { core.destroy(); } catch (_) {}
-  };
-
-  return { ...app, destroy };
-}
-
-/* ======================= Helpers: assets / isolate ======================= */
-
-function rebuildAssetMapFromRobot(robot, assetToMeshes) {
-  const tmp = new Map();
-  robot.traverse((o) => {
-    if (o && o.isMesh && o.geometry) {
-      const k =
-        (o.userData &&
-          (o.userData.__assetKey ||
-            o.userData.assetKey ||
-            o.userData.filename)) ||
-        null;
-      if (!k) return;
-      const arr = tmp.get(k) || [];
-      arr.push(o);
-      tmp.set(k, arr);
+/** Ensure meshes are double-sided and shadows off by default */
+function applyDoubleSided(root) {
+  root?.traverse?.(n => {
+    if (n.isMesh && n.geometry) {
+      if (Array.isArray(n.material)) n.material.forEach(m => (m.side = THREE.DoubleSide));
+      else if (n.material) n.material.side = THREE.DoubleSide;
+      n.castShadow = true;
+      n.receiveShadow = true;
+      n.geometry.computeVertexNormals?.();
     }
   });
-  tmp.forEach((arr, k) => {
-    if (arr && arr.length) assetToMeshes.set(k, arr);
-  });
 }
 
-function listAssets(assetToMeshes) {
-  const items = [];
-  assetToMeshes.forEach((meshes, assetKey) => {
-    if (!meshes || meshes.length === 0) return;
-    const { base, ext } = splitName(assetKey);
-    items.push({ assetKey, base, ext, count: meshes.length });
-  });
-  items.sort((a, b) =>
-    a.base.localeCompare(b.base, undefined, {
-      numeric: true,
-      sensitivity: 'base',
-    }),
-  );
-  return items;
+/** Many URDF assets come Z-up; we rectify to Y-up (Three default) once. */
+function rectifyUpForward(obj) {
+  if (!obj || obj.userData.__rectified) return;
+  obj.rotateX(-Math.PI / 2);
+  obj.userData.__rectified = true;
+  obj.updateMatrixWorld(true);
 }
 
-function splitName(key) {
-  const clean = String(key || '').split('?')[0].split('#')[0];
-  const base = clean.split('/').pop();
-  const dot = base.lastIndexOf('.');
-  return {
-    base: dot >= 0 ? base.slice(0, dot) : base,
-    ext: dot >= 0 ? base.slice(dot + 1).toLowerCase() : '',
-  };
-}
-
-function isolateAsset(core, assetToMeshes, assetKey) {
-  const meshes = assetToMeshes.get(assetKey) || [];
-  if (!core.robot) return;
-
-  core.robot.traverse((o) => {
-    if (o.isMesh && o.geometry) o.visible = false;
-  });
-  meshes.forEach((m) => {
-    m.visible = true;
-  });
-
-  frameMeshes(core, meshes);
-}
-
-function showAll(core) {
-  if (!core.robot) return;
-  core.robot.traverse((o) => {
-    if (o.isMesh && o.geometry) o.visible = true;
-  });
-  if (core.fitAndCenter) core.fitAndCenter(core.robot, 1.06);
-}
-
-function frameMeshes(core, meshes) {
-  if (!meshes || meshes.length === 0) return;
-
-  const box = new THREE.Box3();
-  const tmp = new THREE.Box3();
-  let has = false;
-
-  meshes.forEach((m) => {
-    if (!m) return;
-    tmp.setFromObject(m);
-    if (!has) {
-      box.copy(tmp);
-      has = true;
-    } else {
-      box.union(tmp);
-    }
-  });
-
-  if (!has) return;
-
+/** Compute a padded bounding box for an object */
+function getObjectBounds(object, pad = 1.0) {
+  const box = new THREE.Box3().setFromObject(object);
+  if (box.isEmpty()) return null;
   const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3()).multiplyScalar(pad);
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
-
-  const cam = core.camera;
-  const ctrl = core.controls;
-
-  if (cam.isPerspectiveCamera) {
-    const fov = (cam.fov || 60) * Math.PI / 180;
-    const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
-
-    cam.near = Math.max(maxDim / 1000, 0.001);
-    cam.far = Math.max(maxDim * 1500, 1500);
-    cam.updateProjectionMatrix();
-
-    const dir = new THREE.Vector3(1, 0.7, 1).normalize();
-    cam.position.copy(center.clone().add(dir.multiplyScalar(dist)));
-  } else {
-    cam.left = -maxDim;
-    cam.right = maxDim;
-    cam.top = maxDim;
-    cam.bottom = -maxDim;
-    cam.near = Math.max(maxDim / 1000, 0.001);
-    cam.far = Math.max(maxDim * 1500, 1500);
-    cam.updateProjectionMatrix();
-    cam.position.copy(
-      center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)),
-    );
-  }
-
-  if (ctrl) {
-    ctrl.target.copy(center);
-    ctrl.update();
-  }
+  return { box, center, size, maxDim };
 }
 
-/* ============= Offscreen thumbnails: componente + ISO robot ============= */
+/** Fit an object to the given camera+controls */
+function fitAndCenter(camera, controls, object, pad = 1.08) {
+  const b = getObjectBounds(object, pad);
+  if (!b) return false;
 
-function buildOffscreenForThumbnails(core) {
-  if (!core.robot) return null;
+  const { center, maxDim } = b;
 
-  const OFF_W = 640;
-  const OFF_H = 480;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = OFF_W;
-  canvas.height = OFF_H;
-
-  const renderer = new THREE.WebGLRenderer({
-    canvas,
-    antialias: true,
-    preserveDrawingBuffer: true,
-  });
-
-  renderer.setSize(OFF_W, OFF_H, false);
-
-  if (core.renderer) {
-    renderer.physicallyCorrectLights =
-      core.renderer.physicallyCorrectLights ?? true;
-    renderer.toneMapping = core.renderer.toneMapping;
-    renderer.toneMappingExposure =
-      core.renderer.toneMappingExposure ?? 1.0;
-
-    if ('outputColorSpace' in renderer && 'outputColorSpace' in core.renderer) {
-      renderer.outputColorSpace = core.renderer.outputColorSpace;
-    } else if ('outputEncoding' in renderer && 'outputEncoding' in core.renderer) {
-      renderer.outputEncoding = core.renderer.outputEncoding;
-    }
-
-    renderer.shadowMap.enabled = core.renderer.shadowMap?.enabled ?? false;
-    renderer.shadowMap.type = core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
-  }
-
-  const baseScene = new THREE.Scene();
-  baseScene.background =
-    core.scene?.background ?? new THREE.Color(0xffffff);
-  baseScene.environment = core.scene?.environment ?? null;
-
-  const amb = new THREE.AmbientLight(0xffffff, 0.95);
-  const dir = new THREE.DirectionalLight(0xffffff, 1.1);
-  dir.position.set(2.5, 2.5, 2.5);
-  baseScene.add(amb, dir);
-
-  const camera = new THREE.PerspectiveCamera(
-    60,
-    OFF_W / OFF_H,
-    0.01,
-    10000,
-  );
-
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-  const ready = (async () => {
-    await sleep(400);
-    renderer.render(baseScene, camera);
-    debugLog('[Thumbs] Offscreen primed');
-  })();
-
-  function buildCloneAndMap() {
-    const scene = baseScene.clone();
-    scene.background = baseScene.background;
-    scene.environment = baseScene.environment;
-
-    const robotClone = core.robot.clone(true);
-    scene.add(robotClone);
-
-    robotClone.traverse((o) => {
-      if (o.isMesh && o.material) {
-        if (Array.isArray(o.material)) {
-          o.material = o.material.map((m) => m.clone());
-        } else {
-          o.material = o.material.clone();
-        }
-        o.material.needsUpdate = true;
-      }
-    });
-
-    const cloneMap = new Map();
-    robotClone.traverse((o) => {
-      const key = o?.userData?.__assetKey;
-      if (key && o.isMesh && o.geometry) {
-        const arr = cloneMap.get(key) || [];
-        arr.push(o);
-        cloneMap.set(key, arr);
-      }
-    });
-
-    return { scene, robotClone, cloneMap };
-  }
-
-  function snapshotRobotIso() {
-    const scene = baseScene.clone();
-    scene.background = baseScene.background;
-    scene.environment = baseScene.environment;
-
-    const robotClone = core.robot.clone(true);
-    scene.add(robotClone);
-
-    robotClone.traverse((o) => {
-      if (o.isMesh && o.material) {
-        if (Array.isArray(o.material)) {
-          o.material = o.material.map((m) => m.clone());
-        } else {
-          o.material = o.material.clone();
-        }
-        o.material.needsUpdate = true;
-      }
-    });
-
-    const box = new THREE.Box3().setFromObject(robotClone);
-    if (!isFinite(box.max.x) || !isFinite(box.max.y) || !isFinite(box.max.z)) {
-      debugLog('[Thumbs] snapshotRobotIso box inválido');
-      return null;
-    }
-
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = maxDim * 2.4;
-
+  if (camera.isPerspectiveCamera) {
+    // distance heuristic robust across FOVs
+    const fov = (camera.fov || 60) * Math.PI / 180;
+    const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
     camera.near = Math.max(maxDim / 1000, 0.001);
     camera.far = Math.max(maxDim * 1500, 1500);
     camera.updateProjectionMatrix();
-
-    const az = Math.PI * 0.28;
-    const el = Math.PI * 0.22;
-    const dirV = new THREE.Vector3(
-      Math.cos(el) * Math.cos(az),
-      Math.sin(el),
-      Math.cos(el) * Math.sin(az),
-    ).multiplyScalar(dist);
-
-    camera.position.copy(center.clone().add(dirV));
-    camera.lookAt(center);
-
-    renderer.render(scene, camera);
-    const url = canvas.toDataURL('image/png');
-    return url;
-  }
-
-  function snapshotAsset(assetKey) {
-    const { scene, robotClone, cloneMap } = buildCloneAndMap();
-    const meshes = cloneMap.get(assetKey) || [];
-
-    if (!meshes.length) {
-      debugLog('[Thumbs] snapshotAsset sin meshes para', assetKey);
-      return null;
+    // keep direction (if any); otherwise use iso-ish
+    const dir = camera.position.clone().sub(controls.target || new THREE.Vector3()).normalize();
+    if (!isFinite(dir.lengthSq()) || dir.lengthSq() < 1e-10) {
+      dir.set(1, 0.7, 1).normalize();
     }
-
-    robotClone.traverse((o) => {
-      if (o.isMesh && o.geometry) o.visible = false;
-    });
-    meshes.forEach((m) => {
-      m.visible = true;
-    });
-
-    const box = new THREE.Box3();
-    const tmp = new THREE.Box3();
-    let has = false;
-
-    meshes.forEach((m) => {
-      tmp.setFromObject(m);
-      if (!has) {
-        box.copy(tmp);
-        has = true;
-      } else {
-        box.union(tmp);
-      }
-    });
-
-    if (!has) {
-      debugLog('[Thumbs] snapshotAsset box vacío para', assetKey);
-      return null;
-    }
-
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = maxDim * 2.0;
-
+    camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
+  } else if (camera.isOrthographicCamera) {
+    // set ortho frustum around object (and at least around grid size 10 => half 5)
+    const aspect = Math.max(1e-6, (controls?.domElement?.clientWidth || 1) / (controls?.domElement?.clientHeight || 1));
+    const minSpan = 5 * Math.SQRT2;
+    const span = Math.max(maxDim, minSpan);
+    camera.left = -span * aspect;
+    camera.right = span * aspect;
+    camera.top = span;
+    camera.bottom = -span;
     camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far = Math.max(maxDim * 1000, 1000);
+    camera.far = Math.max(maxDim * 1500, 1500);
     camera.updateProjectionMatrix();
-
-    const az = Math.PI * 0.25;
-    const el = Math.PI * 0.20;
-    const dirV = new THREE.Vector3(
-      Math.cos(el) * Math.cos(az),
-      Math.sin(el),
-      Math.cos(el) * Math.sin(az),
-    ).multiplyScalar(dist);
-
-    camera.position.copy(center.clone().add(dirV));
-    camera.lookAt(center);
-
-    renderer.render(scene, camera);
-    const url = canvas.toDataURL('image/png');
-    return url;
+    camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
   }
 
-  return {
-    async thumbnail(assetKey) {
-      try {
-        await ready;
-        const url = snapshotAsset(assetKey);
-        debugLog('[Thumbs] thumbnail', assetKey, !!url);
-        return url;
-      } catch (e) {
-        debugLog('[Thumbs] Error thumbnail', assetKey, String(e));
-        return null;
-      }
-    },
-    async iso() {
-      try {
-        await ready;
-        const url = snapshotRobotIso();
-        debugLog('[Thumbs] iso robot', !!url);
-        return url;
-      } catch (e) {
-        debugLog('[Thumbs] iso error', String(e));
-        return null;
-      }
-    },
-    destroy() {
-      try { renderer.dispose(); } catch (_) {}
-      try { baseScene.clear(); } catch (_) {}
-    },
-  };
+  controls.target.copy(center);
+  controls.update();
+  return true;
 }
 
-/* ================= IA opt-in: describe_component_images ================= */
+/** Build ground, grid, axes helpers (hidden by default) */
+function buildHelpers() {
+  const group = new THREE.Group();
 
-function bootstrapComponentDescriptions(app, assetToMeshes, off) {
-  debugLog('[IA] bootstrapComponentDescriptions start');
+  // Grid (teal-ish defaults; can be recolored by UI later)
+  const grid = new THREE.GridHelper(10, 20, 0x0ea5a6, 0x14b8b9);
+  grid.visible = false;
+  group.add(grid);
 
-  if (!off || typeof off.thumbnail !== 'function') {
-    debugLog('[IA] Offscreen no disponible; cancelando IA');
-    return;
-  }
+  // Ground (only useful if shadows are enabled)
+  const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
+  groundMat.depthWrite = false; // IMPORTANT: prevents “cutting” artifacts with transparent modes + shadows
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.0001;
+  ground.receiveShadow = false;
+  ground.visible = false;
+  group.add(ground);
 
-  const hasColab =
-    typeof window !== 'undefined' &&
-    window.google &&
-    window.google.colab &&
-    window.google.colab.kernel &&
-    typeof window.google.colab.kernel.invokeFunction === 'function';
+  // Axes
+  const axes = new THREE.AxesHelper(1);
+  axes.visible = false;
+  group.add(axes);
 
-  debugLog('[IA] Colab bridge?', hasColab);
-  if (!hasColab) return;
-
-  const items = listAssets(assetToMeshes);
-  debugLog('[IA] Componentes a describir', items.length);
-  if (!items.length) return;
-
-  (async () => {
-    try {
-      const entries = [];
-
-      // 1) ISO del robot completo
-      if (typeof off.iso === 'function') {
-        try {
-          const isoUrl = await off.iso();
-          if (isoUrl) {
-            const isoB64 = await makeApproxSizedBase64(isoUrl, 8);
-            if (isoB64) {
-              entries.push({
-                key: '__robot_iso__',
-                name: 'robot_iso',
-                index: -1,
-                image_b64: isoB64,
-              });
-              debugLog('[IA] __robot_iso__ agregado al payload IA');
-            }
-          }
-        } catch (e) {
-          debugLog('[IA] Error generando ISO robot', String(e));
-        }
-      }
-
-      // 2) Componentes
-      let idx = 0;
-      for (const ent of items) {
-        try {
-          const url = await off.thumbnail(ent.assetKey);
-          if (!url) continue;
-
-          const b64 = await makeApproxSizedBase64(url, 5);
-          if (!b64) continue;
-
-          entries.push({
-            key: ent.assetKey,
-            name: ent.base,
-            index: idx,
-            image_b64: b64,
-          });
-          idx += 1;
-        } catch (e) {
-          debugLog('[IA] Error thumb IA', ent.assetKey, String(e));
-        }
-      }
-
-      debugLog('[IA] entries generadas', entries.length);
-      if (!entries.length) return;
-
-      let res;
-      try {
-        res = await window.google.colab.kernel.invokeFunction(
-          'describe_component_images',
-          [entries],
-          {},
-        );
-        debugLog('[IA] invokeFunction OK', res);
-      } catch (e) {
-        debugLog('[IA] invokeFunction error', String(e));
-        return;
-      }
-
-      const map = extractDescMap(res);
-      debugLog('[IA] parsed map', map);
-
-      if (map && typeof map === 'object' && Object.keys(map).length) {
-        applyIaDescriptionsToApp(app, map);
-      } else {
-        debugLog('[IA] Respuesta IA sin mapa utilizable');
-      }
-    } catch (err) {
-      debugLog('[IA] Error en bootstrapComponentDescriptions', String(err));
-    }
-  })();
-}
-
-/* ====== extractDescMap / parseMaybePythonDict / applyIaDescriptions ===== */
-
-function extractDescMap(res) {
-  if (!res) return null;
-
-  let data = res.data ?? res;
-
-  // Caso Colab típico: data['application/json']
-  if (
-    data &&
-    typeof data === 'object' &&
-    data['application/json'] &&
-    typeof data['application/json'] === 'object'
-  ) {
-    return data['application/json'];
-  }
-
-  // Caso actual: data['text/plain'] = "{'base.dae': '...'}"
-  if (
-    data &&
-    typeof data === 'object' &&
-    typeof data['text/plain'] === 'string'
-  ) {
-    const raw = data['text/plain'].trim();
-    const parsed = parseMaybePythonDict(raw);
-    if (parsed) return parsed;
-  }
-
-  // Si es string plano, intentar parsear igual
-  if (typeof data === 'string') {
-    const parsed = parseMaybePythonDict(data.trim());
-    if (parsed) return parsed;
-  }
-
-  // Si ya es objeto razonable, úsalo
-  if (
-    data &&
-    typeof data === 'object' &&
-    !Array.isArray(data) &&
-    !(Object.keys(data).length === 1 && 'text/plain' in data)
-  ) {
-    return data;
-  }
-
-  // Array de objetos: tomar el primero
-  if (
-    Array.isArray(data) &&
-    data.length &&
-    typeof data[0] === 'object'
-  ) {
-    return data[0];
-  }
-
-  return null;
+  return { group, grid, ground, axes };
 }
 
 /**
- * ✅ Nueva versión robusta:
- *  - Soporta dict Python: {'base.dae': '...'}
- *  - Soporta JSON válido.
- *  - Fallback con Function(...) sólo en este contexto controlado.
+ * Minimal TrackballControls (UMD-friendly) to allow full 360° rotation in any direction,
+ * while keeping the SAME “smooth” feel (inertia) for rotate + pan + zoom.
+ * API surface used by this project:
+ *  - controls.object
+ *  - controls.domElement
+ *  - controls.enabled
+ *  - controls.target (THREE.Vector3)
+ *  - controls.update()
+ *  - controls.handleResize() (optional)
  */
-function parseMaybePythonDict(raw) {
-  if (!raw) return null;
-  raw = String(raw).trim();
-  if (!raw.startsWith('{') || !raw.endsWith('}')) return null;
+class TrackballControls {
+  constructor(object, domElement) {
+    this.object = object;
+    this.domElement = domElement;
 
-  // 1) Intento JSON directo
-  try {
-    const j = JSON.parse(raw);
-    if (j && typeof j === 'object') return j;
-  } catch (_) {}
+    this.enabled = true;
 
-  // 2) Intento: reemplazar sintaxis Python -> JS y evaluar de forma controlada
-  try {
-    let expr = raw;
+    this.rotateSpeed = 4.0;
+    this.zoomSpeed = 1.2;
+    this.panSpeed = 0.8;
 
-    // Normalizar booleanos / None
-    expr = expr.replace(/\bNone\b/g, 'null');
-    expr = expr.replace(/\bTrue\b/g, 'true');
-    expr = expr.replace(/\bFalse\b/g, 'false');
+    // If false -> inertia after releasing pointer (smooth)
+    this.staticMoving = false;
+    this.dynamicDampingFactor = 0.15;
 
-    // Si usa comillas simples tipo dict Python, no lo tocamos a mano campo por campo:
-    // dejamos que el motor JS lo evalue como objeto literal.
-    // Ejemplo: {'base.dae': 'texto'} es válido en new Function("return (...)").
-    const obj = new Function('return (' + expr + ')')();
-    if (obj && typeof obj === 'object') return obj;
-  } catch (_) {}
+    this.target = new THREE.Vector3();
 
-  // 3) Fallback muy simple: intentar extraer pares 'k': 'v'
-  try {
-    const out = {};
-    const inner = raw.slice(1, -1);
-    const regex = /'([^']+)'\s*:\s*'([^']*)'/g;
-    let m;
-    while ((m = regex.exec(inner))) {
-      const key = m[1];
-      let val = m[2] || '';
-      val = val.replace(/\\n/g, '\n');
-      out[key] = val;
-    }
-    if (Object.keys(out).length) return out;
-  } catch (_) {}
+    this._state = 0; // 0 none, 1 rotate, 2 zoom, 3 pan
+    this._rect = null;
 
-  return null;
-}
+    this._start = new THREE.Vector2();
+    this._end = new THREE.Vector2();
 
-function applyIaDescriptionsToApp(app, map) {
-  if (!map || typeof map !== 'object') return;
+    this._pointerId = null;
 
-  if (!app.componentDescriptions || typeof app.componentDescriptions !== 'object') {
-    app.componentDescriptions = {};
-  }
+    // inertia (rotate + pan + zoom)
+    this._lastAxis = new THREE.Vector3(1, 0, 0);
+    this._lastAngle = 0;
+    this._lastPan = new THREE.Vector3(0, 0, 0);
+    this._lastDolly = 0;
 
-  const store = app.componentDescriptions;
+    this._onContextMenu = (e) => e.preventDefault();
 
-  for (const [k, v] of Object.entries(map)) {
-    if (typeof v === 'string' && v.trim()) {
-      store[String(k).toLowerCase()] = v.trim();
-    }
-  }
+    this._onWheel = (e) => {
+      if (!this.enabled) return;
+      e.preventDefault();
 
-  if (!app.__patchedGetComponentDescription) {
-    const orig = app.getComponentDescription
-      ? app.getComponentDescription.bind(app)
-      : null;
+      // FIX: wheel was inverted — invert delta so it matches the original feel
+      const delta = -(e.deltaY || 0);
 
-    app.getComponentDescription = function (assetKey, index = 0) {
-      const cd = app.componentDescriptions || {};
-      const values = Object.values(cd);
-
-      if (assetKey) {
-        const key = String(assetKey).toLowerCase();
-        if (cd[key]) return cd[key];
-
-        const base = key.split(/[\\/]/).pop();
-        if (cd[base]) return cd[base];
-
-        for (const k of Object.keys(cd)) {
-          if (k.endsWith('/' + base)) return cd[k];
-        }
-      }
-
-      if (orig) {
-        const fromOrig = orig(assetKey, index);
-        if (fromOrig) return fromOrig;
-      }
-
-      return values[index] || values[0] || '';
+      this._dolly(delta);
+      this.update();
     };
 
-    app.__patchedGetComponentDescription = true;
+    this._onPointerDown = (e) => {
+      if (!this.enabled) return;
+      if (this._pointerId !== null) return;
+      this._pointerId = e.pointerId;
+
+      // match common CAD defaults: L=rotate, M=zoom, R=pan
+      this._state = (e.button === 0) ? 1 : (e.button === 1) ? 2 : 3;
+
+      this._start.set(e.clientX, e.clientY);
+      this._end.copy(this._start);
+
+      // stop inertia when user re-engages
+      this._lastAngle = 0;
+      this._lastPan.set(0, 0, 0);
+      this._lastDolly = 0;
+
+      try { this.domElement.setPointerCapture(e.pointerId); } catch (_) {}
+      window.addEventListener('pointermove', this._onPointerMove, true);
+      window.addEventListener('pointerup', this._onPointerUp, true);
+    };
+
+    this._onPointerMove = (e) => {
+      if (!this.enabled) return;
+      if (this._pointerId !== e.pointerId) return;
+
+      this._end.set(e.clientX, e.clientY);
+
+      if (this._state === 1) {
+        this._rotate(this._start, this._end);
+      } else if (this._state === 2) {
+        const dy = (this._end.y - this._start.y);
+        // Keep zoom drag consistent with wheel (up = zoom in)
+        this._dolly(-dy * 4);
+      } else if (this._state === 3) {
+        this._pan(this._start, this._end);
+      }
+
+      this._start.copy(this._end);
+      this.update();
+    };
+
+    this._onPointerUp = (e) => {
+      if (this._pointerId !== e.pointerId) return;
+      this._pointerId = null;
+      this._state = 0;
+
+      window.removeEventListener('pointermove', this._onPointerMove, true);
+      window.removeEventListener('pointerup', this._onPointerUp, true);
+      try { this.domElement.releasePointerCapture(e.pointerId); } catch (_) {}
+    };
+
+    this.domElement.addEventListener('contextmenu', this._onContextMenu);
+    this.domElement.addEventListener('wheel', this._onWheel, { passive: false });
+    this.domElement.addEventListener('pointerdown', this._onPointerDown, true);
   }
 
-  const detail = { map: app.componentDescriptions };
-
-  if (typeof app.emit === 'function') {
-    try {
-      app.emit('ia_descriptions_ready', detail);
-    } catch (_) {}
+  handleResize() {
+    this._rect = this.domElement.getBoundingClientRect();
   }
 
-  try {
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(
-        new CustomEvent('ia_descriptions_ready', { detail }),
-      );
+  update() {
+    // apply inertia (smooth) after release — rotate + pan + zoom
+    if (!this.staticMoving && this._state === 0) {
+
+      // ROTATE inertia
+      if (Math.abs(this._lastAngle) > 1e-6) {
+        this._applyRotation(this._lastAxis, this._lastAngle);
+        this._lastAngle *= (1.0 - this.dynamicDampingFactor);
+        if (Math.abs(this._lastAngle) < 1e-6) this._lastAngle = 0;
+      }
+
+      // PAN inertia
+      if (this._lastPan.lengthSq() > 1e-12) {
+        this.object.position.add(this._lastPan);
+        this.target.add(this._lastPan);
+
+        this._lastPan.multiplyScalar(1.0 - this.dynamicDampingFactor);
+        if (this._lastPan.lengthSq() < 1e-12) this._lastPan.set(0, 0, 0);
+      }
+
+      // ZOOM inertia
+      if (Math.abs(this._lastDolly) > 1e-6) {
+        this._dolly(this._lastDolly);
+        this._lastDolly *= (1.0 - this.dynamicDampingFactor);
+        if (Math.abs(this._lastDolly) < 1e-6) this._lastDolly = 0;
+      }
     }
-  } catch (_) {}
 
-  debugLog(
-    '[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido',
-    detail,
+    this.object.lookAt(this.target);
+  }
+
+  _getRect() {
+    if (!this._rect) this.handleResize();
+    return this._rect;
+  }
+
+  _getNDC(clientX, clientY) {
+    const r = this._getRect();
+    const x = (clientX - r.left) / Math.max(1, r.width);
+    const y = (clientY - r.top) / Math.max(1, r.height);
+    return new THREE.Vector2(x * 2 - 1, -(y * 2 - 1));
+  }
+
+  _projectOnSphere(ndc) {
+    const v = new THREE.Vector3(ndc.x, ndc.y, 0);
+    const d2 = v.x * v.x + v.y * v.y;
+    if (d2 <= 1.0) {
+      v.z = Math.sqrt(1.0 - d2);
+    } else {
+      v.normalize();
+      v.z = 0.0;
+    }
+    return v;
+  }
+
+  _applyRotation(axisWorld, angle) {
+    const q = new THREE.Quaternion().setFromAxisAngle(axisWorld, angle);
+
+    const eye = this.object.position.clone().sub(this.target);
+    eye.applyQuaternion(q);
+
+    this.object.up.applyQuaternion(q);
+    this.object.position.copy(this.target.clone().add(eye));
+  }
+
+  _rotate(startPx, endPx) {
+    const a = this._projectOnSphere(this._getNDC(startPx.x, startPx.y));
+    const b = this._projectOnSphere(this._getNDC(endPx.x, endPx.y));
+
+    const axisCam = new THREE.Vector3().crossVectors(a, b);
+    const axisLen = axisCam.length();
+    if (axisLen < 1e-8) return;
+    axisCam.normalize();
+
+    const dot = THREE.MathUtils.clamp(a.dot(b), -1, 1);
+    let angle = Math.acos(dot) * this.rotateSpeed;
+
+    // dragging right should feel like model rotates “with” the drag (CAD-like)
+    angle = -angle;
+
+    // axis in world space
+    const axisWorld = axisCam.clone().applyQuaternion(this.object.quaternion).normalize();
+
+    this._applyRotation(axisWorld, angle);
+
+    // inertia seed
+    this._lastAxis.copy(axisWorld);
+    this._lastAngle = angle;
+  }
+
+  _dolly(delta) {
+    const zoomFactor = Math.pow(0.95, (delta * this.zoomSpeed) * 0.01);
+
+    if (this.object.isPerspectiveCamera) {
+      const eye = this.object.position.clone().sub(this.target);
+      const newLen = Math.max(1e-6, eye.length() * zoomFactor);
+      eye.setLength(newLen);
+      this.object.position.copy(this.target.clone().add(eye));
+    } else if (this.object.isOrthographicCamera) {
+      this.object.zoom = Math.max(1e-3, this.object.zoom / zoomFactor);
+      this.object.updateProjectionMatrix();
+    }
+
+    // inertia seed
+    this._lastDolly = delta;
+  }
+
+  _pan(startPx, endPx) {
+    const r = this._getRect();
+    const dx = (endPx.x - startPx.x);
+    const dy = (endPx.y - startPx.y);
+
+    const h = Math.max(1, r.height);
+
+    let scale = 1.0;
+    if (this.object.isPerspectiveCamera) {
+      const eye = this.object.position.clone().sub(this.target);
+      const dist = eye.length();
+      const fov = (this.object.fov || 60) * Math.PI / 180;
+      const worldPerPixel = 2 * dist * Math.tan(fov / 2) / h;
+      scale = worldPerPixel;
+    } else if (this.object.isOrthographicCamera) {
+      const worldPerPixel = (this.object.top - this.object.bottom) / h;
+      scale = worldPerPixel;
+    }
+
+    const panX = -dx * scale * this.panSpeed;
+    const panY = dy * scale * this.panSpeed;
+
+    const te = this.object.matrix.elements;
+    const xAxis = new THREE.Vector3(te[0], te[1], te[2]);
+    const yAxis = new THREE.Vector3(te[4], te[5], te[6]);
+
+    const pan = xAxis.multiplyScalar(panX).add(yAxis.multiplyScalar(panY));
+
+    this.object.position.add(pan);
+    this.target.add(pan);
+
+    // inertia seed
+    this._lastPan.copy(pan);
+  }
+}
+
+export function createViewer({ container, background = 0xffffff, pixelRatio } = {}) {
+  assertThree();
+
+  const rootEl = container || document.body;
+  if (getComputedStyle(rootEl).position === 'static') {
+    rootEl.style.position = 'relative';
+  }
+
+  // Scene
+  const scene = new THREE.Scene();
+  if (background === null || typeof background === 'undefined') {
+    scene.background = null;
+  } else {
+    scene.background = new THREE.Color(background);
+  }
+
+  // Cameras
+  const aspect = Math.max(1e-6, (rootEl.clientWidth || 1) / (rootEl.clientHeight || 1));
+  const persp = new THREE.PerspectiveCamera(75, aspect, 0.01, 10000);
+  persp.position.set(0, 0, 3);
+
+  const orthoSize = 2.5;
+  const ortho = new THREE.OrthographicCamera(
+    -orthoSize * aspect, orthoSize * aspect,
+    orthoSize, -orthoSize,
+    0.01, 10000
   );
-}
+  ortho.position.set(0, 0, 3);
 
-/* =================== Reducción thumbnails ~5KB =================== */
+  let camera = persp;
 
-async function makeApproxSizedBase64(dataURL, targetKB = 5) {
-  try {
-    const maxBytes = targetKB * 1024;
+  // Renderer
+  const renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    preserveDrawingBuffer: false
+  });
+  renderer.setPixelRatio(pixelRatio || window.devicePixelRatio || 1);
+  renderer.setSize(rootEl.clientWidth || 1, rootEl.clientHeight || 1);
+  renderer.domElement.style.width = '100%';
+  renderer.domElement.style.height = '100%';
+  renderer.domElement.style.display = 'block';
+  renderer.domElement.style.touchAction = 'none';
+  rootEl.appendChild(renderer.domElement);
 
-    const resp = await fetch(dataURL);
-    const blob = await resp.blob();
+  // Shadows OFF by default
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    const img = document.createElement('img');
-    const u = URL.createObjectURL(blob);
+  // Controls
+  const controls = new TrackballControls(camera, renderer.domElement);
+  controls.rotateSpeed = 4.0;
+  controls.zoomSpeed = 1.4;
+  controls.panSpeed = 0.8;
+  controls.staticMoving = false;
+  controls.dynamicDampingFactor = 0.15;
 
-    await new Promise((res, rej) => {
-      img.onload = () => res();
-      img.onerror = rej;
-      img.src = u;
-    });
+  // Lights
+  const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.7);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.05);
+  dir.position.set(3, 4, 2);
+  dir.castShadow = false;
+  dir.shadow.mapSize.set(2048, 2048);
+  dir.shadow.camera.near = 0.1;
+  dir.shadow.camera.far = 1000;
+  scene.add(hemi);
+  scene.add(dir);
 
-    const ratio = Math.min(
-      1,
-      Math.max(0.05, maxBytes / (blob.size || maxBytes)),
-    );
-    const scale = Math.sqrt(ratio);
+  // Helpers
+  const helpers = buildHelpers();
+  scene.add(helpers.group);
 
-    const w = Math.max(32, Math.floor(img.width * scale));
-    const h = Math.max(32, Math.floor(img.height * scale));
-
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, w, h);
-    ctx.drawImage(img, 0, 0, w, h);
-
-    URL.revokeObjectURL(u);
-
-    const out = canvas.toDataURL('image/png');
-    const b64 = out.split(',')[1] || '';
-    if (!b64) return null;
-
-    debugLog(
-      '[IA] makeApproxSizedBase64 bytes ~',
-      Math.floor((b64.length * 3) / 4),
-    );
-    return b64;
-  } catch (e) {
-    debugLog('[IA] makeApproxSizedBase64 error', String(e));
-    return null;
-  }
-}
-
-/* ================= Click sound + global hook ================= */
-
-function installClickSound(dataURL) {
-  if (!dataURL || typeof dataURL !== 'string') return;
-
-  let ctx = null;
-  let buf = null;
-
-  async function ensure() {
-    if (!ctx) {
-      ctx =
-        new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (!buf) {
-      const resp = await fetch(dataURL);
-      const arr = await resp.arrayBuffer();
-      buf = await ctx.decodeAudioData(arr);
-    }
+  function sizeAxesHelper(maxDim, center) {
+    helpers.axes.scale.setScalar(maxDim * 0.75);
+    helpers.axes.position.copy(center || new THREE.Vector3());
   }
 
-  function play() {
-    if (!ctx) {
-      ctx =
-        new (window.AudioContext || window.webkitAudioContext)();
+  // Handle resizes
+  function onResize() {
+    const w = rootEl.clientWidth || 1;
+    const h = rootEl.clientHeight || 1;
+    const asp = Math.max(1e-6, w / h);
+    if (camera.isPerspectiveCamera) {
+      camera.aspect = asp;
+    } else {
+      const size = Math.abs(camera.top) || orthoSize;
+      camera.left = -size * asp;
+      camera.right = size * asp;
+      camera.top = size;
+      camera.bottom = -size;
     }
-    if (ctx.state === 'suspended') ctx.resume();
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+    if (controls && typeof controls.handleResize === 'function') controls.handleResize();
+  }
+  window.addEventListener('resize', onResize);
 
-    if (!buf) {
-      ensure().then(play).catch(() => {});
-      return;
+  // URDF loader & current robot
+  const urdfLoader = new URDFLoader();
+  let robotModel = null;
+
+  /** Load URDF content (string) with an external loadMeshCb(path, manager, onComplete) */
+  function loadURDF(urdfText, { loadMeshCb } = {}) {
+    if (robotModel) {
+      try { scene.remove(robotModel); } catch (_) {}
+      robotModel = null;
+    }
+    if (!urdfText || typeof urdfText !== 'string') return null;
+
+    if (typeof loadMeshCb === 'function') {
+      urdfLoader.loadMeshCb = loadMeshCb;
     }
 
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
+    let robot = null;
     try {
-      src.start();
-    } catch (_) {}
+      robot = urdfLoader.parse(urdfText);
+    } catch (e) {
+      console.warn('[ViewerCore] URDF parse error:', e);
+      return null;
+    }
+
+    if (robot && robot.isObject3D) {
+      robotModel = robot;
+      scene.add(robotModel);
+      rectifyUpForward(robotModel);
+      applyDoubleSided(robotModel);
+
+      // First fit
+      setTimeout(() => {
+        if (!robotModel) return;
+        const ok = fitAndCenter(camera, controls, robotModel, 1.06);
+        if (ok) {
+          const b = getObjectBounds(robotModel);
+          if (b) sizeAxesHelper(b.maxDim, b.center);
+        }
+      }, 50);
+    }
+    return robotModel;
   }
 
-  window.__urdf_click__ = play;
-}
+  /** Switch projection mode (Perspective|Orthographic) while preserving view as much as possible */
+  function setProjection(mode = 'Perspective') {
+    const w = rootEl.clientWidth || 1, h = rootEl.clientHeight || 1;
+    const asp = Math.max(1e-6, w / h);
 
-if (typeof window !== 'undefined') {
-  window.URDFViewer = window.URDFViewer || {};
-  window.URDFViewer.render = (opts) => {
-    const app = render(opts);
+    if (mode === 'Orthographic' && camera.isPerspectiveCamera) {
+      const t = controls.target.clone();
+      const v = camera.position.clone().sub(t);
+      const dist = v.length();
+      const dirN = v.clone().normalize();
+
+      const b = robotModel ? getObjectBounds(robotModel, 1.0) : null;
+      const minSpan = 5 * Math.SQRT2; // ensures grid size 10 never clips
+      const span = Math.max(orthoSize, (b ? b.maxDim : 0), minSpan);
+
+      ortho.left = -span * asp;
+      ortho.right = span * asp;
+      ortho.top = span;
+      ortho.bottom = -span;
+      ortho.near = Math.max(0.001, dist * 0.01);
+      ortho.far = Math.max(1000, dist * 50);
+      ortho.position.copy(t.clone().add(dirN.multiplyScalar(dist)));
+      ortho.updateProjectionMatrix();
+
+      controls.object = ortho;
+      camera = ortho;
+      controls.target.copy(t);
+      controls.update();
+    } else if (mode === 'Perspective' && camera.isOrthographicCamera) {
+      const t = controls.target.clone();
+      const v = camera.position.clone().sub(t);
+      const dist = v.length();
+      const dirN = v.clone().normalize();
+
+      persp.aspect = asp;
+      persp.near = Math.max(0.001, dist * 0.01);
+      persp.far = Math.max(1000, dist * 50);
+      persp.position.copy(t.clone().add(dirN.multiplyScalar(dist)));
+      persp.updateProjectionMatrix();
+
+      controls.object = persp;
+      camera = persp;
+      controls.target.copy(t);
+      controls.update();
+    }
+  }
+
+  /** Toggle helpers and shadows from upper layers (UI) */
+  function setSceneToggles({ grid, ground, axes, shadows } = {}) {
+    if (typeof grid === 'boolean') helpers.grid.visible = grid;
+    if (typeof ground === 'boolean') helpers.ground.visible = ground;
+
+    if (typeof axes === 'boolean') helpers.axes.visible = axes;
+
+    if (typeof shadows === 'boolean') {
+      renderer.shadowMap.enabled = !!shadows;
+      dir.castShadow = !!shadows;
+      if (robotModel) {
+        robotModel.traverse(o => {
+          if (o.isMesh && o.geometry) {
+            o.castShadow = !!shadows;
+            o.receiveShadow = !!shadows;
+          }
+        });
+      }
+    }
+    // Resize axes to object
+    if (helpers.axes.visible && robotModel) {
+      const b = getObjectBounds(robotModel);
+      if (b) sizeAxesHelper(b.maxDim, b.center);
+    }
+  }
+
+  /** Set background (int color) or null for transparent */
+  function setBackground(colorIntOrNull) {
+    if (colorIntOrNull === null || typeof colorIntOrNull === 'undefined') {
+      scene.background = null;
+    } else {
+      scene.background = new THREE.Color(colorIntOrNull);
+    }
+  }
+
+  /** Allow upper layer to adjust pixel ratio (e.g., for performance) */
+  function setPixelRatio(r) {
+    const pr = Math.max(0.5, Math.min(3, r || window.devicePixelRatio || 1));
+    renderer.setPixelRatio(pr);
+    onResize();
+  }
+
+  // Animation loop
+  let raf = null;
+  function animate() {
+    raf = requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  // Cleanup
+  function destroy() {
+    try { cancelAnimationFrame(raf); } catch (_) {}
+    try { window.removeEventListener('resize', onResize); } catch (_) {}
     try {
-      window.URDFViewer.__app = app;
+      const el = renderer?.domElement;
+      if (el && el.parentNode) el.parentNode.removeChild(el);
     } catch (_) {}
-    return app;
+    try { renderer?.dispose?.(); } catch (_) {}
+  }
+
+  // Public facade
+  return {
+    // Core Three.js objects
+    scene,
+    get camera() { return camera; },
+    renderer,
+    controls,
+
+    // Helpers group (in case UI needs references)
+    helpers,
+
+    // Current robot getter
+    get robot() { return robotModel; },
+
+    // APIs
+    loadURDF,
+    fitAndCenter: (obj, pad) => fitAndCenter(camera, controls, obj || robotModel, pad),
+    setProjection,
+    setSceneToggles,
+    setBackground,
+    setPixelRatio,
+    onResize,
+    destroy
   };
 }
