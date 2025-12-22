@@ -2,9 +2,9 @@
 # Puente Colab <-> JS para descripciones de piezas del URDF.
 #
 # Uso típico en Colab:
-#   from URDF_Render_Script import URDF_Render
-#   URDF_Render("URDFModel")                      # solo viewer
-#   URDF_Render("URDFModel", IA_Widgets=True)     # viewer + IA opt-in
+#   from URDF_Render_Script import URDF_Visualization
+#   URDF_Visualization("URDFModel")                      # solo viewer
+#   URDF_Visualization("URDFModel", IA_Widgets=True)     # viewer + IA opt-in
 #
 # Este script:
 #   - Busca /urdf y /meshes dentro de folder_path.
@@ -183,9 +183,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
               # Construir lista de imágenes: primero ISO (si existe), luego componente
               images = []
               if iso_b64:
-                  images.append(
-                      {"image_b64": iso_b64, "mime": "image/png"}
-                  )
+                  images.append({"image_b64": iso_b64, "mime": "image/png"})
               images.append({"image_b64": img_b64, "mime": "image/png"})
 
               # Prompt con contexto fuerte
@@ -204,10 +202,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   "responde con un máximo de 2 frases."
               )
 
-              payload = {
-                  "text": prompt,
-                  "images": images,
-              }
+              payload = {"text": prompt, "images": images}
 
               try:
                   r = requests.post(infer_url, json=payload, timeout=timeout)
@@ -217,9 +212,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   continue
 
               if r.status_code != 200:
-                  print(
-                      f"[Colab] API {r.status_code} para {key}: {r.text[:200]}"
-                  )
+                  print(f"[Colab] API {r.status_code} para {key}: {r.text[:200]}")
                   results[key] = ""
                   continue
 
@@ -230,12 +223,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   if txt.startswith("{") and txt.endswith("}"):
                       j = json.loads(txt)
                       if isinstance(j, dict):
-                          txt = (
-                              j.get("text")
-                              or j.get("message")
-                              or j.get("content")
-                              or txt
-                          )
+                          txt = (j.get("text") or j.get("message") or j.get("content") or txt)
               except Exception:
                   pass
 
@@ -256,19 +244,14 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
           # Guardado automático del notebook (best-effort)
           try:
               from google.colab import _message  # type: ignore
-
               _message.blocking_request("notebook.save", {})
               print("[Colab] 💾 Notebook guardado tras recibir descripciones IA.")
           except Exception as e:
-              print(
-                  f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}"
-              )
+              print(f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}")
 
           return results
 
-      output.register_callback(
-          "describe_component_images", _describe_component_images
-      )
+      output.register_callback("describe_component_images", _describe_component_images)
       _COLAB_CALLBACK_REGISTERED = True
       print(
           "[Colab] ✅ Callback 'describe_component_images' registrado "
@@ -276,9 +259,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
       )
 
   except Exception as e:
-      print(
-          f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}"
-      )
+      print(f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}")
 
 
 def URDF_Visualization(
@@ -515,8 +496,6 @@ def URDF_Visualization(
     </div>
   </div>
 
-
-
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
@@ -578,19 +557,30 @@ def URDF_Visualization(
     const branch   = {json.dumps(branch)};
     const compFile = {json.dumps(compFile)};
 
-    async function latestSha() {{
+    // ==========================================================
+    //  AUTO-COMMIT REAL (anti-cache): GitHub API -> RAW commit SHA
+    // ==========================================================
+    async function latestShaFull() {{
       try {{
-        const url = 'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
+        const url =
+          'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
+
         const r = await fetch(url, {{
           headers: {{ 'Accept': 'application/vnd.github+json' }},
           cache: 'no-store'
         }});
-        if (!r.ok) throw 0;
+
+        if (!r.ok) throw new Error('GitHub API status ' + r.status);
         const j = await r.json();
-        return (j.sha || '').slice(0, 7) || branch;
+        return (j.sha || '').trim(); // SHA completo (40 chars)
       }} catch (_e) {{
-        return branch;
+        return '';
       }}
+    }}
+
+    function rawUrl(ref) {{
+      // ref: sha completo o branch
+      return 'https://raw.githubusercontent.com/' + repo + '/' + ref + '/' + compFile;
     }}
 
     const SELECT_MODE = {sel_js};
@@ -609,16 +599,25 @@ def URDF_Visualization(
     }};
 
     let mod = null;
+
     try {{
-      const sha = await latestSha();
-      const base = 'https://cdn.jsdelivr.net/gh/' + repo + '@' + sha + '/';
-      mod = await import(base + compFile + '?v=' + Date.now());
-      console.debug('[URDF] Módulo viewer desde', sha);
-    }} catch (_e) {{
-      console.debug('[URDF] Fallback branch', branch);
-      mod = await import(
-        'https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now()
-      );
+      const shaFull = await latestShaFull();
+      if (!shaFull) throw new Error('No SHA from GitHub API');
+
+      const url = rawUrl(shaFull) + '?v=' + Date.now();
+      mod = await import(url);
+      console.debug('[URDF] Viewer desde RAW commit', shaFull.slice(0, 10), url);
+    }} catch (e1) {{
+      try {{
+        const url2 = rawUrl(branch) + '?v=' + Date.now();
+        mod = await import(url2);
+        console.debug('[URDF] Fallback RAW branch', branch, url2);
+      }} catch (e2) {{
+        const url3 =
+          'https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now();
+        mod = await import(url3);
+        console.debug('[URDF] Último fallback jsDelivr', branch, url3);
+      }}
     }}
 
     if (!mod || typeof mod.render !== 'function') {{
