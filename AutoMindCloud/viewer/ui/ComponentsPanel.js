@@ -246,7 +246,8 @@ export function createComponentsPanel(app, theme) {
       const img = document.createElement("img");
       applyStyles(img, thumbStyles(theme));
       img.alt = ent.base;
-      img.loading = "lazy";
+      img.loading = "eager";
+      img.decoding = "async";
 
       const meta = document.createElement("div");
 
