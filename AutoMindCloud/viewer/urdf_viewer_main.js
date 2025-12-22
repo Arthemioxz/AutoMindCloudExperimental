@@ -35,6 +35,8 @@ function debugLog(...args) {
 
 /* ============================ Render ============================ */
 
+debugLog('__USING_URDF_VIEWER_MAIN__', '2025-12-22_THUMBS_FIX_ACTIVE');
+
 export function render(opts = {}) {
   const {
     container,
