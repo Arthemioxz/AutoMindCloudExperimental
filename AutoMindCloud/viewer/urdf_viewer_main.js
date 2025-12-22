@@ -48,38 +48,40 @@ export function render(opts = {}) {
 
   debugLog('render() init', { selectMode, background, IA_Widgets });
 
-  // Wait until the URDF meshes stop arriving (assetToMeshes settles).
-  function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350) {
-    const start = performance.now();
-    let lastCount = -1;
-    let lastChange = performance.now();
 
-    function countNow() {
-      let n = 0;
-      try {
-        assetToMeshes.forEach((arr) => { n += (arr && arr.length) ? arr.length : 0; });
-      } catch (_) {}
-      return n;
-    }
+// Wait until the URDF meshes stop arriving (assetToMeshes settles).
+function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350) {
+  const start = performance.now();
+  let lastCount = -1;
+  let lastChange = performance.now();
 
-    return new Promise((resolve) => {
-      function tick() {
-        const now = performance.now();
-        const c = countNow();
-        if (c !== lastCount) {
-          lastCount = c;
-          lastChange = now;
-        }
-
-        const settled = (now - lastChange) >= quietMs;
-        const timeout = (now - start) >= maxWaitMs;
-
-        if (settled || timeout) resolve({ meshes: c, settled, timeout });
-        else requestAnimationFrame(tick);
-      }
-      requestAnimationFrame(tick);
-    });
+  function countNow() {
+    let n = 0;
+    try {
+      assetToMeshes.forEach((arr) => { n += (arr && arr.length) ? arr.length : 0; });
+    } catch (_) {}
+    return n;
   }
+
+  return new Promise((resolve) => {
+    function tick() {
+      const now = performance.now();
+      const c = countNow();
+      if (c !== lastCount) {
+        lastCount = c;
+        lastChange = now;
+      }
+
+      const settled = (now - lastChange) >= quietMs;
+      const timeout = (now - start) >= maxWaitMs;
+
+      if (settled || timeout) resolve({ meshes: c, settled, timeout });
+      else requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  });
+}
+
 
   // 1) Core viewer
   const _createViewer = (ViewerCore && (ViewerCore.createViewer || (ViewerCore.default && ViewerCore.default.createViewer))) || window.createViewer;
@@ -102,12 +104,6 @@ export function render(opts = {}) {
         if (o && o.isMesh) {
           o.userData = o.userData || {};
           o.userData.__assetKey = assetKey;
-          o.userData.assetKey = assetKey; // ✅ clave extra para robustez
-
-          if (!o.userData.filename) {
-            const q = String(assetKey || '').split('?')[0].split('#')[0];
-            o.userData.filename = q.split('/').pop();
-          }
         }
       });
     },
@@ -125,8 +121,7 @@ export function render(opts = {}) {
   debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
 
   // 4) Offscreen thumbnails
-  // ✅ PASAMOS assetToMeshes (antes se llamaba sin 2do parámetro)
-  const off = buildOffscreenForThumbnails(core, assetToMeshes);
+  const off = buildOffscreenForThumbnails(core);
   if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
 
   // 5) Interacción
@@ -206,25 +201,27 @@ export function render(opts = {}) {
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // 9) Precompute ALL component thumbnails on start (single offscreen viewer),
-  // then close the offscreen renderer to free GPU memory.
-  (async () => {
-    try {
-      if (!off || typeof off.primeAll !== 'function') return;
 
-      // Wait for URDF mesh loading to settle so the offscreen clone includes everything.
-      const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
-      debugLog('[Thumbs] settle', settle);
+// 9) Precompute ALL component thumbnails on start (single offscreen viewer),
+// then close the offscreen renderer to free GPU memory.
+(async () => {
+  try {
+    if (!off || typeof off.primeAll !== 'function') return;
 
-      const keys = Array.from(assetToMeshes.keys());
-      await off.primeAll(keys);
+    // Wait for URDF mesh loading to settle so the offscreen clone includes everything.
+    const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
+    debugLog('[Thumbs] settle', settle);
 
-      // If anything is listening (optional), notify thumbnails are ready.
-      try { window.dispatchEvent(new Event('thumbnails_ready')); } catch (_) {}
-    } catch (e) {
-      debugLog('[Thumbs] auto prime error', String(e));
-    }
-  })();
+    const keys = Array.from(assetToMeshes.keys());
+    await off.primeAll(keys);
+
+    // If anything is listening (optional), notify thumbnails are ready.
+    try { window.dispatchEvent(new Event('thumbnails_ready')); } catch (_) {}
+  } catch (e) {
+    debugLog('[Thumbs] auto prime error', String(e));
+  }
+})();
+
 
   // 8) Click sound opcional
   if (clickAudioDataURL) {
@@ -401,11 +398,13 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   function normalizeAssetKey(s) {
     if (!s) return '';
     let t = String(s).trim();
+    // quita query/hash
     t = t.split('?')[0].split('#')[0];
+    // quita package://
     t = t.replace(/^package:\/\//i, '');
+    // slashes uniformes
     t = t.replace(/\\/g, '/');
-    t = t.trim();
-    return t;
+    return t.trim();
   }
 
   function variantsForKey(path) {
@@ -414,8 +413,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     if (!raw) return [];
     const clean = normalizeAssetKey(raw);
     if (!clean) return [];
-    const lower = clean.toLowerCase();
 
+    const lower = clean.toLowerCase();
     const base = clean.split('/').pop();
     const baseLower = lower.split('/').pop();
 
@@ -430,7 +429,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const dot2 = baseLower.lastIndexOf('.');
     if (dot2 > 0) out.add(baseLower.slice(0, dot2));
 
-    // agrega sufijos de subpaths (para casos tipo meshes/foo.dae)
+    // agrega subpaths (por si viene con carpetas)
     const parts = lower.split('/');
     for (let i = 1; i < parts.length; i++) {
       const sub = parts.slice(i).join('/');
@@ -438,7 +437,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       out.add(sub.split('/').pop());
     }
 
-    return Array.from(out);
+    return Array.from(out).filter(Boolean);
   }
 
   function getCloneMeshesForAssetKey(ses, assetKey) {
@@ -493,7 +492,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
     // Escena de thumbnails (clon del robot)
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf3f4f6);
+    scene.background = new THREE.Color(0xffffff);
 
     const amb = new THREE.AmbientLight(0xffffff, 0.85);
     const dir = new THREE.DirectionalLight(0xffffff, 0.75);
@@ -503,15 +502,15 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const camera = new THREE.PerspectiveCamera(40, OFF_W / OFF_H, 0.001, 2000);
 
     const robotClone = core.robot.clone(true);
-
-    // Map assetKeyVariant -> [meshes...]
+    // Map keyVariant -> [meshes...]
     const cloneMap = new Map();
     robotClone.traverse((n) => {
       if (!n || !n.isMesh) return;
       n.castShadow = false;
       n.receiveShadow = false;
 
-      const keyRaw = n.userData && (n.userData.__assetKey || n.userData.assetKey || n.userData.filename);
+      const ud = n.userData || {};
+      const keyRaw = ud.__assetKey || ud.assetKey || ud.filename || null;
       if (!keyRaw) return;
 
       const keys = variantsForKey(keyRaw);
@@ -547,30 +546,30 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       if (n && n.isMesh) n.visible = false;
     });
 
+    // ISO / showAll
     if (!assetKey) {
-      // show all
       ses.robotClone.traverse((n) => {
         if (n && n.isMesh) n.visible = true;
       });
-      return { anyVisible: true, usedFallback: false };
+      return { usedFallback: false };
     }
 
     const list = getCloneMeshesForAssetKey(ses, assetKey);
 
     if (!list || !list.length) {
-      // Si no encontramos meshes para esta clave, mostramos todo para evitar thumbnails en blanco.
+      // Si no encontramos meshes para esta clave, mostramos todo para evitar thumbnails en blanco
       ses.robotClone.traverse((n) => {
         if (n && n.isMesh) n.visible = true;
       });
-      return { anyVisible: true, usedFallback: true };
+      return { usedFallback: true };
     }
 
-    list.forEach(m => { if (m) m.visible = true; });
-    return { anyVisible: true, usedFallback: false };
+    list.forEach((m) => { if (m) m.visible = true; });
+    return { usedFallback: false };
   }
 
   function computeVisibleBox(ses) {
-    // ✅ IMPORTANTE: asegurar matrices world antes del box
+    // ✅ IMPORTANTÍSIMO: actualizar world matrices antes de box
     try { ses.robotClone.updateWorldMatrix(true, true); } catch (_) {}
 
     const box = ses._box;
@@ -582,12 +581,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       if (!n || !n.isMesh || !n.visible) return;
       tmp.setFromObject(n);
       if (tmp.isEmpty()) return;
-      if (!has) {
-        box.copy(tmp);
-        has = true;
-      } else {
-        box.union(tmp);
-      }
+      if (!has) { box.copy(tmp); has = true; }
+      else box.union(tmp);
     });
 
     if (has) return box;
@@ -603,14 +598,12 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     box.getCenter(center);
     box.getSize(size);
 
-    let maxDim = Math.max(size.x, size.y, size.z);
-    if (!isFinite(maxDim) || maxDim <= 1e-9) maxDim = 1;
-
+    const maxDim = Math.max(size.x, size.y, size.z);
     const dir = new THREE.Vector3(1, 1, 1).normalize();
 
     // Distancia basada en FOV
     const fov = (ses.camera.fov * Math.PI) / 180;
-    const dist = (maxDim * 0.6) / Math.tan(Math.max(1e-6, fov / 2)) * 1.25;
+    const dist = (maxDim * 0.6) / Math.tan(fov / 2) * 1.25;
 
     ses.camera.position.copy(center).add(dir.multiplyScalar(dist));
     ses.camera.near = Math.max(0.001, dist / 200);
@@ -635,7 +628,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       r.setViewport(0, 0, OFF_W, OFF_H);
       r.setScissor(0, 0, OFF_W, OFF_H);
       r.setScissorTest(false);
-      r.setClearColor(0xf3f4f6, 1);
+      r.setClearColor(0xffffff, 1);
       r.clear(true, true, true);
       r.render(ses.scene, ses.camera);
 
@@ -673,18 +666,19 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     if (!ses) return null;
 
     return enqueue(async () => {
+      // Re-chequeo después de esperar la cola
       if (thumbCache.has(assetKey)) return thumbCache.get(assetKey);
 
       const vis = setVisibleOnly(ses, assetKey);
       const box = computeVisibleBox(ses);
       fitCameraIso(ses, box);
 
-      const url = renderToDataURL(ses);
-      if (url) thumbCache.set(assetKey, url);
-
-      if (vis.usedFallback) {
+      if (vis && vis.usedFallback) {
         debugLog('[Thumbs] key mismatch → fallback showAll', { assetKey });
       }
+
+      const url = renderToDataURL(ses);
+      if (url) thumbCache.set(assetKey, url);
       return url;
     });
   }
@@ -714,48 +708,19 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     priming = (async () => {
       try {
         // Espera a que el URDF termine de poblar meshes -> assetToMeshes se estabiliza
-        if (assetToMeshes) await (async () => {
-          // reuse local helper (no está global aquí)
-          const start = performance.now();
-          let lastCount = -1;
-          let lastChange = performance.now();
-          const maxWaitMs = 8000;
-          const quietMs = 350;
-
-          function countNow() {
-            let n = 0;
-            try {
-              assetToMeshes.forEach((arr) => { n += (arr && arr.length) ? arr.length : 0; });
-            } catch (_) {}
-            return n;
-          }
-
-          await new Promise((resolve) => {
-            function tick() {
-              const now = performance.now();
-              const c = countNow();
-              if (c !== lastCount) {
-                lastCount = c;
-                lastChange = now;
-              }
-              const settled = (now - lastChange) >= quietMs;
-              const timeout = (now - start) >= maxWaitMs;
-              if (settled || timeout) resolve();
-              else requestAnimationFrame(tick);
-            }
-            requestAnimationFrame(tick);
-          });
-        })();
+        if (assetToMeshes) await waitForAssetMapToSettle(assetToMeshes);
 
         await _isoNoPrime();
 
         const keys = Array.isArray(assetKeys) ? assetKeys : [];
         for (const k of keys) {
+          // skip claves sin meshes (por ejemplo, STL falló)
           await _thumbNoPrime(k);
         }
 
         debugLog('[Thumbs] primeAll done', { wanted: keys.length, ok: thumbCache.size });
       } finally {
+        // Cerrar sesión para no mantener recursos extra
         destroySession();
       }
     })();
@@ -791,6 +756,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     _cache: thumbCache,
   };
 }
+
+
 
 /* ================= IA opt-in: describe_component_images ================= */
 
@@ -975,7 +942,9 @@ function parseMaybePythonDict(raw) {
     expr = expr.replace(/\bTrue\b/g, 'true');
     expr = expr.replace(/\bFalse\b/g, 'false');
 
-    // dict python con comillas simples es válido en new Function("return (...)")
+    // Si usa comillas simples tipo dict Python, no lo tocamos a mano campo por campo:
+    // dejamos que el motor JS lo evalue como objeto literal.
+    // Ejemplo: {'base.dae': 'texto'} es válido en new Function("return (...)").
     const obj = new Function('return (' + expr + ')')();
     if (obj && typeof obj === 'object') return obj;
   } catch (_) {}
