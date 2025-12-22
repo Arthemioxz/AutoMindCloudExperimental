@@ -164,7 +164,7 @@ export function createToolsDock(app, theme) {
     justifyContent: 'space-between',
     padding: '10px 12px',
     borderBottom: `1px solid ${theme.stroke}`,
-    background: theme.tealFaint
+    background: '#0ea5a6'
   });
 
   ui.title.textContent = 'Viewer Tools';
