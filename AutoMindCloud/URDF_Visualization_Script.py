@@ -281,7 +281,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
       )
 
 
-def URDF_Render(
+def URDF_visualization(
   folder_path: str = "Model",
   select_mode: str = "link",
   background: int | None = 0xFFFFFF,
