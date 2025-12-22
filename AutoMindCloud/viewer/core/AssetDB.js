@@ -1,7 +1,7 @@
 // /viewer/core/AssetDB.js
 // Build a normalized in-memory asset DB and a URDFLoader-compatible loadMeshCb.
 // Three r132 + urdf-loader 0.12.6
-/* global THREE */
+/* global THREE */ 
 
 const ALLOWED_MESH_EXTS = new Set(['dae', 'stl', 'step', 'stp']);
 const ALLOWED_TEX_EXTS  = new Set(['png', 'jpg', 'jpeg']);
