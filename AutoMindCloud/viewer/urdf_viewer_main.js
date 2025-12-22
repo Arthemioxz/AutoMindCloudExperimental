@@ -43,6 +43,41 @@ export function render(opts = {}) {
 
   debugLog('render() init', { selectMode, background, IA_Widgets });
 
+
+// Wait until the URDF meshes stop arriving (assetToMeshes settles).
+function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350) {
+  const start = performance.now();
+  let lastCount = -1;
+  let lastChange = performance.now();
+
+  function countNow() {
+    let n = 0;
+    try {
+      assetToMeshes.forEach((arr) => { n += (arr && arr.length) ? arr.length : 0; });
+    } catch (_) {}
+    return n;
+  }
+
+  return new Promise((resolve) => {
+    function tick() {
+      const now = performance.now();
+      const c = countNow();
+      if (c !== lastCount) {
+        lastCount = c;
+        lastChange = now;
+      }
+
+      const settled = (now - lastChange) >= quietMs;
+      const timeout = (now - start) >= maxWaitMs;
+
+      if (settled || timeout) resolve({ meshes: c, settled, timeout });
+      else requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  });
+}
+
+
   // 1) Core viewer
   const core = createViewer({ container, background });
 
@@ -158,6 +193,28 @@ export function render(opts = {}) {
   // 7) UI
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
+
+
+// 9) Precompute ALL component thumbnails on start (single offscreen viewer),
+// then close the offscreen renderer to free GPU memory.
+(async () => {
+  try {
+    if (!off || typeof off.primeAll !== 'function') return;
+
+    // Wait for URDF mesh loading to settle so the offscreen clone includes everything.
+    const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
+    debugLog('[Thumbs] settle', settle);
+
+    const keys = Array.from(assetToMeshes.keys());
+    await off.primeAll(keys);
+
+    // If anything is listening (optional), notify thumbnails are ready.
+    try { window.dispatchEvent(new Event('thumbnails_ready')); } catch (_) {}
+  } catch (e) {
+    debugLog('[Thumbs] auto prime error', String(e));
+  }
+})();
+
 
   // 8) Click sound opcional
   if (clickAudioDataURL) {
@@ -325,121 +382,137 @@ function frameMeshes(core, meshes) {
 /* ============= Offscreen thumbnails: componente + ISO robot ============= */
 
 function buildOffscreenForThumbnails(core) {
-  if (!core.robot) return null;
+  if (!core || !core.robot || typeof THREE === 'undefined') return null;
 
   const OFF_W = 640;
   const OFF_H = 480;
 
-  const canvas = document.createElement('canvas');
-  canvas.width = OFF_W;
-  canvas.height = OFF_H;
-
-  const renderer = new THREE.WebGLRenderer({
-    canvas,
-    antialias: true,
-    preserveDrawingBuffer: true,
-  });
-
-  renderer.setSize(OFF_W, OFF_H, false);
-
-  if (core.renderer) {
-    renderer.physicallyCorrectLights =
-      core.renderer.physicallyCorrectLights ?? true;
-    renderer.toneMapping = core.renderer.toneMapping;
-    renderer.toneMappingExposure =
-      core.renderer.toneMappingExposure ?? 1.0;
-
-    if ('outputColorSpace' in renderer && 'outputColorSpace' in core.renderer) {
-      renderer.outputColorSpace = core.renderer.outputColorSpace;
-    } else if ('outputEncoding' in renderer && 'outputEncoding' in core.renderer) {
-      renderer.outputEncoding = core.renderer.outputEncoding;
-    }
-
-    renderer.shadowMap.enabled = core.renderer.shadowMap?.enabled ?? false;
-    renderer.shadowMap.type = core.renderer.shadowMap?.type ?? THREE.PCFSoftShadowMap;
-  }
-
-  const baseScene = new THREE.Scene();
-  baseScene.background =
-    core.scene?.background ?? new THREE.Color(0xffffff);
-  baseScene.environment = core.scene?.environment ?? null;
-
-  const amb = new THREE.AmbientLight(0xffffff, 0.95);
-  const dir = new THREE.DirectionalLight(0xffffff, 1.1);
-  dir.position.set(2.5, 2.5, 2.5);
-  baseScene.add(amb, dir);
-
-  const camera = new THREE.PerspectiveCamera(
-    60,
-    OFF_W / OFF_H,
-    0.01,
-    10000,
-  );
+  const cache = new Map();        // assetKey -> dataURL
+  let isoCache = null;            // dataURL
+  let session = null;             // { canvas, renderer, scene, camera, robotClone, cloneMap }
+  let closed = false;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  const ready = (async () => {
-    await sleep(400);
-    renderer.render(baseScene, camera);
-    debugLog('[Thumbs] Offscreen primed');
-  })();
-
-  function buildCloneAndMap() {
-    const scene = baseScene.clone();
-    scene.background = baseScene.background;
-    scene.environment = baseScene.environment;
-
-    const robotClone = core.robot.clone(true);
-    scene.add(robotClone);
-
-    robotClone.traverse((o) => {
-      if (o.isMesh && o.material) {
-        if (Array.isArray(o.material)) {
-          o.material = o.material.map((m) => m.clone());
-        } else {
-          o.material = o.material.clone();
+  function disposeMaterial(mat) {
+    if (!mat) return;
+    // dispose textures referenced by the material
+    try {
+      for (const k of Object.keys(mat)) {
+        const v = mat[k];
+        if (v && v.isTexture) {
+          try { v.dispose(); } catch (_) {}
         }
-        o.material.needsUpdate = true;
       }
-    });
-
-    const cloneMap = new Map();
-    robotClone.traverse((o) => {
-      const key = o?.userData?.__assetKey;
-      if (key && o.isMesh && o.geometry) {
-        const arr = cloneMap.get(key) || [];
-        arr.push(o);
-        cloneMap.set(key, arr);
-      }
-    });
-
-    return { scene, robotClone, cloneMap };
+    } catch (_) {}
+    try { mat.dispose && mat.dispose(); } catch (_) {}
   }
 
-  function snapshotRobotIso() {
-    const scene = baseScene.clone();
-    scene.background = baseScene.background;
-    scene.environment = baseScene.environment;
+  function destroySession() {
+    if (!session) return;
+    try {
+      session.robotClone?.traverse?.((o) => {
+        if (!o || !o.isMesh) return;
+        try { o.geometry && o.geometry.dispose && o.geometry.dispose(); } catch (_) {}
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        mats.forEach(disposeMaterial);
+      });
+    } catch (_) {}
 
+    try { session.scene?.clear?.(); } catch (_) {}
+    try { session.renderer?.dispose?.(); } catch (_) {}
+    try { session.renderer?.forceContextLoss?.(); } catch (_) {}
+
+    session = null;
+    closed = true;
+  }
+
+  async function ensureSession() {
+    if (session) return session;
+    if (closed) return null;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = OFF_W;
+    canvas.height = OFF_H;
+
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      preserveDrawingBuffer: true,
+      alpha: false,
+    });
+
+    renderer.setPixelRatio(1);
+    renderer.setSize(OFF_W, OFF_H, false);
+    renderer.shadowMap.enabled = false;
+
+    // Match color space if available
+    try {
+      if (core.renderer && core.renderer.outputColorSpace) {
+        renderer.outputColorSpace = core.renderer.outputColorSpace;
+      }
+    } catch (_) {}
+
+    const scene = new THREE.Scene();
+    scene.background = core.scene?.background ?? new THREE.Color(0xffffff);
+    scene.environment = core.scene?.environment ?? null;
+
+    const amb = new THREE.AmbientLight(0xffffff, 0.95);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+    dir.position.set(2.5, 2.5, 2.5);
+    scene.add(amb, dir);
+
+    const camera = new THREE.PerspectiveCamera(60, OFF_W / OFF_H, 0.01, 10000);
+
+    // Clone robot ONCE and build asset map ONCE (single offscreen viewer)
     const robotClone = core.robot.clone(true);
     scene.add(robotClone);
 
+    const cloneMap = new Map(); // assetKey -> meshes in clone
+
     robotClone.traverse((o) => {
-      if (o.isMesh && o.material) {
-        if (Array.isArray(o.material)) {
-          o.material = o.material.map((m) => m.clone());
-        } else {
-          o.material = o.material.clone();
+      if (!o) return;
+      if (o.isMesh && o.geometry) {
+        const k =
+          o.userData?.__assetKey ||
+          o.userData?.assetKey ||
+          o.userData?.asset ||
+          null;
+
+        if (k) {
+          const arr = cloneMap.get(k) || [];
+          arr.push(o);
+          cloneMap.set(k, arr);
         }
-        o.material.needsUpdate = true;
+
+        // decouple materials
+        if (o.material) {
+          if (Array.isArray(o.material)) o.material = o.material.map((m) => (m ? m.clone() : m));
+          else o.material = o.material.clone();
+          if (o.material) o.material.needsUpdate = true;
+        }
+        o.castShadow = false;
+        o.receiveShadow = false;
       }
     });
 
-    const box = new THREE.Box3().setFromObject(robotClone);
-    if (!isFinite(box.max.x) || !isFinite(box.max.y) || !isFinite(box.max.z)) {
-      debugLog('[Thumbs] snapshotRobotIso box inválido');
-      return null;
-    }
+    // Warm up GPU a bit
+    await sleep(250);
+    try { renderer.render(scene, camera); } catch (_) {}
+
+    session = { canvas, renderer, scene, camera, robotClone, cloneMap };
+    debugLog('[Thumbs] Offscreen session created');
+    return session;
+  }
+
+  function setAllVisible(robotClone, visible) {
+    robotClone.traverse((o) => {
+      if (o && o.isMesh && o.geometry) o.visible = !!visible;
+    });
+  }
+
+  function frameAndRender(box, camera, scene, renderer) {
+    if (!box || box.isEmpty()) return null;
 
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
@@ -462,25 +535,19 @@ function buildOffscreenForThumbnails(core) {
     camera.lookAt(center);
 
     renderer.render(scene, camera);
-    const url = canvas.toDataURL('image/png');
-    return url;
+    return renderer.domElement.toDataURL('image/png');
   }
 
-  function snapshotAsset(assetKey) {
-    const { scene, robotClone, cloneMap } = buildCloneAndMap();
-    const meshes = cloneMap.get(assetKey) || [];
+  async function snapshotAsset(assetKey) {
+    const ses = await ensureSession();
+    if (!ses) return null;
 
-    if (!meshes.length) {
-      debugLog('[Thumbs] snapshotAsset sin meshes para', assetKey);
-      return null;
-    }
+    const meshes = ses.cloneMap.get(assetKey) || [];
+    if (!meshes.length) return null;
 
-    robotClone.traverse((o) => {
-      if (o.isMesh && o.geometry) o.visible = false;
-    });
-    meshes.forEach((m) => {
-      m.visible = true;
-    });
+    // Hide everything, show only this asset
+    setAllVisible(ses.robotClone, false);
+    meshes.forEach((m) => (m.visible = true));
 
     const box = new THREE.Box3();
     const tmp = new THREE.Box3();
@@ -496,65 +563,94 @@ function buildOffscreenForThumbnails(core) {
       }
     });
 
-    if (!has) {
-      debugLog('[Thumbs] snapshotAsset box vacío para', assetKey);
-      return null;
-    }
+    const url = frameAndRender(box, ses.camera, ses.scene, ses.renderer);
+    return url;
+  }
 
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = maxDim * 2.0;
+  async function snapshotRobotIso() {
+    const ses = await ensureSession();
+    if (!ses) return null;
 
-    camera.near = Math.max(maxDim / 1000, 0.001);
-    camera.far = Math.max(maxDim * 1000, 1000);
-    camera.updateProjectionMatrix();
-
-    const az = Math.PI * 0.25;
-    const el = Math.PI * 0.20;
-    const dirV = new THREE.Vector3(
-      Math.cos(el) * Math.cos(az),
-      Math.sin(el),
-      Math.cos(el) * Math.sin(az),
-    ).multiplyScalar(dist);
-
-    camera.position.copy(center.clone().add(dirV));
-    camera.lookAt(center);
-
-    renderer.render(scene, camera);
-    const url = canvas.toDataURL('image/png');
+    // Show all
+    setAllVisible(ses.robotClone, true);
+    const box = new THREE.Box3().setFromObject(ses.robotClone);
+    const url = frameAndRender(box, ses.camera, ses.scene, ses.renderer);
     return url;
   }
 
   return {
     async thumbnail(assetKey) {
+      if (!assetKey) return null;
+      if (cache.has(assetKey)) return cache.get(assetKey);
+
+      // If we already closed the session (after prime), do not reopen here.
+      if (closed) return null;
+
       try {
-        await ready;
-        const url = snapshotAsset(assetKey);
-        debugLog('[Thumbs] thumbnail', assetKey, !!url);
+        const url = await snapshotAsset(assetKey);
+        if (url) cache.set(assetKey, url);
         return url;
       } catch (e) {
         debugLog('[Thumbs] Error thumbnail', assetKey, String(e));
         return null;
       }
     },
+
     async iso() {
+      if (isoCache) return isoCache;
+      if (closed) return null;
       try {
-        await ready;
-        const url = snapshotRobotIso();
-        debugLog('[Thumbs] iso robot', !!url);
+        const url = await snapshotRobotIso();
+        if (url) isoCache = url;
         return url;
       } catch (e) {
         debugLog('[Thumbs] iso error', String(e));
         return null;
       }
     },
-    destroy() {
-      try { renderer.dispose(); } catch (_) {}
-      try { baseScene.clear(); } catch (_) {}
+
+    async primeAll(assetKeys = []) {
+      if (closed) return { count: cache.size, iso: !!isoCache };
+
+      try {
+        // Ensure session after meshes are already in core.robot (call from the outside after settle)
+        await ensureSession();
+
+        // ISO first
+        try { await this.iso(); } catch (_) {}
+
+        let n = 0;
+        for (const k of assetKeys) {
+          // eslint-disable-next-line no-await-in-loop
+          const url = await this.thumbnail(k);
+          if (url) n++;
+        }
+
+        debugLog('[Thumbs] primeAll done', { wanted: assetKeys.length, ok: n });
+
+        // Close offscreen renderer after finishing (requested)
+        destroySession();
+
+        return { count: cache.size, iso: !!isoCache };
+      } catch (e) {
+        debugLog('[Thumbs] primeAll error', String(e));
+        destroySession();
+        return { count: cache.size, iso: !!isoCache, error: String(e) };
+      }
     },
+
+    has(assetKey) {
+      return cache.has(assetKey);
+    },
+
+    destroy() {
+      destroySession();
+    },
+
+    _cache: cache,
   };
 }
+
 
 /* ================= IA opt-in: describe_component_images ================= */
 
