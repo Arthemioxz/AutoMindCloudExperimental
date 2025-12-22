@@ -1,9 +1,15 @@
 // /viewer/urdf_viewer_main.js
-// Viewer moderno + thumbnails + IA opt-in con:
-//  - Imagen ISO del robot completo (__robot_iso__)
-//  - Nombres + orden de componentes
-//  - Reducción de thumbnails a ~5KB solo para IA
-//  - Parser robusto para el dict que llega desde Colab
+// ✅ Versión “thumbalist con texturas”:
+// - Para sacar thumbnails NO usa el robotClone.
+// - En su lugar, ANTES de tomar la foto:
+//    1) carga el .dae del componente con ColladaLoader
+//    2) reescribe URLs internas de texturas con assetDB.resolveURL (LoadingManager.setURLModifier)
+//    3) espera a que terminen de cargar las texturas
+//    4) recién ahí renderiza al RenderTarget y genera el PNG
+//
+// Requisitos:
+// - Tu buildAssetDB(meshDB) debe incluir .dae + texturas (png/jpg/etc)
+// - AssetDB.js debe exponer: buildAssetDB + createLoadMeshCb + resolveURL/getBlobURL
 
 import { THEME } from './Theme.js';
 import * as ViewerCore from './core/ViewerCore.js';
@@ -22,9 +28,7 @@ export let Base64Images = [];
 /* ========================= Debug helper ========================= */
 
 function debugLog(...args) {
-  try {
-    console.log('[URDF_DEBUG]', ...args);
-  } catch (_) {}
+  try { console.log('[URDF_DEBUG]', ...args); } catch (_) {}
   try {
     if (typeof window !== 'undefined') {
       window.URDF_DEBUG_LOGS = window.URDF_DEBUG_LOGS || [];
@@ -32,22 +36,6 @@ function debugLog(...args) {
     }
   } catch (_) {}
 }
-
-/* ============================ Render ============================ */
-
-export function render(opts = {}) {
-  const {
-    container,
-    urdfContent = '',
-    meshDB = {},
-    selectMode = 'link',
-    background = THEME.bgCanvas || 0xffffff,
-    clickAudioDataURL = null,
-    IA_Widgets = false,
-  } = opts;
-
-  debugLog('render() init', { selectMode, background, IA_Widgets });
-
 
 // Wait until the URDF meshes stop arriving (assetToMeshes settles).
 function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350) {
@@ -82,6 +70,20 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
   });
 }
 
+/* ============================ Render ============================ */
+
+export function render(opts = {}) {
+  const {
+    container,
+    urdfContent = '',
+    meshDB = {},
+    selectMode = 'link',
+    background = THEME.bgCanvas || 0xffffff,
+    clickAudioDataURL = null,
+    IA_Widgets = false,
+  } = opts;
+
+  debugLog('render() init', { selectMode, background, IA_Widgets });
 
   // 1) Core viewer
   const _createViewer = (ViewerCore && (ViewerCore.createViewer || (ViewerCore.default && ViewerCore.default.createViewer))) || window.createViewer;
@@ -117,11 +119,10 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
     debugLog('assetToMeshes vacío, reconstruyendo desde userData');
     rebuildAssetMapFromRobot(robot, assetToMeshes);
   }
-
   debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
 
-  // 4) Offscreen thumbnails
-  const off = buildOffscreenForThumbnails(core);
+  // 4) Offscreen thumbnails (✅ ahora con carga de DAE + texturas ANTES de foto)
+  const off = buildOffscreenForThumbnails(core, assetDB, assetToMeshes);
   if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
 
   // 5) Interacción
@@ -201,28 +202,6 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-
-// 9) Precompute ALL component thumbnails on start (single offscreen viewer),
-// then close the offscreen renderer to free GPU memory.
-(async () => {
-  try {
-    if (!off || typeof off.primeAll !== 'function') return;
-
-    // Wait for URDF mesh loading to settle so the offscreen clone includes everything.
-    const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
-    debugLog('[Thumbs] settle', settle);
-
-    const keys = Array.from(assetToMeshes.keys());
-    await off.primeAll(keys);
-
-    // If anything is listening (optional), notify thumbnails are ready.
-    try { window.dispatchEvent(new Event('thumbnails_ready')); } catch (_) {}
-  } catch (e) {
-    debugLog('[Thumbs] auto prime error', String(e));
-  }
-})();
-
-
   // 8) Click sound opcional
   if (clickAudioDataURL) {
     try {
@@ -232,7 +211,25 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
     }
   }
 
-  // 9) IA opt-in
+  // 9) Precompute ALL component thumbnails on start (single offscreen session),
+  // then close the offscreen renderer to free GPU memory.
+  (async () => {
+    try {
+      if (!off || typeof off.primeAll !== 'function') return;
+
+      const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
+      debugLog('[Thumbs] settle', settle);
+
+      const keys = Array.from(assetToMeshes.keys());
+      await off.primeAll(keys);
+
+      try { window.dispatchEvent(new Event('thumbnails_ready')); } catch (_) {}
+    } catch (e) {
+      debugLog('[Thumbs] auto prime error', String(e));
+    }
+  })();
+
+  // 10) IA opt-in
   if (IA_Widgets) {
     debugLog('[IA] IA_Widgets=true → bootstrap IA');
     bootstrapComponentDescriptions(app, assetToMeshes, off);
@@ -240,12 +237,10 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
     debugLog('[IA] IA_Widgets=false → sin IA');
   }
 
-  // 10) Expose global
+  // 11) Expose global
   if (typeof window !== 'undefined') {
     window.URDFViewer = window.URDFViewer || {};
-    try {
-      window.URDFViewer.__app = app;
-    } catch (_) {}
+    try { window.URDFViewer.__app = app; } catch (_) {}
   }
 
   const destroy = () => {
@@ -253,6 +248,7 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
     try { tools.destroy(); } catch (_) {}
     try { inter.destroy(); } catch (_) {}
     try { off?.destroy?.(); } catch (_) {}
+    try { assetDB?.dispose?.(); } catch (_) {}
     try { core.destroy(); } catch (_) {}
   };
 
@@ -315,9 +311,7 @@ function isolateAsset(core, assetToMeshes, assetKey) {
   core.robot.traverse((o) => {
     if (o.isMesh && o.geometry) o.visible = false;
   });
-  meshes.forEach((m) => {
-    m.visible = true;
-  });
+  meshes.forEach((m) => { m.visible = true; });
 
   frameMeshes(core, meshes);
 }
@@ -340,12 +334,8 @@ function frameMeshes(core, meshes) {
   meshes.forEach((m) => {
     if (!m) return;
     tmp.setFromObject(m);
-    if (!has) {
-      box.copy(tmp);
-      has = true;
-    } else {
-      box.union(tmp);
-    }
+    if (!has) { box.copy(tmp); has = true; }
+    else box.union(tmp);
   });
 
   if (!has) return;
@@ -375,9 +365,7 @@ function frameMeshes(core, meshes) {
     cam.near = Math.max(maxDim / 1000, 0.001);
     cam.far = Math.max(maxDim * 1500, 1500);
     cam.updateProjectionMatrix();
-    cam.position.copy(
-      center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)),
-    );
+    cam.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
   }
 
   if (ctrl) {
@@ -386,67 +374,11 @@ function frameMeshes(core, meshes) {
   }
 }
 
-/* ============= Offscreen thumbnails: componente + ISO robot ============= */
+/* ============= Offscreen thumbnails: CARGA DAE + TEXTURAS ANTES ============= */
 
-function buildOffscreenForThumbnails(core, assetToMeshes) {
-  // IMPORTANTE:
-  // - NO creamos otro WebGLRenderer (evita “Too many active WebGL contexts”).
-  // - Renderizamos a un WebGLRenderTarget usando el MISMO renderer del viewer.
-  // - Pausamos el render loop del viewer mientras capturamos thumbnails (evita renders en blanco).
-  // - NO hacemos dispose() de geometrías/texturas/materiales compartidos con el robot principal.
+function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
   const OFF_W = 320, OFF_H = 320;
-  const BG = 0xf2f2f2; // fondo claro para ver materiales/texturas
-
-  function normalizeAssetKey(s) {
-    if (!s) return '';
-    let t = String(s).trim();
-    t = t.split('?')[0].split('#')[0];
-    t = t.replace(/^package:\/\//i, '');
-    t = t.replace(/\\/g, '/');
-    return t.trim();
-  }
-
-  function variantsForKey(path) {
-    const out = new Set();
-    const raw = String(path || '');
-    if (!raw) return [];
-    const clean = normalizeAssetKey(raw);
-    if (!clean) return [];
-    const lower = clean.toLowerCase();
-
-    const base = clean.split('/').pop();
-    const baseLower = lower.split('/').pop();
-
-    out.add(clean);
-    out.add(lower);
-    out.add(base);
-    out.add(baseLower);
-
-    // sin extensión
-    const dot1 = base.lastIndexOf('.');
-    if (dot1 > 0) out.add(base.slice(0, dot1));
-    const dot2 = baseLower.lastIndexOf('.');
-    if (dot2 > 0) out.add(baseLower.slice(0, dot2));
-
-    // agrega subpaths
-    const parts = lower.split('/');
-    for (let i = 1; i < parts.length; i++) {
-      const sub = parts.slice(i).join('/');
-      out.add(sub);
-      out.add(sub.split('/').pop());
-    }
-
-    return Array.from(out).filter(Boolean);
-  }
-
-  function getCloneMeshesForAssetKey(ses, assetKey) {
-    const vars = variantsForKey(assetKey);
-    for (const k of vars) {
-      const list = ses.cloneMap.get(k);
-      if (list && list.length) return list;
-    }
-    return null;
-  }
+  const BG = 0xf2f2f2;
 
   const thumbCache = new Map(); // assetKey -> dataURL
   let isoCache = null;
@@ -455,7 +387,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   let session = null;
   let priming = null;
 
-  // Serializa renders para no pelear con el loop principal.
   let chain = Promise.resolve();
   const enqueue = (fn) => {
     chain = chain.then(fn, fn);
@@ -464,32 +395,36 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
   function destroySession() {
     if (!session) return;
-    try { session.rt && session.rt.dispose && session.rt.dispose(); } catch (_) {}
-    try { session.scene && session.scene.clear && session.scene.clear(); } catch (_) {}
+    try { session.rt?.dispose?.(); } catch (_) {}
+    try { session.scene?.clear?.(); } catch (_) {}
+    try { session.canvas2d = null; session.ctx2d = null; } catch (_) {}
     session = null;
     closed = true;
+  }
+
+  function pauseLoop(on) {
+    try {
+      if (core && typeof core.setPaused === 'function') core.setPaused(!!on);
+    } catch (_) {}
   }
 
   async function ensureSession() {
     if (closed) return null;
     if (session) return session;
-    if (!core || !core.renderer || !core.robot || typeof THREE === 'undefined') return null;
+    if (!core || !core.renderer || typeof THREE === 'undefined') return null;
 
     const renderer = core.renderer;
 
-    // Render target (no crea contexto WebGL nuevo)
     const rt = new THREE.WebGLRenderTarget(OFF_W, OFF_H, {
       depthBuffer: true,
-      stencilBuffer: false
+      stencilBuffer: false,
     });
 
-    // Canvas 2D auxiliar para convertir pixels -> PNG dataURL
     const canvas2d = document.createElement('canvas');
     canvas2d.width = OFF_W;
     canvas2d.height = OFF_H;
     const ctx2d = canvas2d.getContext('2d', { willReadFrequently: true });
 
-    // Escena de thumbnails (clon del robot)
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(BG);
 
@@ -500,58 +435,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
     const camera = new THREE.PerspectiveCamera(40, OFF_W / OFF_H, 0.001, 2000);
 
-    const robotClone = core.robot.clone(true);
-
-    // 🔧 Hacer materiales visibles en el CLON SIN destruir apariencia original.
-// Objetivo: evitar thumbnails invisibles (alpha=0, backface culling, etc.)
-// pero preservar texturas/colores reales del componente.
-robotClone.traverse((n) => {
-  if (!n || !n.isMesh) return;
-
-  const mats = Array.isArray(n.material) ? n.material : [n.material];
-  mats.forEach((m) => {
-    if (!m) return;
-
-    // Evita backface culling (caras invertidas)
-    m.side = THREE.DoubleSide;
-
-    // Si venía "invisible" por opacity/alpha, corrige mínimo.
-    if (m.opacity !== undefined && m.opacity <= 0) m.opacity = 1;
-    if (m.transparent === true && m.opacity === 1) {
-      // Mantén transparent si realmente la usa (ej. vidrio), pero
-      // evita que quede totalmente invisible.
-      // No forzamos transparent=false para no romper materiales.
-    }
-
-    // Evita glitches de profundidad
-    m.depthWrite = true;
-    m.depthTest = true;
-
-    // NO tocar m.color / m.emissive: preserva textura y color real.
-    m.needsUpdate = true;
-  });
-});
-    });
-
-    // Map keyVariant -> [meshes...]
-    const cloneMap = new Map();
-    robotClone.traverse((n) => {
-      if (!n || !n.isMesh) return;
-      n.castShadow = false;
-      n.receiveShadow = false;
-
-      const ud = n.userData || {};
-      const keyRaw = ud.__assetKey || ud.assetKey || ud.filename || null;
-      if (!keyRaw) return;
-
-      const keys = variantsForKey(keyRaw);
-      for (const key of keys) {
-        if (!cloneMap.has(key)) cloneMap.set(key, []);
-        cloneMap.get(key).push(n);
-      }
-    });
-    scene.add(robotClone);
-
     session = {
       renderer,
       rt,
@@ -559,56 +442,116 @@ robotClone.traverse((n) => {
       ctx2d,
       scene,
       camera,
-      robotClone,
-      cloneMap,
       _tmpBox: new THREE.Box3(),
       _box: new THREE.Box3(),
       _center: new THREE.Vector3(),
       _size: new THREE.Vector3(),
+      _loadedRoot: null,
+      _loadedKey: null,
     };
 
     debugLog('[Thumbs] Offscreen session created (shared renderer; no extra WebGL context)');
     return session;
   }
 
-  function setVisibleOnly(ses, assetKey) {
-    // Oculta todo
-    ses.robotClone.traverse((n) => {
-      if (n && n.isMesh) n.visible = false;
-    });
-
-    // ISO / showAll
-    if (!assetKey) {
-      ses.robotClone.traverse((n) => {
-        if (n && n.isMesh) n.visible = true;
-      });
-      return { usedFallback: false };
+  function cleanupLoaded(ses) {
+    if (!ses) return;
+    if (ses._loadedRoot) {
+      try { ses.scene.remove(ses._loadedRoot); } catch (_) {}
+      // IMPORTANTE: NO hacemos dispose() agresivo porque texturas/materiales pueden estar cacheados por three.
+      ses._loadedRoot = null;
+      ses._loadedKey = null;
     }
-
-    // lookup robusto
-    const list = getCloneMeshesForAssetKey(ses, assetKey);
-    if (!list || !list.length) {
-      // fallback anti-blanco: mostrar todo
-      ses.robotClone.traverse((n) => {
-        if (n && n.isMesh) n.visible = true;
-      });
-      return { usedFallback: true };
-    }
-
-    list.forEach((m) => { if (m) m.visible = true; });
-    return { usedFallback: false };
   }
 
-  function computeVisibleBox(ses) {
-    // Asegurar matrices world
-    try { ses.robotClone.updateWorldMatrix(true, true); } catch (_) {}
+  function makeManagerForDAE(assetKey) {
+    const mgr = new THREE.LoadingManager();
+
+    // 🔥 ESTA es la magia: cualquier URL interna del DAE (texturas) se reescribe a blob URL desde meshDB.
+    mgr.setURLModifier((url) => {
+      try {
+        const out = assetDB?.resolveURL?.(url, assetKey);
+        return out || url;
+      } catch (_) {
+        return url;
+      }
+    });
+
+    return mgr;
+  }
+
+  function setMaterialVisibilityFix(root) {
+    root?.traverse?.((n) => {
+      if (!n || !n.isMesh) return;
+
+      const mats = Array.isArray(n.material) ? n.material : [n.material];
+      mats.forEach((m) => {
+        if (!m) return;
+        m.side = THREE.DoubleSide;
+        if (m.opacity !== undefined && m.opacity <= 0) m.opacity = 1;
+        m.depthWrite = true;
+        m.depthTest = true;
+        m.needsUpdate = true;
+      });
+
+      n.castShadow = false;
+      n.receiveShadow = false;
+    });
+  }
+
+  async function loadDAEWithTextures(assetKey) {
+    const daeURL = assetDB?.getBlobURL?.(assetKey) || assetDB?.resolveURL?.(assetKey, null) || assetKey;
+
+    return new Promise((resolve, reject) => {
+      const mgr = makeManagerForDAE(assetKey);
+      const loader = new THREE.ColladaLoader(mgr);
+
+      let done = false;
+
+      mgr.onLoad = () => {
+        // OJO: onLoad dispara cuando terminó TODO lo encolado (incluye imágenes)
+        // Si el DAE ya cargó, podemos resolver.
+        // (Si el DAE aún no devolvió scene por alguna razón, fallback al callback del load.)
+      };
+
+      loader.load(
+        daeURL,
+        (collada) => {
+          if (done) return;
+          done = true;
+
+          const root = collada?.scene || collada;
+          if (!root) {
+            reject(new Error('ColladaLoader devolvió scene nula'));
+            return;
+          }
+
+          // Fixes para que NO quede “invisible”
+          setMaterialVisibilityFix(root);
+
+          // Esperar un frame extra para que el renderer vea texturas listas en GPU
+          requestAnimationFrame(() => resolve(root));
+        },
+        undefined,
+        (err) => {
+          if (done) return;
+          done = true;
+          reject(err || new Error('ColladaLoader error'));
+        }
+      );
+    });
+  }
+
+  function computeVisibleBoxFromObject(ses, obj) {
+    try { obj.updateWorldMatrix(true, true); } catch (_) {}
 
     const box = ses._box;
-    const tmp = ses._tmpBox;
     box.makeEmpty();
 
+    const tmp = ses._tmpBox;
     let has = false;
-    ses.robotClone.traverse((n) => {
+
+    obj.traverse((n) => {
       if (!n || !n.isMesh || !n.visible) return;
       tmp.setFromObject(n);
       if (tmp.isEmpty()) return;
@@ -618,8 +561,7 @@ robotClone.traverse((n) => {
 
     if (has) return box;
 
-    // fallback final: box de todo el clon
-    tmp.setFromObject(ses.robotClone);
+    tmp.setFromObject(obj);
     return tmp;
   }
 
@@ -632,7 +574,6 @@ robotClone.traverse((n) => {
     let maxDim = Math.max(size.x, size.y, size.z);
     if (!isFinite(maxDim) || maxDim <= 1e-6) maxDim = 1;
 
-    // más cerca que antes (anti-"miniatura")
     const dir = new THREE.Vector3(1, 0.8, 1).normalize();
     const fov = (ses.camera.fov * Math.PI) / 180;
     const dist = (maxDim / Math.tan(Math.max(1e-6, fov / 2))) * 0.55;
@@ -647,7 +588,6 @@ robotClone.traverse((n) => {
   function renderToDataURL(ses) {
     const r = ses.renderer;
 
-    // Guardar estado renderer
     const prevRT = r.getRenderTarget();
     const prevVp = r.getViewport(new THREE.Vector4());
     const prevSc = r.getScissor(new THREE.Vector4());
@@ -667,7 +607,6 @@ robotClone.traverse((n) => {
       const pixels = new Uint8Array(OFF_W * OFF_H * 4);
       r.readRenderTargetPixels(ses.rt, 0, 0, OFF_W, OFF_H, pixels);
 
-      // Flip vertical para canvas
       const ctx = ses.ctx2d;
       const img = ctx.createImageData(OFF_W, OFF_H);
       for (let y = 0; y < OFF_H; y++) {
@@ -681,7 +620,6 @@ robotClone.traverse((n) => {
       debugLog('[Thumbs] renderToDataURL failed', e);
       return null;
     } finally {
-      // Restaurar estado renderer
       r.setRenderTarget(prevRT);
       r.setViewport(prevVp.x, prevVp.y, prevVp.z, prevVp.w);
       r.setScissor(prevSc.x, prevSc.y, prevSc.z, prevSc.w);
@@ -690,10 +628,19 @@ robotClone.traverse((n) => {
     }
   }
 
-  function pauseLoop(on) {
-    try {
-      if (core && typeof core.setPaused === 'function') core.setPaused(!!on);
-    } catch (_) {}
+  async function ensureLoadedForKey(ses, assetKey) {
+    if (ses._loadedKey === assetKey && ses._loadedRoot) return ses._loadedRoot;
+
+    cleanupLoaded(ses);
+
+    // ✅ cargar DAE + texturas ANTES de sacar foto
+    const root = await loadDAEWithTextures(assetKey);
+    ses._loadedRoot = root;
+    ses._loadedKey = assetKey;
+
+    // Centrar root (opcional: no tocamos transform; solo lo agregamos a escena)
+    ses.scene.add(root);
+    return root;
   }
 
   async function _thumbNoPrime(assetKey) {
@@ -708,17 +655,21 @@ robotClone.traverse((n) => {
 
       pauseLoop(true);
       try {
-        const vis = setVisibleOnly(ses, assetKey);
-        const box = computeVisibleBox(ses);
+        const root = await ensureLoadedForKey(ses, assetKey);
+
+        // Render box visible y encuadrar
+        const box = computeVisibleBoxFromObject(ses, root);
         fitCameraIso(ses, box);
 
-        if (vis && vis.usedFallback) {
-          debugLog('[Thumbs] key mismatch → fallback showAll', { assetKey });
-        }
+        // 1 frame extra para asegurar que la textura ya se samplea (por si el GPU late-init)
+        await new Promise((res) => requestAnimationFrame(res));
 
         const url = renderToDataURL(ses);
         if (url) thumbCache.set(assetKey, url);
         return url;
+      } catch (e) {
+        debugLog('[Thumbs] thumb error', assetKey, String(e));
+        return null;
       } finally {
         pauseLoop(false);
       }
@@ -726,6 +677,8 @@ robotClone.traverse((n) => {
   }
 
   async function _isoNoPrime() {
+    // ISO del robot completo: si quieres también con “DAE reload”, habría que cargar todos,
+    // pero normalmente basta con usar el robot ya cargado.
     if (isoCache) return isoCache;
 
     const ses = await ensureSession();
@@ -736,13 +689,28 @@ robotClone.traverse((n) => {
       try {
         if (isoCache) return isoCache;
 
-        setVisibleOnly(ses, null);
-        const box = computeVisibleBox(ses);
+        cleanupLoaded(ses);
+
+        // ISO usando el robot principal (ya texturizado si resolveURL funcionó al cargar URDF)
+        const clone = core.robot ? core.robot.clone(true) : null;
+        if (!clone) return null;
+
+        setMaterialVisibilityFix(clone);
+        ses._loadedRoot = clone;
+        ses._loadedKey = '__robot_iso__';
+        ses.scene.add(clone);
+
+        const box = computeVisibleBoxFromObject(ses, clone);
         fitCameraIso(ses, box);
+
+        await new Promise((res) => requestAnimationFrame(res));
 
         const url = renderToDataURL(ses);
         if (url) isoCache = url;
         return url;
+      } catch (e) {
+        debugLog('[Thumbs] iso error', String(e));
+        return null;
       } finally {
         pauseLoop(false);
       }
@@ -800,7 +768,6 @@ robotClone.traverse((n) => {
     _cache: thumbCache,
   };
 }
-
 
 /* ================= IA opt-in: describe_component_images ================= */
 
@@ -910,7 +877,6 @@ function extractDescMap(res) {
 
   let data = res.data ?? res;
 
-  // Caso Colab típico: data['application/json']
   if (
     data &&
     typeof data === 'object' &&
@@ -920,7 +886,6 @@ function extractDescMap(res) {
     return data['application/json'];
   }
 
-  // Caso actual: data['text/plain'] = "{'base.dae': '...'}"
   if (
     data &&
     typeof data === 'object' &&
@@ -931,13 +896,11 @@ function extractDescMap(res) {
     if (parsed) return parsed;
   }
 
-  // Si es string plano, intentar parsear igual
   if (typeof data === 'string') {
     const parsed = parseMaybePythonDict(data.trim());
     if (parsed) return parsed;
   }
 
-  // Si ya es objeto razonable, úsalo
   if (
     data &&
     typeof data === 'object' &&
@@ -947,7 +910,6 @@ function extractDescMap(res) {
     return data;
   }
 
-  // Array de objetos: tomar el primero
   if (
     Array.isArray(data) &&
     data.length &&
@@ -959,40 +921,26 @@ function extractDescMap(res) {
   return null;
 }
 
-/**
- * ✅ Nueva versión robusta:
- *  - Soporta dict Python: {'base.dae': '...'}
- *  - Soporta JSON válido.
- *  - Fallback con Function(...) sólo en este contexto controlado.
- */
 function parseMaybePythonDict(raw) {
   if (!raw) return null;
   raw = String(raw).trim();
   if (!raw.startsWith('{') || !raw.endsWith('}')) return null;
 
-  // 1) Intento JSON directo
   try {
     const j = JSON.parse(raw);
     if (j && typeof j === 'object') return j;
   } catch (_) {}
 
-  // 2) Intento: reemplazar sintaxis Python -> JS y evaluar de forma controlada
   try {
     let expr = raw;
-
-    // Normalizar booleanos / None
     expr = expr.replace(/\bNone\b/g, 'null');
     expr = expr.replace(/\bTrue\b/g, 'true');
     expr = expr.replace(/\bFalse\b/g, 'false');
 
-    // Si usa comillas simples tipo dict Python, no lo tocamos a mano campo por campo:
-    // dejamos que el motor JS lo evalue como objeto literal.
-    // Ejemplo: {'base.dae': 'texto'} es válido en new Function("return (...)").
     const obj = new Function('return (' + expr + ')')();
     if (obj && typeof obj === 'object') return obj;
   } catch (_) {}
 
-  // 3) Fallback muy simple: intentar extraer pares 'k': 'v'
   try {
     const out = {};
     const inner = raw.slice(1, -1);
@@ -1060,23 +1008,16 @@ function applyIaDescriptionsToApp(app, map) {
   const detail = { map: app.componentDescriptions };
 
   if (typeof app.emit === 'function') {
-    try {
-      app.emit('ia_descriptions_ready', detail);
-    } catch (_) {}
+    try { app.emit('ia_descriptions_ready', detail); } catch (_) {}
   }
 
   try {
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(
-        new CustomEvent('ia_descriptions_ready', { detail }),
-      );
+      window.dispatchEvent(new CustomEvent('ia_descriptions_ready', { detail }));
     }
   } catch (_) {}
 
-  debugLog(
-    '[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido',
-    detail,
-  );
+  debugLog('[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido', detail);
 }
 
 /* =================== Reducción thumbnails ~5KB =================== */
@@ -1097,10 +1038,7 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
       img.src = u;
     });
 
-    const ratio = Math.min(
-      1,
-      Math.max(0.05, maxBytes / (blob.size || maxBytes)),
-    );
+    const ratio = Math.min(1, Math.max(0.05, maxBytes / (blob.size || maxBytes)));
     const scale = Math.sqrt(ratio);
 
     const w = Math.max(32, Math.floor(img.width * scale));
@@ -1120,10 +1058,7 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
     const b64 = out.split(',')[1] || '';
     if (!b64) return null;
 
-    debugLog(
-      '[IA] makeApproxSizedBase64 bytes ~',
-      Math.floor((b64.length * 3) / 4),
-    );
+    debugLog('[IA] makeApproxSizedBase64 bytes ~', Math.floor((b64.length * 3) / 4));
     return b64;
   } catch (e) {
     debugLog('[IA] makeApproxSizedBase64 error', String(e));
@@ -1140,10 +1075,7 @@ function installClickSound(dataURL) {
   let buf = null;
 
   async function ensure() {
-    if (!ctx) {
-      ctx =
-        new (window.AudioContext || window.webkitAudioContext)();
-    }
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (!buf) {
       const resp = await fetch(dataURL);
       const arr = await resp.arrayBuffer();
@@ -1152,10 +1084,7 @@ function installClickSound(dataURL) {
   }
 
   function play() {
-    if (!ctx) {
-      ctx =
-        new (window.AudioContext || window.webkitAudioContext)();
-    }
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (ctx.state === 'suspended') ctx.resume();
 
     if (!buf) {
@@ -1166,9 +1095,7 @@ function installClickSound(dataURL) {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-    try {
-      src.start();
-    } catch (_) {}
+    try { src.start(); } catch (_) {}
   }
 
   window.__urdf_click__ = play;
@@ -1178,9 +1105,7 @@ if (typeof window !== 'undefined') {
   window.URDFViewer = window.URDFViewer || {};
   window.URDFViewer.render = (opts) => {
     const app = render(opts);
-    try {
-      window.URDFViewer.__app = app;
-    } catch (_) {}
+    try { window.URDFViewer.__app = app; } catch (_) {}
     return app;
   };
 }
