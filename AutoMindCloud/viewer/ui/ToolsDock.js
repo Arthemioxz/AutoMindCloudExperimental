@@ -1,5 +1,5 @@
-// /viewer/ui/ToolsDock.js / checkpoint   
-// Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
+// /viewer/ui/ToolsDock.js / checkpoint
+// Floating tools dock: render modes, explode (smoothed & robust), section plane (ROBOT ONLY), views, projection, scene toggles, snapshot.
 /* global THREE */
 
 export function createToolsDock(app, theme) {
@@ -170,7 +170,6 @@ export function createToolsDock(app, theme) {
   ui.title.textContent = 'Viewer Tools';
   Object.assign(ui.title.style, { fontWeight: '800', color: '#ffffff' });
 
-
   Object.assign(ui.body.style, { padding: '10px 12px' });
 
   // Floating toggle button (with hover)
@@ -256,127 +255,115 @@ export function createToolsDock(app, theme) {
 
   // ---------- Logic ----------
 
-// ------------------ CONFIG ------------------
-const CLOSED_TX = -520; // px, off-screen to the left
-let isOpen = false;
+  // ------------------ CONFIG ------------------
+  const CLOSED_TX = -520; // px, off-screen to the left
+  let isOpen = false;
 
-// Prepare dock styles once
-Object.assign(ui.dock.style, {
-  display: 'block',
-  willChange: 'transform, opacity',
-  transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
-  transform: `translateX(${CLOSED_TX}px)`,
-  opacity: '0',
-  pointerEvents: 'none'
-});
+  // Prepare dock styles once
+  Object.assign(ui.dock.style, {
+    display: 'block',
+    willChange: 'transform, opacity',
+    transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
+    transform: `translateX(${CLOSED_TX}px)`,
+    opacity: '0',
+    pointerEvents: 'none'
+  });
 
-// ------------------ TWEEN LOGIC ------------------
-function set(open) {
-  isOpen = open;
+  // ------------------ TWEEN LOGIC ------------------
+  function set(open) {
+    isOpen = open;
 
-  if (open) {
-    // OPEN tween
-    ui.dock.style.opacity = '1';
-    ui.dock.style.transform = 'translateX(0)';
-    ui.dock.style.pointerEvents = 'auto';
-    ui.toggleBtn.textContent = 'Close Tools';
-    try { styleDockLeft(ui.dock); } catch(_) {}
-    //try { explode.prepare(); } catch(_) {}
-    syncExplodeUI();
-  } else {
-    // CLOSE tween
-    ui.dock.style.opacity = '0';
-    ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
-    ui.dock.style.pointerEvents = 'none';
-    ui.toggleBtn.textContent = 'Open Tools';
-  }
-}
-
-// Wrappers
-function openDock()  { set(true);  }
-function closeDock() { set(false); }
-
-// ------------------ EVENT ------------------
-ui.toggleBtn.addEventListener('click', () => set(!isOpen));
-//ui.toggleBtn.addEventListener('keydown', onHotkeyH, true);
-//set(!isOpen)
-// h
-
-  // Snapshot (header only)
-  // Snapshot (header only) — offscreen render target fallback (no preserveDrawingBuffer needed)
-ui.fitBtn.addEventListener('click', () => {
-  const { renderer, scene, camera, composer } = app;
-
-  // helper: download a URL/blob
-  const downloadURL = (url, isObjURL = false) => {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'snapshot.png';
-    document.body.appendChild(a);
-    a.click();
-    if (isObjURL) URL.revokeObjectURL(url);
-    a.remove();
-  };
-
-  // try fast path first (works if preserveDrawingBuffer=true and no CORS taint)
-  try {
-    renderer.setRenderTarget(null);
-    if (composer) composer.render(); else renderer.render(scene, camera);
-    const url = renderer.domElement.toDataURL('image/png');
-    // if we got here, it worked
-    downloadURL(url);
-    return;
-  } catch (e) {
-    // fall through to robust path
-    console.warn('[Snapshot] fast path failed, trying offscreen RT.', e);
-  }
-
-  // robust path: render to offscreen target and read pixels
-  try {
-    const size = renderer.getSize(new THREE.Vector2());
-    const dpr  = renderer.getPixelRatio();
-    const w = Math.max(1, Math.floor(size.x * dpr));
-    const h = Math.max(1, Math.floor(size.y * dpr));
-
-    const oldTarget = renderer.getRenderTarget();
-    const rt = new THREE.WebGLRenderTarget(w, h, { samples: 0 });
-    renderer.setRenderTarget(rt);
-    if (composer) composer.render(); else renderer.render(scene, camera);
-
-    const buffer = new Uint8Array(w * h * 4);
-    renderer.readRenderTargetPixels(rt, 0, 0, w, h, buffer);
-
-    // flip Y and pack into a canvas
-    const canvas = document.createElement('canvas');
-    canvas.width = w; canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    const imgData = ctx.createImageData(w, h);
-
-    // flip vertically: WebGL origin is bottom-left; 2D canvas is top-left
-    for (let y = 0; y < h; y++) {
-      const src = (h - 1 - y) * w * 4;
-      const dst = y * w * 4;
-      imgData.data.set(buffer.subarray(src, src + w * 4), dst);
+    if (open) {
+      // OPEN tween
+      ui.dock.style.opacity = '1';
+      ui.dock.style.transform = 'translateX(0)';
+      ui.dock.style.pointerEvents = 'auto';
+      ui.toggleBtn.textContent = 'Close Tools';
+      try { styleDockLeft(ui.dock); } catch (_) {}
+      syncExplodeUI();
+    } else {
+      // CLOSE tween
+      ui.dock.style.opacity = '0';
+      ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
+      ui.dock.style.pointerEvents = 'none';
+      ui.toggleBtn.textContent = 'Open Tools';
     }
-    ctx.putImageData(imgData, 0, 0);
-
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        alert('Snapshot failed. Check CORS headers on textures/assets.');
-        return;
-      }
-      downloadURL(URL.createObjectURL(blob), true);
-    }, 'image/png');
-
-    // restore + cleanup
-    renderer.setRenderTarget(oldTarget);
-    rt.dispose();
-  } catch (e) {
-    console.error('[Snapshot] offscreen capture failed:', e);
-    alert('Snapshot error. Likely CORS-blocked textures. Ensure servers send Access-Control-Allow-Origin and loaders use crossOrigin="anonymous".');
   }
-});
 
+  // Wrappers
+  function openDock() { set(true); }
+  function closeDock() { set(false); }
+
+  // ------------------ EVENT ------------------
+  ui.toggleBtn.addEventListener('click', () => set(!isOpen));
+
+  // Snapshot (header only) — offscreen render target fallback (no preserveDrawingBuffer needed)
+  ui.fitBtn.addEventListener('click', () => {
+    const { renderer, scene, camera, composer } = app;
+
+    const downloadURL = (url, isObjURL = false) => {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'snapshot.png';
+      document.body.appendChild(a);
+      a.click();
+      if (isObjURL) URL.revokeObjectURL(url);
+      a.remove();
+    };
+
+    // fast path
+    try {
+      renderer.setRenderTarget(null);
+      if (composer) composer.render(); else renderer.render(scene, camera);
+      const url = renderer.domElement.toDataURL('image/png');
+      downloadURL(url);
+      return;
+    } catch (e) {
+      console.warn('[Snapshot] fast path failed, trying offscreen RT.', e);
+    }
+
+    // robust path
+    try {
+      const size = renderer.getSize(new THREE.Vector2());
+      const dpr = renderer.getPixelRatio();
+      const w = Math.max(1, Math.floor(size.x * dpr));
+      const h = Math.max(1, Math.floor(size.y * dpr));
+
+      const oldTarget = renderer.getRenderTarget();
+      const rt = new THREE.WebGLRenderTarget(w, h, { samples: 0 });
+      renderer.setRenderTarget(rt);
+      if (composer) composer.render(); else renderer.render(scene, camera);
+
+      const buffer = new Uint8Array(w * h * 4);
+      renderer.readRenderTargetPixels(rt, 0, 0, w, h, buffer);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      const imgData = ctx.createImageData(w, h);
+
+      for (let y = 0; y < h; y++) {
+        const src = (h - 1 - y) * w * 4;
+        const dst = y * w * 4;
+        imgData.data.set(buffer.subarray(src, src + w * 4), dst);
+      }
+      ctx.putImageData(imgData, 0, 0);
+
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          alert('Snapshot failed. Check CORS headers on textures/assets.');
+          return;
+        }
+        downloadURL(URL.createObjectURL(blob), true);
+      }, 'image/png');
+
+      renderer.setRenderTarget(oldTarget);
+      rt.dispose();
+    } catch (e) {
+      console.error('[Snapshot] offscreen capture failed:', e);
+      alert('Snapshot error. Likely CORS-blocked textures. Ensure servers send Access-Control-Allow-Origin and loaders use crossOrigin="anonymous".');
+    }
+  });
 
   // Render mode
   renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
@@ -401,100 +388,123 @@ ui.fitBtn.addEventListener('click', () => {
     });
   }
 
-  // ---------- Section plane ----------
+  // ============================================================
+  // SECTION PLANE — ROBOT ONLY (FIX)
+  // ============================================================
   let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
   let sectionPlane = null, secVisual = null;
 
+  // --- Helpers to apply clipping ONLY to robot meshes, without touching grid/ground/axes ---
+  function traverseRobotMeshes(fn) {
+    if (!app.robot) return;
+    app.robot.traverse((o) => {
+      if (!o || !o.isMesh || !o.geometry) return;
+      if (o.userData && o.userData.__isHoverOverlay) return;
+      fn(o);
+    });
+  }
 
+  function setMaterialClipping(mat, plane) {
+    if (!mat) return;
+    mat.clippingPlanes = plane ? [plane] : null;
+    // keep defaults sane
+    mat.clipIntersection = false;
+    mat.clipShadows = true;
+    mat.needsUpdate = true;
+  }
 
+  // We avoid affecting shared materials by cloning robot materials once per mesh
+  function ensureClippableMaterials(mesh) {
+    if (!mesh || !mesh.material) return;
+    if (mesh.userData && mesh.userData.__clipOriginalMaterial) return;
 
+    const orig = mesh.material;
+    mesh.userData ??= {};
+    mesh.userData.__clipOriginalMaterial = orig;
 
+    if (Array.isArray(orig)) {
+      const clones = orig.map(m => (m && m.clone) ? m.clone() : m);
+      mesh.userData.__clipClonedMaterial = clones;
+    } else {
+      mesh.userData.__clipClonedMaterial = (orig && orig.clone) ? orig.clone() : orig;
+    }
+  }
 
+  function applyRobotOnlyClipping(plane) {
+    // localClippingEnabled must be true for per-material clipping to work
+    app.renderer.localClippingEnabled = true;
 
+    // IMPORTANT: keep GLOBAL clipping planes empty so helpers are never clipped
+    app.renderer.clippingPlanes = [];
 
+    traverseRobotMeshes((mesh) => {
+      ensureClippableMaterials(mesh);
 
+      // switch robot mesh to its cloned materials (so shared materials won't affect helpers)
+      if (mesh.userData && mesh.userData.__clipClonedMaterial) {
+        mesh.material = mesh.userData.__clipClonedMaterial;
+      }
 
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) setMaterialClipping(m, plane);
+    });
+  }
 
+  function clearRobotOnlyClipping() {
+    // restore original materials back to the robot meshes
+    traverseRobotMeshes((mesh) => {
+      if (mesh.userData && mesh.userData.__clipOriginalMaterial) {
+        // clear clipping on cloned mats (optional, keeps state clean)
+        const cm = mesh.userData.__clipClonedMaterial;
+        const mats = Array.isArray(cm) ? cm : [cm];
+        for (const m of mats) setMaterialClipping(m, null);
 
+        mesh.material = mesh.userData.__clipOriginalMaterial;
+      } else if (mesh.material) {
+        // fallback: just clear clipping
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const m of mats) setMaterialClipping(m, null);
+      }
+    });
 
+    // disable clipping system
+    app.renderer.clippingPlanes = [];
+    app.renderer.localClippingEnabled = false;
+  }
 
+  function ensureSectionVisual() {
+    if (secVisual) return secVisual;
 
+    const THICK = 0.001;
+    const geom = new THREE.BoxGeometry(1, 1, THICK);
 
+    const makeMat = (side) => new THREE.MeshBasicMaterial({
+      color: theme.teal,
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+      depthTest: true,
+      toneMapped: false,
+      premultipliedAlpha: true,
+      side
+    });
 
+    const back = new THREE.Mesh(geom.clone(), makeMat(THREE.BackSide));
+    const front = new THREE.Mesh(geom.clone(), makeMat(THREE.FrontSide));
 
+    back.renderOrder = 9999;
+    front.renderOrder = 10000;
 
+    secVisual = new THREE.Group();
+    secVisual.add(back, front);
 
+    secVisual.visible = false;
+    secVisual.renderOrder = 10000;
+    secVisual.frustumCulled = false;
 
-
-
-
-function ensureSectionVisual() {
-  if (secVisual) return secVisual;
-
-  const THICK = 0.001;                   // requested thickness
-  const geom  = new THREE.BoxGeometry(1, 1, THICK); // X=width, Y=height, Z=thickness
-
-  const makeMat = (side) => new THREE.MeshBasicMaterial({
-    color: theme.teal,
-    transparent: true,
-    opacity: 0.4,
-    depthWrite: false,                  // don't dirty Z
-    depthTest: true,                    // stable against scene
-    toneMapped: false,
-    premultipliedAlpha: true,
-    side
-  });
-
-  const back  = new THREE.Mesh(geom.clone(),  makeMat(THREE.BackSide));
-  const front = new THREE.Mesh(geom.clone(),  makeMat(THREE.FrontSide));
-
-  // draw order: back first, then front (prevents the far face from vanishing)
-  back.renderOrder  = 9999;
-  front.renderOrder = 10000;
-
-  // group handle (move/rotate/scale this one like your old mesh)
-  secVisual = new THREE.Group();
-  secVisual.add(back, front);
-
-  secVisual.visible = false;            // your code toggles this elsewhere
-  secVisual.renderOrder = 10000;        // keep high so it draws late
-  secVisual.frustumCulled = false;
-
-  app.scene.add(secVisual);
-  return secVisual;
-}
-
-
-
-
-
-
-
-
-
-  
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  
-
-
-
-
+    app.scene.add(secVisual);
+    return secVisual;
+  }
 
   function refreshSectionVisual(maxDim, center) {
     if (!secVisual) return;
@@ -504,10 +514,12 @@ function ensureSectionVisual() {
   }
 
   function updateSectionPlane() {
-    const renderer = app.renderer;
-    renderer.clippingPlanes = [];
+    // ALWAYS keep global clipping planes empty so grid/helpers are never clipped
+    app.renderer.clippingPlanes = [];
+
     if (!secEnabled || !app.robot) {
-      renderer.localClippingEnabled = false;
+      sectionPlane = null;
+      clearRobotOnlyClipping();
       if (secVisual) secVisual.visible = false;
       return;
     }
@@ -517,8 +529,15 @@ function ensureSectionVisual() {
       secAxis === 'Y' ? 1 : 0,
       secAxis === 'Z' ? 1 : 0
     );
+
     const box = new THREE.Box3().setFromObject(app.robot);
-    if (box.isEmpty()) { renderer.localClippingEnabled = false; if (secVisual) secVisual.visible = false; return; }
+    if (box.isEmpty()) {
+      sectionPlane = null;
+      clearRobotOnlyClipping();
+      if (secVisual) secVisual.visible = false;
+      return;
+    }
+
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
     const center = box.getCenter(new THREE.Vector3());
@@ -526,10 +545,12 @@ function ensureSectionVisual() {
     const dist = (Number(secDist.value) || 0) * maxDim * 0.5;
     const plane = new THREE.Plane(n, -center.dot(n) - dist);
 
-    renderer.localClippingEnabled = true;
-    renderer.clippingPlanes = [plane];
     sectionPlane = plane;
 
+    // ✅ APPLY CLIPPING TO ROBOT ONLY
+    applyRobotOnlyClipping(plane);
+
+    // Visual plane (never clipped because we do NOT use global clipping)
     ensureSectionVisual();
     refreshSectionVisual(maxDim, center);
     secVisual.visible = !!secPlaneVisible;
@@ -582,101 +603,82 @@ function ensureSectionVisual() {
     requestAnimationFrame(step);
   }
 
+  // Store default distance once (at init)
+  let DEFAULT_RADIUS = null;
 
-// Store default distance once (at init)
-let DEFAULT_RADIUS = null;
-
-function initDefaultRadius(app) {
-  const cam = app.camera, ctrl = app.controls, t = ctrl.target.clone();
-  const cur = currentAzEl(cam, t);
-  DEFAULT_RADIUS = cur.r;   // save the startup distance
-}
-
-// -------------------------------
-  // Put these helpers near your other view utils (above viewEndPosition)
-
-// Compute world-space bounds and a nice “fit” sphere (you already have this)
-function getRobotFitSphere(app) {
-  const root = app.robot || app.scene;
-  if (!root) return null;
-  const box = new THREE.Box3().setFromObject(root);
-  if (box.isEmpty()) return null;
-  const center = box.getCenter(new THREE.Vector3());
-  const size   = box.getSize(new THREE.Vector3());
-  const radius = size.length() * 0.5 * (1 / Math.sqrt(3));
-  return { center, size, radius };
-}
-
-// Distance needed to fit the sphere in the view for a given camera & aspect
-function distanceToFitSphere(cam, radius, pad = 3) {
-  const r = Math.max(1e-6, radius) * pad;
-
-  if (cam.isOrthographicCamera) {
-    // In ortho, distance doesn’t change framing; return something sensible
-    // so near/far and fog behave. Tweak MIN/MAX below if you want.
-    return THREE.MathUtils.clamp(r * 2.0, 0.25, 1e6);
+  function initDefaultRadius(app_) {
+    const cam = app_.camera, ctrl = app_.controls, t = ctrl.target.clone();
+    const cur = currentAzEl(cam, t);
+    DEFAULT_RADIUS = cur.r;
   }
 
-  // Perspective: fit by vertical & horizontal FOV, take the stricter one
-  const vFov = THREE.MathUtils.degToRad(cam.fov);
-  const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * (cam.aspect || 1));
-  const dV = r / Math.tan(vFov * 0.5);
-  const dH = r / Math.tan(hFov * 0.5);
-  return Math.max(dV, dH);
-}
-
-// Optional clamp so tiny robots aren’t viewed from absurdly close,
-// and huge robots don’t push the camera miles away.
-const AUTO_RADIUS_MIN = 0.35;   // set to 1.0 if you want a 1-unit floor
-const AUTO_RADIUS_MAX = 1e4;    // raise/lower if needed
-
-// -------------------------------
-// Replace your viewEndPosition with this:
-
-function viewEndPose(kind) {
-  const cam = app.camera, ctrl = app.controls;
-  const s = getRobotFitSphere(app);
-  const target = s ? s.center.clone() : ctrl.target.clone(); // <- move target to robot center
-
-  // derive current az/el relative to new target (so the tween is smooth)
-  const curVec = cam.position.clone().sub(target);
-  const len = Math.max(1e-9, curVec.length());
-  const cur = { el: Math.asin(curVec.y / len), az: Math.atan2(curVec.z, curVec.x) };
-
-  // pick destination az/el
-  let az = cur.az, el = cur.el;
-  const topEps = 1e-3;
-  if (kind === 'iso')   { az = Math.PI * 0.25; el = Math.PI * 0.20; }
-  if (kind === 'top')   { az = Math.round(cur.az / (Math.PI/2)) * (Math.PI/2); el = Math.PI/2 - topEps; }
-  if (kind === 'front') { az = Math.PI / 2; el = 0; }
-  if (kind === 'right') { az = 0; el = 0; }
-
-  // pick a distance that fits (persp) or a sensible offset (ortho)
-  let fitR = 4;
-  if (s) {
-    fitR = distanceToFitSphere(cam, s.radius, 3); // you already have distanceToFitSphere()
+  function getRobotFitSphere(app_) {
+    const root = app_.robot || app_.scene;
+    if (!root) return null;
+    const box = new THREE.Box3().setFromObject(root);
+    if (box.isEmpty()) return null;
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const radius = size.length() * 0.5 * (1 / Math.sqrt(3));
+    return { center, size, radius };
   }
 
-  const dir = new THREE.Vector3(
-    Math.cos(el) * Math.cos(az),
-    Math.sin(el),
-    Math.cos(el) * Math.sin(az)
-  ).normalize();
+  function distanceToFitSphere(cam, radius, pad = 3) {
+    const r = Math.max(1e-6, radius) * pad;
 
-  const pos = target.clone().add(dir.multiplyScalar(fitR));
-  return { pos, target };
-}
+    if (cam.isOrthographicCamera) {
+      return THREE.MathUtils.clamp(r * 2.0, 0.25, 1e6);
+    }
 
+    const vFov = THREE.MathUtils.degToRad(cam.fov);
+    const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * (cam.aspect || 1));
+    const dV = r / Math.tan(vFov * 0.5);
+    const dH = r / Math.tan(hFov * 0.5);
+    return Math.max(dV, dH);
+  }
 
+  const AUTO_RADIUS_MIN = 0.35;
+  const AUTO_RADIUS_MAX = 1e4;
+
+  function viewEndPose(kind) {
+    const cam = app.camera, ctrl = app.controls;
+    const s = getRobotFitSphere(app);
+    const target = s ? s.center.clone() : ctrl.target.clone();
+
+    const curVec = cam.position.clone().sub(target);
+    const len = Math.max(1e-9, curVec.length());
+    const cur = { el: Math.asin(curVec.y / len), az: Math.atan2(curVec.z, curVec.x) };
+
+    let az = cur.az, el = cur.el;
+    const topEps = 1e-3;
+    if (kind === 'iso') { az = Math.PI * 0.25; el = Math.PI * 0.20; }
+    if (kind === 'top') { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
+    if (kind === 'front') { az = Math.PI / 2; el = 0; }
+    if (kind === 'right') { az = 0; el = 0; }
+
+    let fitR = 4;
+    if (s) {
+      fitR = distanceToFitSphere(cam, s.radius, 3);
+      fitR = THREE.MathUtils.clamp(fitR, AUTO_RADIUS_MIN, AUTO_RADIUS_MAX);
+    }
+
+    const dir = new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az)
+    ).normalize();
+
+    const pos = target.clone().add(dir.multiplyScalar(fitR));
+    return { pos, target };
+  }
 
   const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
-
   const to = (kind) => viewEndPose(kind);
 
- bIsoEl.addEventListener('click',   () => { const v = to('iso');   tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
- bTopEl.addEventListener('click',   () => { const v = to('top');   tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
- bFrontEl.addEventListener('click', () => { const v = to('front'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
- bRightEl.addEventListener('click', () => { const v = to('right'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+  bIsoEl.addEventListener('click', () => { const v = to('iso'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+  bTopEl.addEventListener('click', () => { const v = to('top'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+  bFrontEl.addEventListener('click', () => { const v = to('front'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+  bRightEl.addEventListener('click', () => { const v = to('right'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
 
   // ---------- Projection ----------
   projSel.addEventListener('change', () => {
@@ -690,51 +692,38 @@ function viewEndPose(kind) {
   togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
   // ============================================================
-  //                       EXPLODE MANAGER
-  //  Smooth, spring-tweened explode with robust calibration
-  //  - Stable per-part vectors in **parent local space**
-  //  - No double-application on nested meshes
-  //  - Recalibrates baseline when amount≈0 or on demand
+  // EXPLODE MANAGER (kept as-is except a tiny bugfix: amount() must be inside manager)
   // ============================================================
-
-   function amount() {
-    // Use `current` so the UI reflects the settled spring position.
-    // (If you prefer the intended position, return `target` instead.)
-    return current;
-  }
-  
   function makeExplodeManager() {
-    // Internals
-    const registry = []; // { node, baseLocal:Vector3, dirLocal:Vector3 }
-    const marker = new WeakSet(); // mark chosen top parts to avoid nesting
+    const registry = [];
+    const marker = new WeakSet();
     let maxDim = 1;
     let prepared = false;
 
-    // spring state
-    let current = 0;            // current explode amount [0..1]
-    let target = 0;             // target explode amount [0..1]
-    let vel = 0;                // velocity in "amount units / s"
+    let current = 0;
+    let target = 0;
+    let vel = 0;
     let raf = null;
     let lastT = 0;
-    const stiffness = 18;       // rad/s (ω) — higher snappier
-    const damping   = 2 * Math.sqrt(stiffness); // critical damping
+    const stiffness = 18;
+    const damping = 2 * Math.sqrt(stiffness);
 
-    // recalibration timer when at zero
     let zeroSince = null;
 
+    function amount() {
+      return current;
+    }
+
     function worldDirToParentLocal(parent, dirWorld) {
-      // Convert direction vector from world to parent's local (ignore translation)
       const m = new THREE.Matrix4().copy(parent.matrixWorld).invert();
-      const n = new THREE.Matrix3().setFromMatrix4(m); // normal matrix
+      const n = new THREE.Matrix3().setFromMatrix4(m);
       return dirWorld.clone().applyMatrix3(n).normalize();
     }
 
     function chooseTopPartFor(mesh) {
-      // climb up until we reach a node whose parent either is the robot root
-      // or has already been selected as a part
       let n = mesh;
       while (n && n !== app.robot) {
-        if (marker.has(n)) return n; // already chosen
+        if (marker.has(n)) return n;
         if (n.parent === app.robot) return n;
         n = n.parent;
       }
@@ -749,14 +738,12 @@ function viewEndPose(kind) {
 
     function prepare() {
       registry.length = 0;
-      markClear();
       if (!app.robot) { prepared = false; return; }
 
       const R = computeBounds();
       if (!R) { prepared = false; return; }
       maxDim = Math.max(R.size.x, R.size.y, R.size.z) || 1;
 
-      // collect parts (top-most parents with geometry)
       const parts = new Set();
       const seen = new WeakSet();
       app.robot.traverse((o) => {
@@ -766,7 +753,6 @@ function viewEndPose(kind) {
         }
       });
 
-      // capture base & dir in parent local space
       parts.forEach((node) => {
         const parent = node.parent || app.robot;
         const baseLocal = node.position.clone();
@@ -778,20 +764,15 @@ function viewEndPose(kind) {
         if (!isFinite(dirWorld.x + dirWorld.y + dirWorld.z)) return;
 
         const dirLocal = worldDirToParentLocal(parent, dirWorld);
-        // if degenerate, jitter slightly
         if (!isFinite(dirLocal.x + dirLocal.y + dirLocal.z) || dirLocal.lengthSq() < 1e-12) {
-          dirLocal.set((Math.random()*2-1), (Math.random()*2-1), (Math.random()*2-1)).normalize();
+          dirLocal.set((Math.random() * 2 - 1), (Math.random() * 2 - 1), (Math.random() * 2 - 1)).normalize();
         }
 
         registry.push({ node, parent, baseLocal, dirLocal });
       });
 
       prepared = true;
-      zeroSince = performance.now(); // fresh baseline considered "zero"
-    }
-
-    function markClear() {
-      // (no-op now, we simply let WeakSets be GC'd)
+      zeroSince = performance.now();
     }
 
     function applyAmount(a01) {
@@ -804,37 +785,32 @@ function viewEndPose(kind) {
         node.position.copy(baseLocal).addScaledVector(dirLocal, f * maxOffset);
       }
 
-      // keep section visuals and other helpers in sync
       updateSectionPlane?.();
-      // render one frame so it feels responsive even if main loop is paused
-      try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch(_) {}
+      try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch (_) {}
     }
 
     function tickSpring(now) {
       if (!lastT) lastT = now;
-      const dt = Math.min(0.05, (now - lastT) / 1000); // clamp 50ms for stability
+      const dt = Math.min(0.05, (now - lastT) / 1000);
       lastT = now;
 
-      // critically damped spring to target
       const x = current, v = vel, xT = target;
       const a = stiffness * (xT - x) - damping * v;
       vel = v + a * dt;
       current = x + vel * dt;
 
-      // snap when close
       if (Math.abs(current - target) < 0.0005 && Math.abs(vel) < 0.0005) {
         current = target; vel = 0;
       }
 
       applyAmount(current);
 
-      // auto-recalibrate baseline if user keeps it at ~0 for a moment
       if (current === 0) {
         zeroSince ??= now;
-        if (now - zeroSince > 300) { // 300ms stable at zero → recapture as new baseline
-          const keepTarget = target; // preserve intent
-          prepare();                 // new base from current joint pose
-          applyAmount(current);      // re-apply exact zero after recalibration
+        if (now - zeroSince > 300) {
+          const keepTarget = target;
+          prepare();
+          applyAmount(current);
           target = keepTarget;
           zeroSince = now;
         }
@@ -845,7 +821,7 @@ function viewEndPose(kind) {
       if (current !== target || vel !== 0) {
         raf = requestAnimationFrame(tickSpring);
       } else {
-        raf = null; // stop when settled
+        raf = null;
       }
     }
 
@@ -863,7 +839,6 @@ function viewEndPose(kind) {
     }
 
     function recalibrate() {
-      // public: recalc baseline to current (useful after big joint moves)
       prepare();
       applyAmount(current);
     }
@@ -877,30 +852,18 @@ function viewEndPose(kind) {
   }
 
   const explode = makeExplodeManager();
+  try { app.explodeRecalibrate = () => explode.recalibrate(); } catch (_) {}
 
-  // Expose a hook so other parts (e.g., joint-drag code) can request recalibration:
-  try { app.explodeRecalibrate = () => explode.recalibrate(); } catch(_) {}
-
-  // Drive explode from slider (smooth spring tween)
   explodeSlider.addEventListener('input', () => {
     explode.setTarget(Number(explodeSlider.value) || 0);
   });
 
-  // Double-click label area to recalibrate baseline instantly (optional UX)
-  // (Assumes the row label is the first child of the row grid)
-  // You can comment this if unwanted.
-  // ui.body.querySelectorAll('div').forEach(div => {
-  //   if (div.textContent === 'Explode') {
-  //     div.addEventListener('dblclick', () => explode.recalibrate());
-  //   }
-  // });
-
   function syncExplodeUI() {
-  try {
-    const a = explode.amount();
-    if (!Number.isNaN(a)) explodeSlider.value = String(Math.max(0, Math.min(1, a)));
-  } catch {}
-}
+    try {
+      const a = explode.amount();
+      if (!Number.isNaN(a)) explodeSlider.value = String(Math.max(0, Math.min(1, a)));
+    } catch { }
+  }
 
   // ---------- Utilities ----------
   function styleDockLeft(dockEl) {
@@ -916,39 +879,32 @@ function viewEndPose(kind) {
   // Start closed
   set(false);
 
-  //
+  function onHotkeyH(e) {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
 
-  // 1) Hotkey handler: ONLY detects "h" and calls the tween
-//function onHotkeyH(e) {set(!isOpen)}
-
-function onHotkeyH(e) {
-  const tag = (e.target && e.target.tagName || '').toLowerCase();
-  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
-
-  if (e.key === 't' || e.key === 'T' || e.code === 'KeyT') {
-    e.preventDefault();
-    try { console.log('pressed t'); } catch {}
-
-    // Call the tween function (pass your own elements/params)
-    set(!isOpen);
+    if (e.key === 't' || e.key === 'T' || e.code === 'KeyT') {
+      e.preventDefault();
+      try { console.log('pressed t'); } catch { }
+      set(!isOpen);
+    }
   }
-}
-  
-// Wire the hotkey:
-document.addEventListener('keydown', onHotkeyH, true);
-  
-  //
+  document.addEventListener('keydown', onHotkeyH, true);
+
   // Public API
   function destroy() {
-    try { ui.toggleBtn.remove(); } catch (_) {}
-    try { ui.dock.remove(); } catch (_) {}
-    try { ui.root.remove(); } catch (_) {}
+    try { ui.toggleBtn.remove(); } catch (_) { }
+    try { ui.dock.remove(); } catch (_) { }
+    try { ui.root.remove(); } catch (_) { }
+
     try {
-      app.renderer.localClippingEnabled = false;
-      app.renderer.clippingPlanes = [];
+      // ensure we restore robot materials and disable clipping
+      clearRobotOnlyClipping();
       if (secVisual) app.scene.remove(secVisual);
-    } catch (_) {}
+    } catch (_) { }
+
     explode.destroy();
+    document.removeEventListener('keydown', onHotkeyH, true);
   }
 
   return { open: openDock, close: closeDock, set, destroy };
