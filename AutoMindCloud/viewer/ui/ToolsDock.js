@@ -1,4 +1,4 @@
- // /viewer/ui/ToolsDock.js / checkpoint   
+// /viewer/ui/ToolsDock.js / checkpoint   
 // Floating tools dock: render modes, explode (smoothed & robust), section plane, views, projection, scene toggles, snapshot.
 /* global THREE */
 
@@ -391,7 +391,7 @@ ui.fitBtn.addEventListener('click', () => {
           if (mode === 'X-Ray') {
             m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.depthTest = true;
           } else if (mode === 'Ghost') {
-            m.transparent = true; m.opacity = 0.70; m.depthWrite = true; m.depthTest = true;
+            m.transparent = true; m.opacity = 0.70; m.depthWrite = false; m.depthTest = true;
           } else {
             m.transparent = false; m.opacity = 1.0; m.depthWrite = true; m.depthTest = true;
           }
