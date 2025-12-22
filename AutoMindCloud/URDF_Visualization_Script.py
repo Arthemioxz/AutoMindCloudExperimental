@@ -300,23 +300,58 @@ def URDF_Visualization(
   # --- Buscar directorios urdf / meshes ---
 
   def find_dirs(root: str):
-      u = os.path.join(root, "urdf")
+      # Layouts soportados:
+      #  1) NUEVO (preferido):
+      #       root/
+      #         meshes/
+      #         *.urdf
+      #  2) ANTIGUO:
+      #       root/
+      #         urdf/*.urdf
+      #         meshes/
+      #
+      # Devuelve: (urdf_dir, meshes_dir) donde urdf_dir es la carpeta que contiene los .urdf
+
+      def has_urdf_files(p: str) -> bool:
+          try:
+              return any(name.lower().endswith(".urdf") for name in os.listdir(p))
+          except Exception:
+              return False
+
+      # Root directo
       m = os.path.join(root, "meshes")
-      if os.path.isdir(u) and os.path.isdir(m):
-          return u, m
+      u = os.path.join(root, "urdf")
+      if os.path.isdir(m):
+          if has_urdf_files(root):
+              return root, m
+          if os.path.isdir(u) and has_urdf_files(u):
+              return u, m
+
+      # Buscar un nivel abajo
       if os.path.isdir(root):
-          for name in os.listdir(root):
-              cand = os.path.join(root, name)
-              uu = os.path.join(cand, "urdf")
-              mm = os.path.join(cand, "meshes")
-              if os.path.isdir(uu) and os.path.isdir(mm):
-                  return uu, mm
+          try:
+              for name in os.listdir(root):
+                  cand = os.path.join(root, name)
+                  if not os.path.isdir(cand):
+                      continue
+
+                  mm = os.path.join(cand, "meshes")
+                  uu = os.path.join(cand, "urdf")
+
+                  if os.path.isdir(mm):
+                      if has_urdf_files(cand):
+                          return cand, mm
+                      if os.path.isdir(uu) and has_urdf_files(uu):
+                          return uu, mm
+          except Exception:
+              pass
+
       return None, None
 
   urdf_dir, meshes_dir = find_dirs(folder_path)
   if not urdf_dir or not meshes_dir:
       return HTML(
-          f"<b style='color:red'>No se encontró /urdf y /meshes dentro de {folder_path}</b>"
+          f"<b style='color:red'>No se encontró .urdf (en root o /urdf) y /meshes dentro de {folder_path}</b>"
       )
 
   # --- URDF principal ---
