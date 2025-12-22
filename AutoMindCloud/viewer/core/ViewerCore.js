@@ -68,7 +68,7 @@ function fitAndCenter(camera, controls, object, pad = 1.08) {
     }
     camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
   } else if (camera.isOrthographicCamera) {
-    // set ortho frustum around object
+    // set ortho frustum around object (and at least around grid size 10 => half 5)
     const aspect = Math.max(1e-6, (controls?.domElement?.clientWidth || 1) / (controls?.domElement?.clientHeight || 1));
     const minSpan = 5 * Math.SQRT2;
     const span = Math.max(maxDim, minSpan);
@@ -99,7 +99,7 @@ function buildHelpers() {
   // Ground (only useful if shadows are enabled)
   const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
-  groundMat.depthWrite = false;
+  groundMat.depthWrite = false; // IMPORTANT: prevents “cutting” artifacts with transparent modes + shadows
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.0001;
   ground.receiveShadow = false;
@@ -115,15 +115,8 @@ function buildHelpers() {
 }
 
 /**
- * Create the viewer core.
- * @param {Object} params
- * @param {HTMLElement} params.container
- * @param {number|null} params.background - three Color int or null for transparent
- * @param {number} [params.pixelRatio] - optional pixel ratio override
- */
-/**
  * Minimal TrackballControls (UMD-friendly) to allow full 360° rotation in any direction,
- * while keeping "smooth" inertia similar to OrbitControls damping.
+ * while keeping the SAME “smooth” feel (inertia) for rotate + pan + zoom.
  * API surface used by this project:
  *  - controls.object
  *  - controls.domElement
@@ -157,16 +150,21 @@ class TrackballControls {
 
     this._pointerId = null;
 
-    // inertia
+    // inertia (rotate + pan + zoom)
     this._lastAxis = new THREE.Vector3(1, 0, 0);
     this._lastAngle = 0;
+    this._lastPan = new THREE.Vector3(0, 0, 0);
+    this._lastDolly = 0;
 
     this._onContextMenu = (e) => e.preventDefault();
 
     this._onWheel = (e) => {
       if (!this.enabled) return;
       e.preventDefault();
-      const delta = (e.deltaY || 0);
+
+      // FIX: wheel was inverted — invert delta so it matches the original feel
+      const delta = -(e.deltaY || 0);
+
       this._dolly(delta);
       this.update();
     };
@@ -184,6 +182,8 @@ class TrackballControls {
 
       // stop inertia when user re-engages
       this._lastAngle = 0;
+      this._lastPan.set(0, 0, 0);
+      this._lastDolly = 0;
 
       try { this.domElement.setPointerCapture(e.pointerId); } catch (_) {}
       window.addEventListener('pointermove', this._onPointerMove, true);
@@ -200,7 +200,8 @@ class TrackballControls {
         this._rotate(this._start, this._end);
       } else if (this._state === 2) {
         const dy = (this._end.y - this._start.y);
-        this._dolly(dy * 4);
+        // Keep zoom drag consistent with wheel (up = zoom in)
+        this._dolly(-dy * 4);
       } else if (this._state === 3) {
         this._pan(this._start, this._end);
       }
@@ -229,15 +230,31 @@ class TrackballControls {
   }
 
   update() {
-    // apply inertia (smooth) after release
-    if (!this.staticMoving && this._state === 0 && Math.abs(this._lastAngle) > 1e-6) {
-      const angle = this._lastAngle;
-      const axis = this._lastAxis;
-      this._applyRotation(axis, angle);
+    // apply inertia (smooth) after release — rotate + pan + zoom
+    if (!this.staticMoving && this._state === 0) {
 
-      // exponential decay
-      this._lastAngle *= (1.0 - this.dynamicDampingFactor);
-      if (Math.abs(this._lastAngle) < 1e-6) this._lastAngle = 0;
+      // ROTATE inertia
+      if (Math.abs(this._lastAngle) > 1e-6) {
+        this._applyRotation(this._lastAxis, this._lastAngle);
+        this._lastAngle *= (1.0 - this.dynamicDampingFactor);
+        if (Math.abs(this._lastAngle) < 1e-6) this._lastAngle = 0;
+      }
+
+      // PAN inertia
+      if (this._lastPan.lengthSq() > 1e-12) {
+        this.object.position.add(this._lastPan);
+        this.target.add(this._lastPan);
+
+        this._lastPan.multiplyScalar(1.0 - this.dynamicDampingFactor);
+        if (this._lastPan.lengthSq() < 1e-12) this._lastPan.set(0, 0, 0);
+      }
+
+      // ZOOM inertia
+      if (Math.abs(this._lastDolly) > 1e-6) {
+        this._dolly(this._lastDolly);
+        this._lastDolly *= (1.0 - this.dynamicDampingFactor);
+        if (Math.abs(this._lastDolly) < 1e-6) this._lastDolly = 0;
+      }
     }
 
     this.object.lookAt(this.target);
@@ -289,7 +306,7 @@ class TrackballControls {
     const dot = THREE.MathUtils.clamp(a.dot(b), -1, 1);
     let angle = Math.acos(dot) * this.rotateSpeed;
 
-    // FIX: invert so dragging right feels like "goes right" (CAD-like)
+    // dragging right should feel like model rotates “with” the drag (CAD-like)
     angle = -angle;
 
     // axis in world space
@@ -314,6 +331,9 @@ class TrackballControls {
       this.object.zoom = Math.max(1e-3, this.object.zoom / zoomFactor);
       this.object.updateProjectionMatrix();
     }
+
+    // inertia seed
+    this._lastDolly = delta;
   }
 
   _pan(startPx, endPx) {
@@ -321,7 +341,6 @@ class TrackballControls {
     const dx = (endPx.x - startPx.x);
     const dy = (endPx.y - startPx.y);
 
-    const w = Math.max(1, r.width);
     const h = Math.max(1, r.height);
 
     let scale = 1.0;
@@ -347,6 +366,9 @@ class TrackballControls {
 
     this.object.position.add(pan);
     this.target.add(pan);
+
+    // inertia seed
+    this._lastPan.copy(pan);
   }
 }
 
@@ -405,7 +427,6 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   controls.panSpeed = 0.8;
   controls.staticMoving = false;
   controls.dynamicDampingFactor = 0.15;
-
 
   // Lights
   const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.7);
@@ -502,7 +523,7 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
       const dirN = v.clone().normalize();
 
       const b = robotModel ? getObjectBounds(robotModel, 1.0) : null;
-      const minSpan = 5 * Math.SQRT2;
+      const minSpan = 5 * Math.SQRT2; // ensures grid size 10 never clips
       const span = Math.max(orthoSize, (b ? b.maxDim : 0), minSpan);
 
       ortho.left = -span * asp;
