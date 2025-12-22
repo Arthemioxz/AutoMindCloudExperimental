@@ -474,9 +474,10 @@ def URDF_Visualization(
 </head>
 <body>
   <div id="app"></div>
-  <div class="badge" style="display: inline-block; transform: scale(2); transform-origin: top left; margin-bottom: 50px; margin-right: 50px;">
+  <div class="badge" style="display:inline-block; transform:scale(2); transform-origin:top left; margin-bottom:50px; margin-right:50px; margin-left:-10px;">
     <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="AutoMind"/>
   </div>
+
 
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
