@@ -1,23 +1,136 @@
 // /viewer/core/ViewerCore.js
-// Three.js r132 compatible core for loading URDF and controlling scene.
-
-'use strict';
+// Three.js r132 compatible core for a URDF viewer
+// Exports: createViewer({ container, background, pixelRatio })
 
 /* global THREE, URDFLoader */
 
 function assertThree() {
-  if (!window.THREE) throw new Error('THREE not found on window');
+  if (typeof THREE === 'undefined') {
+    throw new Error('[ViewerCore] THREE is not defined. Load three.js before ViewerCore.js');
+  }
+  if (typeof URDFLoader === 'undefined') {
+    throw new Error('[ViewerCore] URDFLoader is not defined. Load urdf-loader UMD before ViewerCore.js');
+  }
 }
 
+/** Minor math helpers */
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
 
-// Viewer uses a GridHelper of size 10; keep ortho frustum large enough so the grid never clips.
-const GRID_SIZE = 10;
-const GRID_HALF = GRID_SIZE * 0.5;
+/** Ensure meshes are double-sided and shadows off by default */
+function applyDoubleSided(root) {
+  root?.traverse?.(n => {
+    if (n.isMesh && n.geometry) {
+      if (Array.isArray(n.material)) n.material.forEach(m => (m.side = THREE.DoubleSide));
+      else if (n.material) n.material.side = THREE.DoubleSide;
+      n.castShadow = true;
+      n.receiveShadow = true;
+      n.geometry.computeVertexNormals?.();
+    }
+  });
+}
+
+/** Many URDF assets come Z-up; we rectify to Y-up (Three default) once. */
+function rectifyUpForward(obj) {
+  if (!obj || obj.userData.__rectified) return;
+  obj.rotateX(-Math.PI / 2);
+  obj.userData.__rectified = true;
+  obj.updateMatrixWorld(true);
+}
+
+/** Compute a padded bounding box for an object */
+function getObjectBounds(object, pad = 1.0) {
+  const box = new THREE.Box3().setFromObject(object);
+  if (box.isEmpty()) return null;
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3()).multiplyScalar(pad);
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  return { box, center, size, maxDim };
+}
+
+/** Fit an object to the given camera+controls */
+function fitAndCenter(camera, controls, object, pad = 1.08) {
+  const b = getObjectBounds(object, pad);
+  if (!b) return false;
+
+  const { center, maxDim } = b;
+
+  if (camera.isPerspectiveCamera) {
+    // distance heuristic robust across FOVs
+    const fov = (camera.fov || 60) * Math.PI / 180;
+    const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
+    camera.near = Math.max(maxDim / 1000, 0.001);
+    camera.far = Math.max(maxDim * 1500, 1500);
+    camera.updateProjectionMatrix();
+    // keep direction (if any); otherwise use iso-ish
+    const dir = camera.position.clone().sub(controls.target || new THREE.Vector3()).normalize();
+    if (!isFinite(dir.lengthSq()) || dir.lengthSq() < 1e-10) {
+      dir.set(1, 0.7, 1).normalize();
+    }
+    camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
+  } else if (camera.isOrthographicCamera) {
+    // set ortho frustum around object
+    const aspect = Math.max(1e-6, (controls?.domElement?.clientWidth || 1) / (controls?.domElement?.clientHeight || 1));
+    const minSpan = 5 * Math.SQRT2;
+    const span = Math.max(maxDim, minSpan);
+    camera.left = -span * aspect;
+    camera.right = span * aspect;
+    camera.top = span;
+    camera.bottom = -span;
+    camera.near = Math.max(maxDim / 1000, 0.001);
+    camera.far = Math.max(maxDim * 1500, 1500);
+    camera.updateProjectionMatrix();
+    camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
+  }
+
+  controls.target.copy(center);
+  controls.update();
+  return true;
+}
+
+/** Build ground, grid, axes helpers (hidden by default) */
+function buildHelpers() {
+  const group = new THREE.Group();
+
+  // Grid (teal-ish defaults; can be recolored by UI later)
+  const grid = new THREE.GridHelper(10, 20, 0x0ea5a6, 0x14b8b9);
+  grid.visible = false;
+  group.add(grid);
+
+  // Ground (only useful if shadows are enabled)
+  const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
+  groundMat.depthWrite = false;
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.0001;
+  ground.receiveShadow = false;
+  ground.visible = false;
+  group.add(ground);
+
+  // Axes
+  const axes = new THREE.AxesHelper(1);
+  axes.visible = false;
+  group.add(axes);
+
+  return { group, grid, ground, axes };
+}
 
 /**
- * Minimal TrackballControls (r132-friendly) to allow full 360° rotation in any direction.
- * Keeps the same public surface we rely on elsewhere: {"object","domElement","enabled","target","update()"}.
+ * Create the viewer core.
+ * @param {Object} params
+ * @param {HTMLElement} params.container
+ * @param {number|null} params.background - three Color int or null for transparent
+ * @param {number} [params.pixelRatio] - optional pixel ratio override
+ */
+/**
+ * Minimal TrackballControls (UMD-friendly) to allow full 360° rotation in any direction,
+ * while keeping "smooth" inertia similar to OrbitControls damping.
+ * API surface used by this project:
+ *  - controls.object
+ *  - controls.domElement
+ *  - controls.enabled
+ *  - controls.target (THREE.Vector3)
+ *  - controls.update()
+ *  - controls.handleResize() (optional)
  */
 class TrackballControls {
   constructor(object, domElement) {
@@ -30,6 +143,7 @@ class TrackballControls {
     this.zoomSpeed = 1.2;
     this.panSpeed = 0.8;
 
+    // If false -> inertia after releasing pointer (smooth)
     this.staticMoving = false;
     this.dynamicDampingFactor = 0.15;
 
@@ -41,9 +155,14 @@ class TrackballControls {
     this._start = new THREE.Vector2();
     this._end = new THREE.Vector2();
 
-    this._touchId = null;
+    this._pointerId = null;
+
+    // inertia
+    this._lastAxis = new THREE.Vector3(1, 0, 0);
+    this._lastAngle = 0;
 
     this._onContextMenu = (e) => e.preventDefault();
+
     this._onWheel = (e) => {
       if (!this.enabled) return;
       e.preventDefault();
@@ -54,23 +173,26 @@ class TrackballControls {
 
     this._onPointerDown = (e) => {
       if (!this.enabled) return;
-      // Only track primary pointer
-      if (this._touchId !== null) return;
-      this._touchId = e.pointerId;
+      if (this._pointerId !== null) return;
+      this._pointerId = e.pointerId;
 
+      // match common CAD defaults: L=rotate, M=zoom, R=pan
       this._state = (e.button === 0) ? 1 : (e.button === 1) ? 2 : 3;
 
       this._start.set(e.clientX, e.clientY);
       this._end.copy(this._start);
 
-      try { this.domElement.setPointerCapture(e.pointerId); } catch (err) { }
+      // stop inertia when user re-engages
+      this._lastAngle = 0;
+
+      try { this.domElement.setPointerCapture(e.pointerId); } catch (_) {}
       window.addEventListener('pointermove', this._onPointerMove, true);
       window.addEventListener('pointerup', this._onPointerUp, true);
     };
 
     this._onPointerMove = (e) => {
       if (!this.enabled) return;
-      if (this._touchId !== e.pointerId) return;
+      if (this._pointerId !== e.pointerId) return;
 
       this._end.set(e.clientX, e.clientY);
 
@@ -88,12 +210,13 @@ class TrackballControls {
     };
 
     this._onPointerUp = (e) => {
-      if (this._touchId !== e.pointerId) return;
-      this._touchId = null;
+      if (this._pointerId !== e.pointerId) return;
+      this._pointerId = null;
       this._state = 0;
+
       window.removeEventListener('pointermove', this._onPointerMove, true);
       window.removeEventListener('pointerup', this._onPointerUp, true);
-      try { this.domElement.releasePointerCapture(e.pointerId); } catch (err) { }
+      try { this.domElement.releasePointerCapture(e.pointerId); } catch (_) {}
     };
 
     this.domElement.addEventListener('contextmenu', this._onContextMenu);
@@ -106,15 +229,29 @@ class TrackballControls {
   }
 
   update() {
-    if (!this._rect) this.handleResize();
+    // apply inertia (smooth) after release
+    if (!this.staticMoving && this._state === 0 && Math.abs(this._lastAngle) > 1e-6) {
+      const angle = this._lastAngle;
+      const axis = this._lastAxis;
+      this._applyRotation(axis, angle);
+
+      // exponential decay
+      this._lastAngle *= (1.0 - this.dynamicDampingFactor);
+      if (Math.abs(this._lastAngle) < 1e-6) this._lastAngle = 0;
+    }
+
     this.object.lookAt(this.target);
   }
 
-  _getNDC(clientX, clientY) {
+  _getRect() {
     if (!this._rect) this.handleResize();
-    const x = (clientX - this._rect.left) / Math.max(1, this._rect.width);
-    const y = (clientY - this._rect.top) / Math.max(1, this._rect.height);
-    // map to [-1,1]
+    return this._rect;
+  }
+
+  _getNDC(clientX, clientY) {
+    const r = this._getRect();
+    const x = (clientX - r.left) / Math.max(1, r.width);
+    const y = (clientY - r.top) / Math.max(1, r.height);
     return new THREE.Vector2(x * 2 - 1, -(y * 2 - 1));
   }
 
@@ -130,6 +267,16 @@ class TrackballControls {
     return v;
   }
 
+  _applyRotation(axisWorld, angle) {
+    const q = new THREE.Quaternion().setFromAxisAngle(axisWorld, angle);
+
+    const eye = this.object.position.clone().sub(this.target);
+    eye.applyQuaternion(q);
+
+    this.object.up.applyQuaternion(q);
+    this.object.position.copy(this.target.clone().add(eye));
+  }
+
   _rotate(startPx, endPx) {
     const a = this._projectOnSphere(this._getNDC(startPx.x, startPx.y));
     const b = this._projectOnSphere(this._getNDC(endPx.x, endPx.y));
@@ -140,17 +287,19 @@ class TrackballControls {
     axisCam.normalize();
 
     const dot = THREE.MathUtils.clamp(a.dot(b), -1, 1);
-    const angle = Math.acos(dot) * this.rotateSpeed;
+    let angle = Math.acos(dot) * this.rotateSpeed;
 
-    // Rotate around axis expressed in world space
-    const axisWorld = axisCam.clone().applyQuaternion(this.object.quaternion);
+    // FIX: invert so dragging right feels like "goes right" (CAD-like)
+    angle = -angle;
 
-    const q = new THREE.Quaternion().setFromAxisAngle(axisWorld, angle);
+    // axis in world space
+    const axisWorld = axisCam.clone().applyQuaternion(this.object.quaternion).normalize();
 
-    const eye = this.object.position.clone().sub(this.target);
-    eye.applyQuaternion(q);
-    this.object.up.applyQuaternion(q);
-    this.object.position.copy(this.target.clone().add(eye));
+    this._applyRotation(axisWorld, angle);
+
+    // inertia seed
+    this._lastAxis.copy(axisWorld);
+    this._lastAngle = angle;
   }
 
   _dolly(delta) {
@@ -162,19 +311,18 @@ class TrackballControls {
       eye.setLength(newLen);
       this.object.position.copy(this.target.clone().add(eye));
     } else if (this.object.isOrthographicCamera) {
-      // Orthographic: zoom property is the right knob
       this.object.zoom = Math.max(1e-3, this.object.zoom / zoomFactor);
       this.object.updateProjectionMatrix();
     }
   }
 
   _pan(startPx, endPx) {
-    if (!this._rect) this.handleResize();
+    const r = this._getRect();
     const dx = (endPx.x - startPx.x);
     const dy = (endPx.y - startPx.y);
 
-    const w = Math.max(1, this._rect.width);
-    const h = Math.max(1, this._rect.height);
+    const w = Math.max(1, r.width);
+    const h = Math.max(1, r.height);
 
     let scale = 1.0;
     if (this.object.isPerspectiveCamera) {
@@ -202,115 +350,53 @@ class TrackballControls {
   }
 }
 
-/** Ensure meshes are double-sided + set shadow flags */
-function applyDoubleSidedAndShadows(obj, castShadow, receiveShadow) {
-  obj.traverse((c) => {
-    if (c.isMesh) {
-      const mats = Array.isArray(c.material) ? c.material : [c.material];
-      mats.forEach((m) => {
-        if (!m) return;
-        m.side = THREE.DoubleSide;
-      });
-      c.castShadow = !!castShadow;
-      c.receiveShadow = !!receiveShadow;
-    }
-  });
-}
-
-/** compute bounds */
-function getObjectBounds(obj, pad = 1.08) {
-  const box = new THREE.Box3().setFromObject(obj);
-  const size = new THREE.Vector3();
-  const center = new THREE.Vector3();
-  box.getSize(size);
-  box.getCenter(center);
-  const maxDim = Math.max(size.x, size.y, size.z) * pad;
-  return { box, size, center, maxDim: Math.max(maxDim, 1e-6) };
-}
-
-/** fit camera + controls target to obj */
-function fitAndCenter(camera, controls, obj, pad = 1.06) {
-  if (!camera || !controls || !obj) return;
-  const { center, maxDim } = getObjectBounds(obj, pad);
-
-  controls.target.copy(center);
-
-  if (camera.isPerspectiveCamera) {
-    // move camera to see object
-    const fov = camera.fov * Math.PI / 180;
-    const dist = maxDim / Math.tan(fov / 2);
-    const dir = new THREE.Vector3(1, 0.9, 1).normalize();
-    camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
-    camera.near = Math.max(dist / 1000, 0.01);
-    camera.far = Math.max(dist * 1500, 1500);
-    camera.updateProjectionMatrix();
-  } else if (camera.isOrthographicCamera) {
-    // set ortho frustum around obj (ensure grid never clips)
-    const aspect = Math.max(1e-6, (controls?.domElement?.clientWidth || 1) / (controls?.domElement?.clientHeight || 1));
-    const minSpan = GRID_HALF * Math.SQRT2 * Math.max(1, 1 / aspect);
-    const span = Math.max(maxDim, minSpan);
-    camera.left = -span * aspect;
-    camera.right = span * aspect;
-    camera.top = span;
-    camera.bottom = -span;
-    camera.near = Math.max(span / 1000, 0.001);
-    camera.far = Math.max(span * 1500, 1500);
-    camera.updateProjectionMatrix();
-    camera.position.copy(center.clone().add(new THREE.Vector3(span, span * 0.9, span)));
-  }
-
-  camera.lookAt(center);
-  controls.update();
-}
-
-export function createViewer(rootEl, opts = {}) {
+export function createViewer({ container, background = 0xffffff, pixelRatio } = {}) {
   assertThree();
 
-  if (!rootEl) throw new Error('rootEl required');
+  const rootEl = container || document.body;
+  if (getComputedStyle(rootEl).position === 'static') {
+    rootEl.style.position = 'relative';
+  }
 
-  const state = {
-    background: opts.background ?? 0x0b0f14,
-    showGrid: opts.showGrid ?? false,
-    showAxes: opts.showAxes ?? false,
-    showGround: opts.showGround ?? false,
-    shadows: opts.shadows ?? false,
-    projection: opts.projection ?? 'Perspective', // or 'Orthographic'
-    renderMode: opts.renderMode ?? 'Solid'
-  };
+  // Scene
+  const scene = new THREE.Scene();
+  if (background === null || typeof background === 'undefined') {
+    scene.background = null;
+  } else {
+    scene.background = new THREE.Color(background);
+  }
+
+  // Cameras
+  const aspect = Math.max(1e-6, (rootEl.clientWidth || 1) / (rootEl.clientHeight || 1));
+  const persp = new THREE.PerspectiveCamera(75, aspect, 0.01, 10000);
+  persp.position.set(0, 0, 3);
+
+  const orthoSize = 2.5;
+  const ortho = new THREE.OrthographicCamera(
+    -orthoSize * aspect, orthoSize * aspect,
+    orthoSize, -orthoSize,
+    0.01, 10000
+  );
+  ortho.position.set(0, 0, 3);
+
+  let camera = persp;
 
   // Renderer
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
-  renderer.setClearColor(state.background, 1);
-  renderer.setPixelRatio(window.devicePixelRatio || 1);
-  renderer.setSize(rootEl.clientWidth, rootEl.clientHeight);
-  renderer.outputEncoding = THREE.sRGBEncoding;
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.localClippingEnabled = true;
-
+  const renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    preserveDrawingBuffer: false
+  });
+  renderer.setPixelRatio(pixelRatio || window.devicePixelRatio || 1);
+  renderer.setSize(rootEl.clientWidth || 1, rootEl.clientHeight || 1);
   renderer.domElement.style.width = '100%';
   renderer.domElement.style.height = '100%';
   renderer.domElement.style.display = 'block';
   renderer.domElement.style.touchAction = 'none';
-
-  rootEl.innerHTML = '';
   rootEl.appendChild(renderer.domElement);
 
-  // Scene
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(state.background);
-
-  // Camera(s)
-  const persp = new THREE.PerspectiveCamera(45, 1, 0.01, 10000);
-  persp.position.set(2.8, 2.2, 2.8);
-  persp.up.set(0, 1, 0);
-
-  const orthoSize = 2.5;
-  const ortho = new THREE.OrthographicCamera(-orthoSize, orthoSize, orthoSize, -orthoSize, 0.001, 10000);
-  ortho.position.copy(persp.position);
-  ortho.up.copy(persp.up);
-
-  let camera = (state.projection === 'Orthographic') ? ortho : persp;
+  // Shadows OFF by default
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   // Controls
   const controls = new TrackballControls(camera, renderer.domElement);
@@ -319,228 +405,220 @@ export function createViewer(rootEl, opts = {}) {
   controls.panSpeed = 0.8;
   controls.staticMoving = false;
   controls.dynamicDampingFactor = 0.15;
-  controls.target.set(0, 0, 0);
-  controls.update();
+
 
   // Lights
-  const amb = new THREE.AmbientLight(0xffffff, 0.55);
-  scene.add(amb);
-
-  const dir = new THREE.DirectionalLight(0xffffff, 0.85);
-  dir.position.set(4, 7, 4);
-  dir.castShadow = true;
-  dir.shadow.mapSize.width = 2048;
-  dir.shadow.mapSize.height = 2048;
+  const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.7);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.05);
+  dir.position.set(3, 4, 2);
+  dir.castShadow = false;
+  dir.shadow.mapSize.set(2048, 2048);
   dir.shadow.camera.near = 0.1;
-  dir.shadow.camera.far = 50;
-  dir.shadow.bias = -0.00012;
+  dir.shadow.camera.far = 1000;
+  scene.add(hemi);
   scene.add(dir);
 
-  // Helpers group
-  const helpers = new THREE.Group();
-  scene.add(helpers);
+  // Helpers
+  const helpers = buildHelpers();
+  scene.add(helpers.group);
 
-  function buildHelpers() {
-    helpers.clear();
-
-    // Axes
-    const axes = new THREE.AxesHelper(0.9);
-    axes.visible = !!state.showAxes;
-    helpers.add(axes);
-
-    // Grid
-    const grid = new THREE.GridHelper(10, 20, 0x334a5a, 0x1b2a33);
-    grid.visible = !!state.showGrid;
-    helpers.add(grid);
-
-    // Ground with shadows
-    const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
-    groundMat.depthWrite = false;
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(50, 50), groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.0001;
-    ground.receiveShadow = true;
-    ground.visible = !!state.showGround;
-    helpers.add(ground);
-
-    // Shadows OFF by default
-    dir.castShadow = !!state.shadows;
-    renderer.shadowMap.enabled = !!state.shadows;
-
-    return { axes, grid, ground };
+  function sizeAxesHelper(maxDim, center) {
+    helpers.axes.scale.setScalar(maxDim * 0.75);
+    helpers.axes.position.copy(center || new THREE.Vector3());
   }
 
-  let helperRefs = buildHelpers();
-
-  function setSceneToggles({ showGrid, showAxes, showGround, shadows } = {}) {
-    if (typeof showGrid === 'boolean') state.showGrid = showGrid;
-    if (typeof showAxes === 'boolean') state.showAxes = showAxes;
-    if (typeof showGround === 'boolean') state.showGround = showGround;
-    if (typeof shadows === 'boolean') state.shadows = shadows;
-
-    helperRefs = buildHelpers();
-  }
-
-  // Resize handling
+  // Handle resizes
   function onResize() {
-    const w = Math.max(1, rootEl.clientWidth);
-    const h = Math.max(1, rootEl.clientHeight);
+    const w = rootEl.clientWidth || 1;
+    const h = rootEl.clientHeight || 1;
     const asp = Math.max(1e-6, w / h);
-    if (controls && typeof controls.handleResize === 'function') controls.handleResize();
-
     if (camera.isPerspectiveCamera) {
       camera.aspect = asp;
     } else {
-      const minSpan = GRID_HALF * Math.SQRT2 * Math.max(1, 1 / asp);
-      const size = Math.max(Math.abs(camera.top) || orthoSize, minSpan);
+      const size = Math.abs(camera.top) || orthoSize;
       camera.left = -size * asp;
       camera.right = size * asp;
       camera.top = size;
       camera.bottom = -size;
     }
-
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
+    if (controls && typeof controls.handleResize === 'function') controls.handleResize();
   }
-
   window.addEventListener('resize', onResize);
 
-  // URDF
-  const loader = new URDFLoader();
-  loader.workingPath = opts.workingPath ?? '';
-  loader.parseColliders = false;
-
+  // URDF loader & current robot
+  const urdfLoader = new URDFLoader();
   let robotModel = null;
 
-  function clearRobot() {
+  /** Load URDF content (string) with an external loadMeshCb(path, manager, onComplete) */
+  function loadURDF(urdfText, { loadMeshCb } = {}) {
     if (robotModel) {
-      scene.remove(robotModel);
+      try { scene.remove(robotModel); } catch (_) {}
       robotModel = null;
     }
-  }
+    if (!urdfText || typeof urdfText !== 'string') return null;
 
-  function loadURDF(urdfUrl, onProgress) {
-    return new Promise((resolve, reject) => {
-      clearRobot();
-
-      loader.load(
-        urdfUrl,
-        (urdf) => {
-          robotModel = urdf;
-          robotModel.name = 'URDFRobot';
-          robotModel.rotation.x = 0;
-          robotModel.position.set(0, 0, 0);
-
-          scene.add(robotModel);
-
-          // Apply default material tweaks
-          applyDoubleSidedAndShadows(robotModel, state.shadows, state.shadows);
-
-          // Frame camera
-          fitAndCenter(camera, controls, robotModel, 1.08);
-
-          resolve(robotModel);
-        },
-        (xhr) => {
-          if (!onProgress) return;
-          const total = xhr.total || 0;
-          const loaded = xhr.loaded || 0;
-          onProgress({ loaded, total, pct: total ? loaded / total : 0 });
-        },
-        (err) => reject(err)
-      );
-    });
-  }
-
-  // Projections
-  function setProjection(mode) {
-    state.projection = mode;
-
-    const t = controls.target.clone();
-    const v = camera.position.clone().sub(t);
-    const dist = v.length();
-    const dirNorm = v.clone().normalize();
-
-    if (mode === 'Orthographic') {
-      camera = ortho;
-      controls.object = ortho;
-      ortho.position.copy(t.clone().add(dirNorm.multiplyScalar(dist)));
-
-      const w = Math.max(1, rootEl.clientWidth);
-      const h = Math.max(1, rootEl.clientHeight);
-      const asp = Math.max(1e-6, w / h);
-
-      // Match apparent scale from current perspective view, while ensuring model + grid do not clip.
-      let size = dist * Math.tan(Math.max(1e-6, ((camera.fov || 60) * Math.PI / 180) / 2));
-      const b = robotModel ? getObjectBounds(robotModel, 1.08) : null;
-      if (b && b.maxDim) size = Math.max(size, b.maxDim);
-      const minSpan = GRID_HALF * Math.SQRT2 * Math.max(1, 1 / asp);
-      size = Math.max(size, minSpan);
-
-      ortho.left = -size * asp;
-      ortho.right = size * asp;
-      ortho.top = size;
-      ortho.bottom = -size;
-
-      ortho.near = Math.max(dist / 1000, 0.001);
-      ortho.far = Math.max(dist * 1500, 1500);
-      ortho.updateProjectionMatrix();
-
-    } else {
-      camera = persp;
-      controls.object = persp;
-      persp.position.copy(t.clone().add(dirNorm.multiplyScalar(dist)));
-
-      persp.near = Math.max(dist / 1000, 0.01);
-      persp.far = Math.max(dist * 1500, 1500);
-      persp.updateProjectionMatrix();
+    if (typeof loadMeshCb === 'function') {
+      urdfLoader.loadMeshCb = loadMeshCb;
     }
 
-    camera.lookAt(t);
-    controls.update();
-    onResize();
+    let robot = null;
+    try {
+      robot = urdfLoader.parse(urdfText);
+    } catch (e) {
+      console.warn('[ViewerCore] URDF parse error:', e);
+      return null;
+    }
+
+    if (robot && robot.isObject3D) {
+      robotModel = robot;
+      scene.add(robotModel);
+      rectifyUpForward(robotModel);
+      applyDoubleSided(robotModel);
+
+      // First fit
+      setTimeout(() => {
+        if (!robotModel) return;
+        const ok = fitAndCenter(camera, controls, robotModel, 1.06);
+        if (ok) {
+          const b = getObjectBounds(robotModel);
+          if (b) sizeAxesHelper(b.maxDim, b.center);
+        }
+      }, 50);
+    }
+    return robotModel;
   }
 
-  // Pixel ratio
-  function setPixelRatio(pr) {
-    renderer.setPixelRatio(Math.max(0.5, pr || 1));
+  /** Switch projection mode (Perspective|Orthographic) while preserving view as much as possible */
+  function setProjection(mode = 'Perspective') {
+    const w = rootEl.clientWidth || 1, h = rootEl.clientHeight || 1;
+    const asp = Math.max(1e-6, w / h);
+
+    if (mode === 'Orthographic' && camera.isPerspectiveCamera) {
+      const t = controls.target.clone();
+      const v = camera.position.clone().sub(t);
+      const dist = v.length();
+      const dirN = v.clone().normalize();
+
+      const b = robotModel ? getObjectBounds(robotModel, 1.0) : null;
+      const minSpan = 5 * Math.SQRT2;
+      const span = Math.max(orthoSize, (b ? b.maxDim : 0), minSpan);
+
+      ortho.left = -span * asp;
+      ortho.right = span * asp;
+      ortho.top = span;
+      ortho.bottom = -span;
+      ortho.near = Math.max(0.001, dist * 0.01);
+      ortho.far = Math.max(1000, dist * 50);
+      ortho.position.copy(t.clone().add(dirN.multiplyScalar(dist)));
+      ortho.updateProjectionMatrix();
+
+      controls.object = ortho;
+      camera = ortho;
+      controls.target.copy(t);
+      controls.update();
+    } else if (mode === 'Perspective' && camera.isOrthographicCamera) {
+      const t = controls.target.clone();
+      const v = camera.position.clone().sub(t);
+      const dist = v.length();
+      const dirN = v.clone().normalize();
+
+      persp.aspect = asp;
+      persp.near = Math.max(0.001, dist * 0.01);
+      persp.far = Math.max(1000, dist * 50);
+      persp.position.copy(t.clone().add(dirN.multiplyScalar(dist)));
+      persp.updateProjectionMatrix();
+
+      controls.object = persp;
+      camera = persp;
+      controls.target.copy(t);
+      controls.update();
+    }
+  }
+
+  /** Toggle helpers and shadows from upper layers (UI) */
+  function setSceneToggles({ grid, ground, axes, shadows } = {}) {
+    if (typeof grid === 'boolean') helpers.grid.visible = grid;
+    if (typeof ground === 'boolean') helpers.ground.visible = ground;
+
+    if (typeof axes === 'boolean') helpers.axes.visible = axes;
+
+    if (typeof shadows === 'boolean') {
+      renderer.shadowMap.enabled = !!shadows;
+      dir.castShadow = !!shadows;
+      if (robotModel) {
+        robotModel.traverse(o => {
+          if (o.isMesh && o.geometry) {
+            o.castShadow = !!shadows;
+            o.receiveShadow = !!shadows;
+          }
+        });
+      }
+    }
+    // Resize axes to object
+    if (helpers.axes.visible && robotModel) {
+      const b = getObjectBounds(robotModel);
+      if (b) sizeAxesHelper(b.maxDim, b.center);
+    }
+  }
+
+  /** Set background (int color) or null for transparent */
+  function setBackground(colorIntOrNull) {
+    if (colorIntOrNull === null || typeof colorIntOrNull === 'undefined') {
+      scene.background = null;
+    } else {
+      scene.background = new THREE.Color(colorIntOrNull);
+    }
+  }
+
+  /** Allow upper layer to adjust pixel ratio (e.g., for performance) */
+  function setPixelRatio(r) {
+    const pr = Math.max(0.5, Math.min(3, r || window.devicePixelRatio || 1));
+    renderer.setPixelRatio(pr);
     onResize();
   }
 
   // Animation loop
-  let running = true;
-
+  let raf = null;
   function animate() {
-    if (!running) return;
-    requestAnimationFrame(animate);
-
+    raf = requestAnimationFrame(animate);
     controls.update();
     renderer.render(scene, camera);
   }
-
   animate();
-  onResize();
 
+  // Cleanup
   function destroy() {
-    running = false;
-    window.removeEventListener('resize', onResize);
-    try { rootEl.removeChild(renderer.domElement); } catch (e) { }
-    renderer.dispose();
+    try { cancelAnimationFrame(raf); } catch (_) {}
+    try { window.removeEventListener('resize', onResize); } catch (_) {}
+    try {
+      const el = renderer?.domElement;
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    } catch (_) {}
+    try { renderer?.dispose?.(); } catch (_) {}
   }
 
+  // Public facade
   return {
-    renderer,
+    // Core Three.js objects
     scene,
     get camera() { return camera; },
-    persp,
-    ortho,
+    renderer,
     controls,
-    state,
-    setSceneToggles,
-    setProjection,
+
+    // Helpers group (in case UI needs references)
+    helpers,
+
+    // Current robot getter
+    get robot() { return robotModel; },
+
+    // APIs
     loadURDF,
-    clearRobot,
     fitAndCenter: (obj, pad) => fitAndCenter(camera, controls, obj || robotModel, pad),
+    setProjection,
+    setSceneToggles,
+    setBackground,
     setPixelRatio,
     onResize,
     destroy
