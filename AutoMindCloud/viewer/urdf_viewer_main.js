@@ -1,4 +1,4 @@
-// /viewer/urdf_viewer_main.js
+// /viewer/urdf_viewer_main.js 
 // Viewer moderno + thumbnails + IA opt-in con:
 //  - Imagen ISO del robot completo (__robot_iso__)
 //  - Nombres + orden de componentes
