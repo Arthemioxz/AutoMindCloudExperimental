@@ -7,9 +7,14 @@
 
 import { THEME } from './Theme.js';
 import * as ViewerCore from './core/ViewerCore.js';
-const createViewer = ViewerCore.createViewer || ViewerCore.default || (typeof window !== 'undefined' ? window.createViewer : null);
+const createViewer =
+  ViewerCore.createViewer ||
+  ViewerCore.default ||
+  (typeof window !== 'undefined' ? window.createViewer : null);
 if (createViewer == null) {
-  throw new Error("ViewerCore: createViewer no encontrado. Revisa core/ViewerCore.js (export) o window.createViewer (UMD).");
+  throw new Error(
+    "ViewerCore: createViewer no encontrado. Revisa core/ViewerCore.js (export) o window.createViewer (UMD).",
+  );
 }
 
 import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
@@ -48,44 +53,51 @@ export function render(opts = {}) {
 
   debugLog('render() init', { selectMode, background, IA_Widgets });
 
+  // Wait until the URDF meshes stop arriving (assetToMeshes settles).
+  function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350) {
+    const start = performance.now();
+    let lastCount = -1;
+    let lastChange = performance.now();
 
-// Wait until the URDF meshes stop arriving (assetToMeshes settles).
-function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350) {
-  const start = performance.now();
-  let lastCount = -1;
-  let lastChange = performance.now();
+    function countNow() {
+      let n = 0;
+      try {
+        assetToMeshes.forEach((arr) => {
+          n += arr && arr.length ? arr.length : 0;
+        });
+      } catch (_) {}
+      return n;
+    }
 
-  function countNow() {
-    let n = 0;
-    try {
-      assetToMeshes.forEach((arr) => { n += (arr && arr.length) ? arr.length : 0; });
-    } catch (_) {}
-    return n;
+    return new Promise((resolve) => {
+      function tick() {
+        const now = performance.now();
+        const c = countNow();
+        if (c !== lastCount) {
+          lastCount = c;
+          lastChange = now;
+        }
+
+        const settled = now - lastChange >= quietMs;
+        const timeout = now - start >= maxWaitMs;
+
+        if (settled || timeout) resolve({ meshes: c, settled, timeout });
+        else requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    });
   }
 
-  return new Promise((resolve) => {
-    function tick() {
-      const now = performance.now();
-      const c = countNow();
-      if (c !== lastCount) {
-        lastCount = c;
-        lastChange = now;
-      }
-
-      const settled = (now - lastChange) >= quietMs;
-      const timeout = (now - start) >= maxWaitMs;
-
-      if (settled || timeout) resolve({ meshes: c, settled, timeout });
-      else requestAnimationFrame(tick);
-    }
-    requestAnimationFrame(tick);
-  });
-}
-
-
   // 1) Core viewer
-  const _createViewer = (ViewerCore && (ViewerCore.createViewer || (ViewerCore.default && ViewerCore.default.createViewer))) || window.createViewer;
-  if (typeof _createViewer !== 'function') throw new Error('[urdf_viewer_main] createViewer not found (ESM export or UMD global).');
+  const _createViewer =
+    (ViewerCore &&
+      (ViewerCore.createViewer ||
+        (ViewerCore.default && ViewerCore.default.createViewer))) ||
+    window.createViewer;
+  if (typeof _createViewer !== 'function')
+    throw new Error(
+      '[urdf_viewer_main] createViewer not found (ESM export or UMD global).',
+    );
   const core = _createViewer({ container, background });
 
   // 2) Asset DB
@@ -121,7 +133,7 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
   debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
 
   // 4) Offscreen thumbnails
-  const off = buildOffscreenForThumbnails(core);
+  const off = buildOffscreenForThumbnails(core, assetToMeshes);
   if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
 
   // 5) Interacción
@@ -201,27 +213,27 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
+  // 9) Precompute ALL component thumbnails on start (single offscreen viewer),
+  // then close the offscreen renderer to free GPU memory.
+  (async () => {
+    try {
+      if (!off || typeof off.primeAll !== 'function') return;
 
-// 9) Precompute ALL component thumbnails on start (single offscreen viewer),
-// then close the offscreen renderer to free GPU memory.
-(async () => {
-  try {
-    if (!off || typeof off.primeAll !== 'function') return;
+      // Wait for URDF mesh loading to settle so the offscreen clone includes everything.
+      const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
+      debugLog('[Thumbs] settle', settle);
 
-    // Wait for URDF mesh loading to settle so the offscreen clone includes everything.
-    const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
-    debugLog('[Thumbs] settle', settle);
+      const keys = Array.from(assetToMeshes.keys());
+      await off.primeAll(keys);
 
-    const keys = Array.from(assetToMeshes.keys());
-    await off.primeAll(keys);
-
-    // If anything is listening (optional), notify thumbnails are ready.
-    try { window.dispatchEvent(new Event('thumbnails_ready')); } catch (_) {}
-  } catch (e) {
-    debugLog('[Thumbs] auto prime error', String(e));
-  }
-})();
-
+      // If anything is listening (optional), notify thumbnails are ready.
+      try {
+        window.dispatchEvent(new Event('thumbnails_ready'));
+      } catch (_) {}
+    } catch (e) {
+      debugLog('[Thumbs] auto prime error', String(e));
+    }
+  })();
 
   // 8) Click sound opcional
   if (clickAudioDataURL) {
@@ -249,11 +261,21 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
   }
 
   const destroy = () => {
-    try { comps.destroy(); } catch (_) {}
-    try { tools.destroy(); } catch (_) {}
-    try { inter.destroy(); } catch (_) {}
-    try { off?.destroy?.(); } catch (_) {}
-    try { core.destroy(); } catch (_) {}
+    try {
+      comps.destroy();
+    } catch (_) {}
+    try {
+      tools.destroy();
+    } catch (_) {}
+    try {
+      inter.destroy();
+    } catch (_) {}
+    try {
+      off?.destroy?.();
+    } catch (_) {}
+    try {
+      core.destroy();
+    } catch (_) {}
   };
 
   return { ...app, destroy };
@@ -267,9 +289,7 @@ function rebuildAssetMapFromRobot(robot, assetToMeshes) {
     if (o && o.isMesh && o.geometry) {
       const k =
         (o.userData &&
-          (o.userData.__assetKey ||
-            o.userData.assetKey ||
-            o.userData.filename)) ||
+          (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) ||
         null;
       if (!k) return;
       const arr = tmp.get(k) || [];
@@ -358,7 +378,7 @@ function frameMeshes(core, meshes) {
   const ctrl = core.controls;
 
   if (cam.isPerspectiveCamera) {
-    const fov = (cam.fov || 60) * Math.PI / 180;
+    const fov = ((cam.fov || 60) * Math.PI) / 180;
     const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
 
     cam.near = Math.max(maxDim / 1000, 0.001);
@@ -389,12 +409,8 @@ function frameMeshes(core, meshes) {
 /* ============= Offscreen thumbnails: componente + ISO robot ============= */
 
 function buildOffscreenForThumbnails(core, assetToMeshes) {
-  // IMPORTANTE:
-  // - NO creamos otro WebGLRenderer (evita “Too many active WebGL contexts”).
-  // - Renderizamos a un WebGLRenderTarget usando el MISMO renderer del viewer.
-  // - Pausamos el render loop del viewer mientras capturamos thumbnails (evita renders en blanco).
-  // - NO hacemos dispose() de geometrías/texturas/materiales compartidos con el robot principal.
-  const OFF_W = 320, OFF_H = 320;
+  const OFF_W = 320,
+    OFF_H = 320;
   const BG = 0xf2f2f2; // fondo claro para ver materiales/texturas
 
   function normalizeAssetKey(s) {
@@ -455,7 +471,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   let session = null;
   let priming = null;
 
-  // Serializa renders para no pelear con el loop principal.
   let chain = Promise.resolve();
   const enqueue = (fn) => {
     chain = chain.then(fn, fn);
@@ -464,8 +479,12 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
   function destroySession() {
     if (!session) return;
-    try { session.rt && session.rt.dispose && session.rt.dispose(); } catch (_) {}
-    try { session.scene && session.scene.clear && session.scene.clear(); } catch (_) {}
+    try {
+      session.rt && session.rt.dispose && session.rt.dispose();
+    } catch (_) {}
+    try {
+      session.scene && session.scene.clear && session.scene.clear();
+    } catch (_) {}
     session = null;
     closed = true;
   }
@@ -473,23 +492,21 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
   async function ensureSession() {
     if (closed) return null;
     if (session) return session;
-    if (!core || !core.renderer || !core.robot || typeof THREE === 'undefined') return null;
+    if (!core || !core.renderer || !core.robot || typeof THREE === 'undefined')
+      return null;
 
     const renderer = core.renderer;
 
-    // Render target (no crea contexto WebGL nuevo)
     const rt = new THREE.WebGLRenderTarget(OFF_W, OFF_H, {
       depthBuffer: true,
-      stencilBuffer: false
+      stencilBuffer: false,
     });
 
-    // Canvas 2D auxiliar para convertir pixels -> PNG dataURL
     const canvas2d = document.createElement('canvas');
     canvas2d.width = OFF_W;
     canvas2d.height = OFF_H;
     const ctx2d = canvas2d.getContext('2d', { willReadFrequently: true });
 
-    // Escena de thumbnails (clon del robot)
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(BG);
 
@@ -503,34 +520,24 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const robotClone = core.robot.clone(true);
 
     // 🔧 Hacer materiales visibles en el CLON SIN destruir apariencia original.
-// Objetivo: evitar thumbnails invisibles (alpha=0, backface culling, etc.)
-// pero preservar texturas/colores reales del componente.
-robotClone.traverse((n) => {
-  if (!n || !n.isMesh) return;
+    // Objetivo: evitar thumbnails invisibles (alpha=0, backface culling, etc.)
+    // pero preservar texturas/colores reales del componente.
+    robotClone.traverse((n) => {
+      if (!n || !n.isMesh) return;
 
-  const mats = Array.isArray(n.material) ? n.material : [n.material];
-  mats.forEach((m) => {
-    if (!m) return;
+      const mats = Array.isArray(n.material) ? n.material : [n.material];
+      mats.forEach((m) => {
+        if (!m) return;
 
-    // Evita backface culling (caras invertidas)
-    m.side = THREE.DoubleSide;
+        m.side = THREE.DoubleSide;
 
-    // Si venía "invisible" por opacity/alpha, corrige mínimo.
-    if (m.opacity !== undefined && m.opacity <= 0) m.opacity = 1;
-    if (m.transparent === true && m.opacity === 1) {
-      // Mantén transparent si realmente la usa (ej. vidrio), pero
-      // evita que quede totalmente invisible.
-      // No forzamos transparent=false para no romper materiales.
-    }
+        if (m.opacity !== undefined && m.opacity <= 0) m.opacity = 1;
 
-    // Evita glitches de profundidad
-    m.depthWrite = true;
-    m.depthTest = true;
+        m.depthWrite = true;
+        m.depthTest = true;
 
-    // NO tocar m.color / m.emissive: preserva textura y color real.
-    m.needsUpdate = true;
-  });
-});
+        m.needsUpdate = true;
+      });
     });
 
     // Map keyVariant -> [meshes...]
@@ -550,6 +557,7 @@ robotClone.traverse((n) => {
         cloneMap.get(key).push(n);
       }
     });
+
     scene.add(robotClone);
 
     session = {
@@ -567,17 +575,17 @@ robotClone.traverse((n) => {
       _size: new THREE.Vector3(),
     };
 
-    debugLog('[Thumbs] Offscreen session created (shared renderer; no extra WebGL context)');
+    debugLog(
+      '[Thumbs] Offscreen session created (shared renderer; no extra WebGL context)',
+    );
     return session;
   }
 
   function setVisibleOnly(ses, assetKey) {
-    // Oculta todo
     ses.robotClone.traverse((n) => {
       if (n && n.isMesh) n.visible = false;
     });
 
-    // ISO / showAll
     if (!assetKey) {
       ses.robotClone.traverse((n) => {
         if (n && n.isMesh) n.visible = true;
@@ -585,23 +593,24 @@ robotClone.traverse((n) => {
       return { usedFallback: false };
     }
 
-    // lookup robusto
     const list = getCloneMeshesForAssetKey(ses, assetKey);
     if (!list || !list.length) {
-      // fallback anti-blanco: mostrar todo
       ses.robotClone.traverse((n) => {
         if (n && n.isMesh) n.visible = true;
       });
       return { usedFallback: true };
     }
 
-    list.forEach((m) => { if (m) m.visible = true; });
+    list.forEach((m) => {
+      if (m) m.visible = true;
+    });
     return { usedFallback: false };
   }
 
   function computeVisibleBox(ses) {
-    // Asegurar matrices world
-    try { ses.robotClone.updateWorldMatrix(true, true); } catch (_) {}
+    try {
+      ses.robotClone.updateWorldMatrix(true, true);
+    } catch (_) {}
 
     const box = ses._box;
     const tmp = ses._tmpBox;
@@ -612,13 +621,14 @@ robotClone.traverse((n) => {
       if (!n || !n.isMesh || !n.visible) return;
       tmp.setFromObject(n);
       if (tmp.isEmpty()) return;
-      if (!has) { box.copy(tmp); has = true; }
-      else box.union(tmp);
+      if (!has) {
+        box.copy(tmp);
+        has = true;
+      } else box.union(tmp);
     });
 
     if (has) return box;
 
-    // fallback final: box de todo el clon
     tmp.setFromObject(ses.robotClone);
     return tmp;
   }
@@ -632,7 +642,6 @@ robotClone.traverse((n) => {
     let maxDim = Math.max(size.x, size.y, size.z);
     if (!isFinite(maxDim) || maxDim <= 1e-6) maxDim = 1;
 
-    // más cerca que antes (anti-"miniatura")
     const dir = new THREE.Vector3(1, 0.8, 1).normalize();
     const fov = (ses.camera.fov * Math.PI) / 180;
     const dist = (maxDim / Math.tan(Math.max(1e-6, fov / 2))) * 0.55;
@@ -647,7 +656,6 @@ robotClone.traverse((n) => {
   function renderToDataURL(ses) {
     const r = ses.renderer;
 
-    // Guardar estado renderer
     const prevRT = r.getRenderTarget();
     const prevVp = r.getViewport(new THREE.Vector4());
     const prevSc = r.getScissor(new THREE.Vector4());
@@ -667,7 +675,6 @@ robotClone.traverse((n) => {
       const pixels = new Uint8Array(OFF_W * OFF_H * 4);
       r.readRenderTargetPixels(ses.rt, 0, 0, OFF_W, OFF_H, pixels);
 
-      // Flip vertical para canvas
       const ctx = ses.ctx2d;
       const img = ctx.createImageData(OFF_W, OFF_H);
       for (let y = 0; y < OFF_H; y++) {
@@ -681,7 +688,6 @@ robotClone.traverse((n) => {
       debugLog('[Thumbs] renderToDataURL failed', e);
       return null;
     } finally {
-      // Restaurar estado renderer
       r.setRenderTarget(prevRT);
       r.setViewport(prevVp.x, prevVp.y, prevVp.z, prevVp.w);
       r.setScissor(prevSc.x, prevSc.y, prevSc.z, prevSc.w);
@@ -754,7 +760,8 @@ robotClone.traverse((n) => {
 
     priming = (async () => {
       try {
-        if (assetToMeshes) await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
+        if (assetToMeshes)
+          await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
 
         await _isoNoPrime();
 
@@ -763,7 +770,10 @@ robotClone.traverse((n) => {
           await _thumbNoPrime(k);
         }
 
-        debugLog('[Thumbs] primeAll done', { wanted: keys.length, ok: thumbCache.size });
+        debugLog('[Thumbs] primeAll done', {
+          wanted: keys.length,
+          ok: thumbCache.size,
+        });
       } finally {
         destroySession();
       }
@@ -800,7 +810,6 @@ robotClone.traverse((n) => {
     _cache: thumbCache,
   };
 }
-
 
 /* ================= IA opt-in: describe_component_images ================= */
 
@@ -910,7 +919,6 @@ function extractDescMap(res) {
 
   let data = res.data ?? res;
 
-  // Caso Colab típico: data['application/json']
   if (
     data &&
     typeof data === 'object' &&
@@ -920,24 +928,17 @@ function extractDescMap(res) {
     return data['application/json'];
   }
 
-  // Caso actual: data['text/plain'] = "{'base.dae': '...'}"
-  if (
-    data &&
-    typeof data === 'object' &&
-    typeof data['text/plain'] === 'string'
-  ) {
+  if (data && typeof data === 'object' && typeof data['text/plain'] === 'string') {
     const raw = data['text/plain'].trim();
     const parsed = parseMaybePythonDict(raw);
     if (parsed) return parsed;
   }
 
-  // Si es string plano, intentar parsear igual
   if (typeof data === 'string') {
     const parsed = parseMaybePythonDict(data.trim());
     if (parsed) return parsed;
   }
 
-  // Si ya es objeto razonable, úsalo
   if (
     data &&
     typeof data === 'object' &&
@@ -947,52 +948,33 @@ function extractDescMap(res) {
     return data;
   }
 
-  // Array de objetos: tomar el primero
-  if (
-    Array.isArray(data) &&
-    data.length &&
-    typeof data[0] === 'object'
-  ) {
+  if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
     return data[0];
   }
 
   return null;
 }
 
-/**
- * ✅ Nueva versión robusta:
- *  - Soporta dict Python: {'base.dae': '...'}
- *  - Soporta JSON válido.
- *  - Fallback con Function(...) sólo en este contexto controlado.
- */
 function parseMaybePythonDict(raw) {
   if (!raw) return null;
   raw = String(raw).trim();
   if (!raw.startsWith('{') || !raw.endsWith('}')) return null;
 
-  // 1) Intento JSON directo
   try {
     const j = JSON.parse(raw);
     if (j && typeof j === 'object') return j;
   } catch (_) {}
 
-  // 2) Intento: reemplazar sintaxis Python -> JS y evaluar de forma controlada
   try {
     let expr = raw;
-
-    // Normalizar booleanos / None
     expr = expr.replace(/\bNone\b/g, 'null');
     expr = expr.replace(/\bTrue\b/g, 'true');
     expr = expr.replace(/\bFalse\b/g, 'false');
 
-    // Si usa comillas simples tipo dict Python, no lo tocamos a mano campo por campo:
-    // dejamos que el motor JS lo evalue como objeto literal.
-    // Ejemplo: {'base.dae': 'texto'} es válido en new Function("return (...)").
     const obj = new Function('return (' + expr + ')')();
     if (obj && typeof obj === 'object') return obj;
   } catch (_) {}
 
-  // 3) Fallback muy simple: intentar extraer pares 'k': 'v'
   try {
     const out = {};
     const inner = raw.slice(1, -1);
@@ -1067,16 +1049,11 @@ function applyIaDescriptionsToApp(app, map) {
 
   try {
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(
-        new CustomEvent('ia_descriptions_ready', { detail }),
-      );
+      window.dispatchEvent(new CustomEvent('ia_descriptions_ready', { detail }));
     }
   } catch (_) {}
 
-  debugLog(
-    '[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido',
-    detail,
-  );
+  debugLog('[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido', detail);
 }
 
 /* =================== Reducción thumbnails ~5KB =================== */
@@ -1097,10 +1074,7 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
       img.src = u;
     });
 
-    const ratio = Math.min(
-      1,
-      Math.max(0.05, maxBytes / (blob.size || maxBytes)),
-    );
+    const ratio = Math.min(1, Math.max(0.05, maxBytes / (blob.size || maxBytes)));
     const scale = Math.sqrt(ratio);
 
     const w = Math.max(32, Math.floor(img.width * scale));
@@ -1120,10 +1094,7 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
     const b64 = out.split(',')[1] || '';
     if (!b64) return null;
 
-    debugLog(
-      '[IA] makeApproxSizedBase64 bytes ~',
-      Math.floor((b64.length * 3) / 4),
-    );
+    debugLog('[IA] makeApproxSizedBase64 bytes ~', Math.floor((b64.length * 3) / 4));
     return b64;
   } catch (e) {
     debugLog('[IA] makeApproxSizedBase64 error', String(e));
@@ -1140,10 +1111,7 @@ function installClickSound(dataURL) {
   let buf = null;
 
   async function ensure() {
-    if (!ctx) {
-      ctx =
-        new (window.AudioContext || window.webkitAudioContext)();
-    }
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (!buf) {
       const resp = await fetch(dataURL);
       const arr = await resp.arrayBuffer();
@@ -1152,10 +1120,7 @@ function installClickSound(dataURL) {
   }
 
   function play() {
-    if (!ctx) {
-      ctx =
-        new (window.AudioContext || window.webkitAudioContext)();
-    }
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (ctx.state === 'suspended') ctx.resume();
 
     if (!buf) {
