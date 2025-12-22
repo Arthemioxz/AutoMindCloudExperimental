@@ -84,7 +84,9 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
 
 
   // 1) Core viewer
-  const core = createViewer({ container, background });
+  const _createViewer = (ViewerCore && (ViewerCore.createViewer || (ViewerCore.default && ViewerCore.default.createViewer))) || window.createViewer;
+  if (typeof _createViewer !== 'function') throw new Error('[urdf_viewer_main] createViewer not found (ESM export or UMD global).');
+  const core = _createViewer({ container, background });
 
   // 2) Asset DB
   const assetDB = buildAssetDB(meshDB);
