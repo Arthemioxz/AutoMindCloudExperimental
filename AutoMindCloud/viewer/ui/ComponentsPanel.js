@@ -77,9 +77,9 @@ export function createComponentsPanel(app, theme) {
       gap: "8px",
       padding: "10px 12px",
       borderBottom: `1px solid ${theme.stroke}`,
-      background: theme.tealFaint,
+      background: '#0ea5a6'
     },
-    title: { fontWeight: "800", color: theme.text, fontSize: "14px" },
+    title: { fontWeight: "800", color: "#ffffff", fontSize: "14px" },
     showAllBtn: {
       padding: "6px 10px",
       borderRadius: "10px",
