@@ -2,9 +2,9 @@
 # Puente Colab <-> JS para descripciones de piezas del URDF.
 #
 # Uso típico en Colab:
-#   from URDF_Render_Script import URDF_Visualization
-#   URDF_Visualization("URDFModel")                      # solo viewer
-#   URDF_Visualization("URDFModel", IA_Widgets=True)     # viewer + IA opt-in
+#   from URDF_Render_Script import URDF_Render
+#   URDF_Render("URDFModel")                      # solo viewer
+#   URDF_Render("URDFModel", IA_Widgets=True)     # viewer + IA opt-in
 #
 # Este script:
 #   - Busca /urdf y /meshes dentro de folder_path.
@@ -183,7 +183,9 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
               # Construir lista de imágenes: primero ISO (si existe), luego componente
               images = []
               if iso_b64:
-                  images.append({"image_b64": iso_b64, "mime": "image/png"})
+                  images.append(
+                      {"image_b64": iso_b64, "mime": "image/png"}
+                  )
               images.append({"image_b64": img_b64, "mime": "image/png"})
 
               # Prompt con contexto fuerte
@@ -202,7 +204,10 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   "responde con un máximo de 2 frases."
               )
 
-              payload = {"text": prompt, "images": images}
+              payload = {
+                  "text": prompt,
+                  "images": images,
+              }
 
               try:
                   r = requests.post(infer_url, json=payload, timeout=timeout)
@@ -212,7 +217,9 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   continue
 
               if r.status_code != 200:
-                  print(f"[Colab] API {r.status_code} para {key}: {r.text[:200]}")
+                  print(
+                      f"[Colab] API {r.status_code} para {key}: {r.text[:200]}"
+                  )
                   results[key] = ""
                   continue
 
@@ -223,7 +230,12 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   if txt.startswith("{") and txt.endswith("}"):
                       j = json.loads(txt)
                       if isinstance(j, dict):
-                          txt = (j.get("text") or j.get("message") or j.get("content") or txt)
+                          txt = (
+                              j.get("text")
+                              or j.get("message")
+                              or j.get("content")
+                              or txt
+                          )
               except Exception:
                   pass
 
@@ -244,14 +256,19 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
           # Guardado automático del notebook (best-effort)
           try:
               from google.colab import _message  # type: ignore
+
               _message.blocking_request("notebook.save", {})
               print("[Colab] 💾 Notebook guardado tras recibir descripciones IA.")
           except Exception as e:
-              print(f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}")
+              print(
+                  f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}"
+              )
 
           return results
 
-      output.register_callback("describe_component_images", _describe_component_images)
+      output.register_callback(
+          "describe_component_images", _describe_component_images
+      )
       _COLAB_CALLBACK_REGISTERED = True
       print(
           "[Colab] ✅ Callback 'describe_component_images' registrado "
@@ -259,10 +276,12 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
       )
 
   except Exception as e:
-      print(f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}")
+      print(
+          f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}"
+      )
 
 
-def URDF_Visualization(
+def URDF_Render(
   folder_path: str = "Model",
   select_mode: str = "link",
   background: int | None = 0xFFFFFF,
@@ -281,58 +300,23 @@ def URDF_Visualization(
   # --- Buscar directorios urdf / meshes ---
 
   def find_dirs(root: str):
-      # Layouts soportados:
-      #  1) NUEVO (preferido):
-      #       root/
-      #         meshes/
-      #         *.urdf
-      #  2) ANTIGUO:
-      #       root/
-      #         urdf/*.urdf
-      #         meshes/
-      #
-      # Devuelve: (urdf_dir, meshes_dir) donde urdf_dir es la carpeta que contiene los .urdf
-
-      def has_urdf_files(p: str) -> bool:
-          try:
-              return any(name.lower().endswith(".urdf") for name in os.listdir(p))
-          except Exception:
-              return False
-
-      # Root directo
-      m = os.path.join(root, "meshes")
       u = os.path.join(root, "urdf")
-      if os.path.isdir(m):
-          if has_urdf_files(root):
-              return root, m
-          if os.path.isdir(u) and has_urdf_files(u):
-              return u, m
-
-      # Buscar un nivel abajo
+      m = os.path.join(root, "meshes")
+      if os.path.isdir(u) and os.path.isdir(m):
+          return u, m
       if os.path.isdir(root):
-          try:
-              for name in os.listdir(root):
-                  cand = os.path.join(root, name)
-                  if not os.path.isdir(cand):
-                      continue
-
-                  mm = os.path.join(cand, "meshes")
-                  uu = os.path.join(cand, "urdf")
-
-                  if os.path.isdir(mm):
-                      if has_urdf_files(cand):
-                          return cand, mm
-                      if os.path.isdir(uu) and has_urdf_files(uu):
-                          return uu, mm
-          except Exception:
-              pass
-
+          for name in os.listdir(root):
+              cand = os.path.join(root, name)
+              uu = os.path.join(cand, "urdf")
+              mm = os.path.join(cand, "meshes")
+              if os.path.isdir(uu) and os.path.isdir(mm):
+                  return uu, mm
       return None, None
 
   urdf_dir, meshes_dir = find_dirs(folder_path)
   if not urdf_dir or not meshes_dir:
       return HTML(
-          f"<b style='color:red'>No se encontró .urdf (en root o /urdf) y /meshes dentro de {folder_path}</b>"
+          f"<b style='color:red'>No se encontró /urdf y /meshes dentro de {folder_path}</b>"
       )
 
   # --- URDF principal ---
@@ -490,10 +474,8 @@ def URDF_Visualization(
 </head>
 <body>
   <div id="app"></div>
-  <div style="padding-left:20px; overflow:visible;">
-    <div class="badge" style="display:inline-block; transform:scale(2) translateX(-15px); transform-origin:top left; margin:0 70px 70px 0; overflow:visible;">
-      <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="AutoMind" style="display:block;"/>
-    </div>
+  <div class="badge">
+    <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud.png" alt="AutoMind"/>
   </div>
 
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
@@ -557,30 +539,29 @@ def URDF_Visualization(
     const branch   = {json.dumps(branch)};
     const compFile = {json.dumps(compFile)};
 
-    // ==========================================================
-    //  AUTO-COMMIT REAL (anti-cache): GitHub API -> RAW commit SHA
-    // ==========================================================
+    // ==========================
+    //  AUTO-COMMIT (MIME OK)
+    //  Usa esm.sh para importar archivos de GitHub como ESM real.
+    // ==========================
     async function latestShaFull() {{
       try {{
-        const url =
-          'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
-
+        const url = 'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
         const r = await fetch(url, {{
           headers: {{ 'Accept': 'application/vnd.github+json' }},
           cache: 'no-store'
         }});
-
-        if (!r.ok) throw new Error('GitHub API status ' + r.status);
+        if (!r.ok) throw 0;
         const j = await r.json();
-        return (j.sha || '').trim(); // SHA completo (40 chars)
+        return (j.sha || '').trim();
       }} catch (_e) {{
         return '';
       }}
     }}
 
-    function rawUrl(ref) {{
-      // ref: sha completo o branch
-      return 'https://raw.githubusercontent.com/' + repo + '/' + ref + '/' + compFile;
+    function esmGitHubUrl(ref) {{
+      // ref: SHA completo o branch
+      const gh = 'https://github.com/' + repo + '/blob/' + ref + '/' + compFile;
+      return 'https://esm.sh/' + gh;
     }}
 
     const SELECT_MODE = {sel_js};
@@ -602,21 +583,19 @@ def URDF_Visualization(
 
     try {{
       const shaFull = await latestShaFull();
-      if (!shaFull) throw new Error('No SHA from GitHub API');
-
-      const url = rawUrl(shaFull) + '?v=' + Date.now();
-      mod = await import(url);
-      console.debug('[URDF] Viewer desde RAW commit', shaFull.slice(0, 10), url);
-    }} catch (e1) {{
+      if (!shaFull) throw 0;
+      mod = await import(esmGitHubUrl(shaFull) + '?v=' + Date.now());
+      console.debug('[URDF] Módulo viewer desde commit', shaFull.slice(0, 10));
+    }} catch (_e) {{
       try {{
-        const url2 = rawUrl(branch) + '?v=' + Date.now();
-        mod = await import(url2);
-        console.debug('[URDF] Fallback RAW branch', branch, url2);
-      }} catch (e2) {{
-        const url3 =
-          'https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now();
-        mod = await import(url3);
-        console.debug('[URDF] Último fallback jsDelivr', branch, url3);
+        mod = await import(esmGitHubUrl(branch) + '?v=' + Date.now());
+        console.debug('[URDF] Fallback viewer desde branch', branch);
+      }} catch (_e2) {{
+        // último fallback: jsDelivr (puede cachear)
+        mod = await import(
+          'https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now()
+        );
+        console.debug('[URDF] Último fallback jsDelivr', branch);
       }}
     }}
 
