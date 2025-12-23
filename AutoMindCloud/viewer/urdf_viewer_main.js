@@ -1,7 +1,7 @@
 // /viewer/urdf_viewer_main.js
 // Viewer moderno + thumbnails + IA opt-in con:
 //  - Imagen ISO del robot completo (__robot_iso__)
-//  - Nombres + orden de componentes
+//  - Nombres + orden de componentes 
 //  - Reducción de thumbnails a ~5KB solo para IA
 //  - Parser robusto para el dict que llega desde Colab
 
