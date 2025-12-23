@@ -1,15 +1,17 @@
 // /viewer/urdf_viewer_main.js
-// ✅ Versión “thumbalist con texturas” (ARREGLADA):
-// - Para sacar thumbnails NO usa el robotClone.
-// - En su lugar, ANTES de tomar la foto:
-//    1) carga el .dae del componente con ColladaLoader
-//    2) reescribe URLs internas de texturas con assetDB.resolveURL (LoadingManager.setURLModifier)
-//    3) ESPERA de verdad a que terminen de cargar las texturas (manager.onLoad)
-//    4) recién ahí renderiza al RenderTarget y genera el PNG
+// ✅ “thumbalist con texturas” (como el sistema antiguo: TODO base64/dataURL, sin blobs)
+// - Thumbnails NO usan robotClone para componentes.
+// - Para cada thumbnail:
+//    1) ColladaLoader carga el .dae del componente
+//    2) LoadingManager.setURLModifier reescribe URLs internas (texturas) via assetDB.resolveURL(...)
+//    3) Espera REAL a que terminen texturas (manager.onLoad)
+//    4) Render a RenderTarget -> PNG dataURL
 //
-// Requisitos:
-// - Tu buildAssetDB(meshDB) debe incluir .dae + texturas (png/jpg/etc)
-// - AssetDB.js debe exponer: buildAssetDB + createLoadMeshCb + resolveURL/getBlobURL
+// Requisitos (igual que el sistema antiguo URDF_Render_Script.py):
+// - meshDB trae base64 de .dae + .png/.jpg/... y AssetDB.resolveURL retorna "data:...;base64,...."
+// - AssetDB.js expone: buildAssetDB + createLoadMeshCb + resolveURL (opcional dispose)
+//
+// IMPORTANTE: Precompute thumbnails al iniciar (no al presionar "c") ✅
 
 import { THEME } from './Theme.js';
 import * as ViewerCore from './core/ViewerCore.js';
@@ -44,7 +46,7 @@ function debugLog(...args) {
   } catch (_) {}
 }
 
-// Wait until the URDF meshes stop arriving (assetToMeshes settles).
+/* Wait until URDF meshes stop arriving (assetToMeshes settles). */
 function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350) {
   const start = performance.now();
   let lastCount = -1;
@@ -68,7 +70,6 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
         lastCount = c;
         lastChange = now;
       }
-
       const settled = now - lastChange >= quietMs;
       const timeout = now - start >= maxWaitMs;
 
@@ -102,7 +103,7 @@ export function render(opts = {}) {
     throw new Error('[urdf_viewer_main] createViewer not found (ESM export or UMD global).');
   const core = _createViewer({ container, background });
 
-  // 2) Asset DB
+  // 2) Asset DB (base64/dataURL)
   const assetDB = buildAssetDB(meshDB);
   const assetToMeshes = new Map(); // assetKey -> Mesh[]
 
@@ -123,7 +124,7 @@ export function render(opts = {}) {
     },
   });
 
-  // 3) Cargar URDF
+  // 3) Load URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
   debugLog('Robot loaded', { hasRobot: !!robot });
 
@@ -133,11 +134,11 @@ export function render(opts = {}) {
   }
   debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
 
-  // 4) Offscreen thumbnails (✅ ahora con carga de DAE + texturas ANTES de foto)
+  // 4) Offscreen thumbnails (DAE + textures fully loaded BEFORE photo)
   const off = buildOffscreenForThumbnails(core, assetDB, assetToMeshes);
   if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
 
-  // 5) Interacción
+  // 5) Interaction
   const inter = attachInteraction({
     scene: core.scene,
     camera: core.camera,
@@ -147,7 +148,7 @@ export function render(opts = {}) {
     selectMode,
   });
 
-  // 6) Facade app para UI + IA
+  // 6) Facade app for UI + IA
   const app = {
     ...core,
     robot,
@@ -155,6 +156,7 @@ export function render(opts = {}) {
     assets: {
       list: () => listAssets(assetToMeshes),
       thumbnail: (assetKey) => off?.thumbnail(assetKey),
+      iso: () => off?.iso?.(),
     },
     isolate: {
       asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey),
@@ -180,9 +182,7 @@ export function render(opts = {}) {
       const base = baseFull ? baseFull.split('.')[0] : '';
       if (base && src[base]) return src[base];
 
-      if (Array.isArray(src) && typeof index === 'number') {
-        return src[index] || '';
-      }
+      if (Array.isArray(src) && typeof index === 'number') return src[index] || '';
       return '';
     },
 
@@ -201,10 +201,7 @@ export function render(opts = {}) {
         }
       }
 
-      if (typeof window !== 'undefined') {
-        window.Base64Images = Base64Images;
-      }
-
+      if (typeof window !== 'undefined') window.Base64Images = Base64Images;
       debugLog('collectAllThumbnails done', { count: Base64Images.length });
       return Base64Images;
     },
@@ -214,7 +211,7 @@ export function render(opts = {}) {
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // 8) Click sound opcional
+  // 8) Click sound (optional)
   if (clickAudioDataURL) {
     try {
       installClickSound(clickAudioDataURL);
@@ -223,12 +220,12 @@ export function render(opts = {}) {
     }
   }
 
-  // 9) Precompute ALL component thumbnails on start (single offscreen session),
-  // then close the offscreen renderer to free GPU memory.
+  // 9) ✅ Precompute thumbnails AT STARTUP (not on "c")
   (async () => {
     try {
       if (!off || typeof off.primeAll !== 'function') return;
 
+      // wait a bit for assetToMeshes to stabilize
       const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
       debugLog('[Thumbs] settle', settle);
 
@@ -289,8 +286,7 @@ function rebuildAssetMapFromRobot(robot, assetToMeshes) {
   const tmp = new Map();
   robot.traverse((o) => {
     if (o && o.isMesh && o.geometry) {
-      const k =
-        (o.userData && (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) || null;
+      const k = (o.userData && (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) || null;
       if (!k) return;
       const arr = tmp.get(k) || [];
       arr.push(o);
@@ -405,8 +401,8 @@ function frameMeshes(core, meshes) {
 /* ============= Offscreen thumbnails: CARGA DAE + TEXTURAS ANTES ============= */
 
 function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
-  const OFF_W = 320,
-    OFF_H = 320;
+  const OFF_W = 320;
+  const OFF_H = 320;
   const BG = 0xf2f2f2;
 
   const thumbCache = new Map(); // assetKey -> dataURL
@@ -416,6 +412,7 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
   let session = null;
   let priming = null;
 
+  // serialize GPU work
   let chain = Promise.resolve();
   const enqueue = (fn) => {
     chain = chain.then(fn, fn);
@@ -429,10 +426,6 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
     } catch (_) {}
     try {
       session.scene?.clear?.();
-    } catch (_) {}
-    try {
-      session.canvas2d = null;
-      session.ctx2d = null;
     } catch (_) {}
     session = null;
     closed = true;
@@ -448,8 +441,6 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
     if (closed) return null;
     if (session) return session;
     if (!core || !core.renderer || typeof THREE === 'undefined') return null;
-
-    const renderer = core.renderer;
 
     const rt = new THREE.WebGLRenderTarget(OFF_W, OFF_H, {
       depthBuffer: true,
@@ -472,7 +463,7 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
     const camera = new THREE.PerspectiveCamera(40, OFF_W / OFF_H, 0.001, 2000);
 
     session = {
-      renderer,
+      renderer: core.renderer,
       rt,
       canvas2d,
       ctx2d,
@@ -496,7 +487,6 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
       try {
         ses.scene.remove(ses._loadedRoot);
       } catch (_) {}
-      // IMPORTANTE: NO hacemos dispose() agresivo porque texturas/materiales pueden estar cacheados por three.
       ses._loadedRoot = null;
       ses._loadedKey = null;
     }
@@ -505,7 +495,7 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
   function makeManagerForDAE(assetKey) {
     const mgr = new THREE.LoadingManager();
 
-    // 🔥 ESTA es la magia: cualquier URL interna del DAE (texturas) se reescribe a blob URL desde meshDB.
+    // ✅ magia: reescribe URLs internas del DAE a dataURL base64 desde meshDB
     mgr.setURLModifier((url) => {
       try {
         const out = assetDB?.resolveURL?.(url, assetKey);
@@ -521,7 +511,6 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
   function setMaterialVisibilityFix(root) {
     root?.traverse?.((n) => {
       if (!n || !n.isMesh) return;
-
       const mats = Array.isArray(n.material) ? n.material : [n.material];
       mats.forEach((m) => {
         if (!m) return;
@@ -531,17 +520,15 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
         m.depthTest = true;
         m.needsUpdate = true;
       });
-
       n.castShadow = false;
       n.receiveShadow = false;
     });
   }
 
-  // ✅ FIX CRÍTICO: ahora esperamos tanto el callback del ColladaLoader (scene)
-  // como el mgr.onLoad (todas las texturas/imágenes encoladas terminaron).
+  // ✅ Espera ColladaLoader + mgr.onLoad (texturas listas)
   async function loadDAEWithTextures(assetKey) {
-    const daeURL =
-      assetDB?.getBlobURL?.(assetKey) || assetDB?.resolveURL?.(assetKey, null) || assetKey;
+    // DAE también viene como dataURL base64
+    const daeURL = assetDB?.resolveURL?.(assetKey, null) || assetKey;
 
     return new Promise((resolve, reject) => {
       if (!THREE || !THREE.ColladaLoader) {
@@ -562,12 +549,9 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
 
       function maybeFinish() {
         if (finished) return;
-        // Terminamos cuando:
-        // - tenemos root (sceneReady) y
-        // - el LoadingManager reportó que terminó TODO (managerDone)
         if (sceneReady && managerDone && root) {
           finished = true;
-          // 1 frame extra para “ver” texturas listas en GPU
+          // 1 frame extra para asegurar sampleo de texturas
           requestAnimationFrame(() => resolve(root));
         }
       }
@@ -580,7 +564,6 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
         const dt = performance.now() - t0;
         if (dt >= TIMEOUT_MS) {
           clearInterval(timer);
-          // Si ya tenemos root, devolvemos igual (mejor que nada).
           if (root) {
             debugLog('[Thumbs] loadDAEWithTextures timeout, devolviendo root igual', assetKey);
             finished = true;
@@ -610,9 +593,7 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
             return;
           }
 
-          // Fixes para que NO quede “invisible”
           setMaterialVisibilityFix(root);
-
           sceneReady = true;
           maybeFinish();
         },
@@ -722,12 +703,11 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
 
     cleanupLoaded(ses);
 
-    // ✅ cargar DAE + texturas ANTES de sacar foto
     const root = await loadDAEWithTextures(assetKey);
     ses._loadedRoot = root;
     ses._loadedKey = assetKey;
-
     ses.scene.add(root);
+
     return root;
   }
 
@@ -745,11 +725,10 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
       try {
         const root = await ensureLoadedForKey(ses, assetKey);
 
-        // Render box visible y encuadrar
         const box = computeVisibleBoxFromObject(ses, root);
         fitCameraIso(ses, box);
 
-        // 1 frame extra para asegurar que la textura ya se samplea (por si el GPU late-init)
+        // frame extra
         await new Promise((res) => requestAnimationFrame(res));
 
         const url = renderToDataURL(ses);
@@ -765,8 +744,6 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
   }
 
   async function _isoNoPrime() {
-    // ISO del robot completo: si quieres también con “DAE reload”, habría que cargar todos,
-    // pero normalmente basta con usar el robot ya cargado.
     if (isoCache) return isoCache;
 
     const ses = await ensureSession();
@@ -779,7 +756,6 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
 
         cleanupLoaded(ses);
 
-        // ISO usando el robot principal (ya texturizado si resolveURL funcionó al cargar URDF)
         const clone = core.robot ? core.robot.clone(true) : null;
         if (!clone) return null;
 
@@ -815,9 +791,7 @@ function buildOffscreenForThumbnails(core, assetDB, assetToMeshes) {
         await _isoNoPrime();
 
         const keys = Array.isArray(assetKeys) ? assetKeys : [];
-        for (const k of keys) {
-          await _thumbNoPrime(k);
-        }
+        for (const k of keys) await _thumbNoPrime(k);
 
         debugLog('[Thumbs] primeAll done', { wanted: keys.length, ok: thumbCache.size });
       } finally {
@@ -885,7 +859,7 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
     try {
       const entries = [];
 
-      // 1) ISO del robot completo
+      // 1) ISO robot completo
       if (typeof off.iso === 'function') {
         try {
           const isoUrl = await off.iso();
@@ -980,9 +954,7 @@ function extractDescMap(res) {
     return data;
   }
 
-  if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
-    return data[0];
-  }
+  if (Array.isArray(data) && data.length && typeof data[0] === 'object') return data[0];
 
   return null;
 }
@@ -1086,25 +1058,26 @@ function applyIaDescriptionsToApp(app, map) {
   debugLog('[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido', detail);
 }
 
-/* =================== Reducción thumbnails ~5KB =================== */
+/* =================== Reducción thumbnails ~5KB (SIN fetch/blob) =================== */
 
 async function makeApproxSizedBase64(dataURL, targetKB = 5) {
   try {
     const maxBytes = targetKB * 1024;
 
-    const resp = await fetch(dataURL);
-    const blob = await resp.blob();
+    // estimación rápida: bytes ~ (len(base64)*3/4)
+    const b64in = String(dataURL || '').split(',')[1] || '';
+    const inBytes = Math.floor((b64in.length * 3) / 4) || maxBytes;
 
-    const img = document.createElement('img');
-    const u = URL.createObjectURL(blob);
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = dataURL;
 
     await new Promise((res, rej) => {
       img.onload = () => res();
       img.onerror = rej;
-      img.src = u;
     });
 
-    const ratio = Math.min(1, Math.max(0.05, maxBytes / (blob.size || maxBytes)));
+    const ratio = Math.min(1, Math.max(0.05, maxBytes / Math.max(1, inBytes)));
     const scale = Math.sqrt(ratio);
 
     const w = Math.max(32, Math.floor(img.width * scale));
@@ -1117,8 +1090,6 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, w, h);
     ctx.drawImage(img, 0, 0, w, h);
-
-    URL.revokeObjectURL(u);
 
     const out = canvas.toDataURL('image/png');
     const b64 = out.split(',')[1] || '';
