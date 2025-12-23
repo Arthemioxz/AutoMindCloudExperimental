@@ -376,8 +376,16 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   assertThree();
 
   const rootEl = container || document.body;
-  if (getComputedStyle(rootEl).position === 'static') {
-    rootEl.style.position = 'relative';
+
+  // ✅ FIX (viewer tools visibility):
+  // Make sure the viewer container creates a stable stacking context, and the canvas stays "below" overlays.
+  const cs = getComputedStyle(rootEl);
+  if (cs.position === 'static') rootEl.style.position = 'relative';
+  rootEl.style.overflow = rootEl.style.overflow || 'hidden';
+  // Avoid cases where container collapses to 0 height in some hosts
+  if (!rootEl.style.height && rootEl === document.body) {
+    document.documentElement.style.height = '100%';
+    document.body.style.height = '100%';
   }
 
   // Scene
@@ -410,10 +418,18 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   });
   renderer.setPixelRatio(pixelRatio || window.devicePixelRatio || 1);
   renderer.setSize(rootEl.clientWidth || 1, rootEl.clientHeight || 1);
+
+  // ✅ FIX: ensure the canvas never hides UI overlays visually
+  // (ToolsDock now uses fixed overlay; this keeps canvas as a "background layer".)
+  renderer.domElement.style.position = 'absolute';
+  renderer.domElement.style.left = '0';
+  renderer.domElement.style.top = '0';
   renderer.domElement.style.width = '100%';
   renderer.domElement.style.height = '100%';
   renderer.domElement.style.display = 'block';
   renderer.domElement.style.touchAction = 'none';
+  renderer.domElement.style.zIndex = '0';
+
   rootEl.appendChild(renderer.domElement);
 
   // Shadows OFF by default
