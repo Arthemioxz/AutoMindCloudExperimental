@@ -7,9 +7,14 @@
 
 import { THEME } from './Theme.js';
 import * as ViewerCore from './core/ViewerCore.js';
-const createViewer = ViewerCore.createViewer || ViewerCore.default || (typeof window !== 'undefined' ? window.createViewer : null);
+const createViewer =
+  ViewerCore.createViewer ||
+  ViewerCore.default ||
+  (typeof window !== 'undefined' ? window.createViewer : null);
 if (createViewer == null) {
-  throw new Error("ViewerCore: createViewer no encontrado. Revisa core/ViewerCore.js (export) o window.createViewer (UMD).");
+  throw new Error(
+    "ViewerCore: createViewer no encontrado. Revisa core/ViewerCore.js (export) o window.createViewer (UMD).",
+  );
 }
 
 import { buildAssetDB, createLoadMeshCb } from './core/AssetDB.js';
@@ -48,44 +53,51 @@ export function render(opts = {}) {
 
   debugLog('render() init', { selectMode, background, IA_Widgets });
 
+  // Wait until the URDF meshes stop arriving (assetToMeshes settles).
+  function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350) {
+    const start = performance.now();
+    let lastCount = -1;
+    let lastChange = performance.now();
 
-// Wait until the URDF meshes stop arriving (assetToMeshes settles).
-function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350) {
-  const start = performance.now();
-  let lastCount = -1;
-  let lastChange = performance.now();
+    function countNow() {
+      let n = 0;
+      try {
+        assetToMeshes.forEach((arr) => {
+          n += arr && arr.length ? arr.length : 0;
+        });
+      } catch (_) {}
+      return n;
+    }
 
-  function countNow() {
-    let n = 0;
-    try {
-      assetToMeshes.forEach((arr) => { n += (arr && arr.length) ? arr.length : 0; });
-    } catch (_) {}
-    return n;
+    return new Promise((resolve) => {
+      function tick() {
+        const now = performance.now();
+        const c = countNow();
+        if (c !== lastCount) {
+          lastCount = c;
+          lastChange = now;
+        }
+
+        const settled = now - lastChange >= quietMs;
+        const timeout = now - start >= maxWaitMs;
+
+        if (settled || timeout) resolve({ meshes: c, settled, timeout });
+        else requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    });
   }
 
-  return new Promise((resolve) => {
-    function tick() {
-      const now = performance.now();
-      const c = countNow();
-      if (c !== lastCount) {
-        lastCount = c;
-        lastChange = now;
-      }
-
-      const settled = (now - lastChange) >= quietMs;
-      const timeout = (now - start) >= maxWaitMs;
-
-      if (settled || timeout) resolve({ meshes: c, settled, timeout });
-      else requestAnimationFrame(tick);
-    }
-    requestAnimationFrame(tick);
-  });
-}
-
-
   // 1) Core viewer
-  const _createViewer = (ViewerCore && (ViewerCore.createViewer || (ViewerCore.default && ViewerCore.default.createViewer))) || window.createViewer;
-  if (typeof _createViewer !== 'function') throw new Error('[urdf_viewer_main] createViewer not found (ESM export or UMD global).');
+  const _createViewer =
+    (ViewerCore &&
+      (ViewerCore.createViewer ||
+        (ViewerCore.default && ViewerCore.default.createViewer))) ||
+    window.createViewer;
+  if (typeof _createViewer !== 'function')
+    throw new Error(
+      '[urdf_viewer_main] createViewer not found (ESM export or UMD global).',
+    );
   const core = _createViewer({ container, background });
 
   // 2) Asset DB
@@ -120,8 +132,8 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
 
   debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
 
-  // 4) Offscreen thumbnails
-  const off = buildOffscreenForThumbnails(core);
+  // 4) Offscreen thumbnails (FIX: pasar assetToMeshes + THEME)
+  const off = buildOffscreenForThumbnails(core, assetToMeshes, THEME);
   if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
 
   // 5) Interacción
@@ -201,27 +213,27 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
+  // 9) Precompute ALL component thumbnails on start (single offscreen viewer),
+  // then close the offscreen renderer to free GPU memory.
+  (async () => {
+    try {
+      if (!off || typeof off.primeAll !== 'function') return;
 
-// 9) Precompute ALL component thumbnails on start (single offscreen viewer),
-// then close the offscreen renderer to free GPU memory.
-(async () => {
-  try {
-    if (!off || typeof off.primeAll !== 'function') return;
+      // Wait for URDF mesh loading to settle so the offscreen clone includes everything.
+      const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
+      debugLog('[Thumbs] settle', settle);
 
-    // Wait for URDF mesh loading to settle so the offscreen clone includes everything.
-    const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
-    debugLog('[Thumbs] settle', settle);
+      const keys = Array.from(assetToMeshes.keys());
+      await off.primeAll(keys);
 
-    const keys = Array.from(assetToMeshes.keys());
-    await off.primeAll(keys);
-
-    // If anything is listening (optional), notify thumbnails are ready.
-    try { window.dispatchEvent(new Event('thumbnails_ready')); } catch (_) {}
-  } catch (e) {
-    debugLog('[Thumbs] auto prime error', String(e));
-  }
-})();
-
+      // If anything is listening (optional), notify thumbnails are ready.
+      try {
+        window.dispatchEvent(new Event('thumbnails_ready'));
+      } catch (_) {}
+    } catch (e) {
+      debugLog('[Thumbs] auto prime error', String(e));
+    }
+  })();
 
   // 8) Click sound opcional
   if (clickAudioDataURL) {
@@ -249,11 +261,21 @@ function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350)
   }
 
   const destroy = () => {
-    try { comps.destroy(); } catch (_) {}
-    try { tools.destroy(); } catch (_) {}
-    try { inter.destroy(); } catch (_) {}
-    try { off?.destroy?.(); } catch (_) {}
-    try { core.destroy(); } catch (_) {}
+    try {
+      comps.destroy();
+    } catch (_) {}
+    try {
+      tools.destroy();
+    } catch (_) {}
+    try {
+      inter.destroy();
+    } catch (_) {}
+    try {
+      off?.destroy?.();
+    } catch (_) {}
+    try {
+      core.destroy();
+    } catch (_) {}
   };
 
   return { ...app, destroy };
@@ -267,9 +289,7 @@ function rebuildAssetMapFromRobot(robot, assetToMeshes) {
     if (o && o.isMesh && o.geometry) {
       const k =
         (o.userData &&
-          (o.userData.__assetKey ||
-            o.userData.assetKey ||
-            o.userData.filename)) ||
+          (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) ||
         null;
       if (!k) return;
       const arr = tmp.get(k) || [];
@@ -358,7 +378,7 @@ function frameMeshes(core, meshes) {
   const ctrl = core.controls;
 
   if (cam.isPerspectiveCamera) {
-    const fov = (cam.fov || 60) * Math.PI / 180;
+    const fov = ((cam.fov || 60) * Math.PI) / 180;
     const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
 
     cam.near = Math.max(maxDim / 1000, 0.001);
@@ -388,14 +408,31 @@ function frameMeshes(core, meshes) {
 
 /* ============= Offscreen thumbnails: componente + ISO robot ============= */
 
-function buildOffscreenForThumbnails(core, assetToMeshes) {
+function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
   // IMPORTANTE:
   // - NO creamos otro WebGLRenderer (evita “Too many active WebGL contexts”).
   // - Renderizamos a un WebGLRenderTarget usando el MISMO renderer del viewer.
   // - Pausamos el render loop del viewer mientras capturamos thumbnails (evita renders en blanco).
   // - NO hacemos dispose() de geometrías/texturas/materiales compartidos con el robot principal.
-  const OFF_W = 320, OFF_H = 320;
-  const BG = 0x2a2a2a; // fondo oscuro para piezas blancas
+  const OFF_W = 320,
+    OFF_H = 320;
+
+  function toColorValue(v, fallback = 0xffffff) {
+    if (typeof v === 'number' && isFinite(v)) return v >>> 0;
+    if (typeof v === 'string') {
+      const s = v.trim();
+      // "#rrggbb" or "0xrrggbb" or "rrggbb"
+      const hex = s.startsWith('#') ? s.slice(1) : s.startsWith('0x') ? s.slice(2) : s;
+      if (/^[0-9a-fA-F]{6}$/.test(hex)) return parseInt(hex, 16) >>> 0;
+    }
+    return fallback;
+  }
+
+  // ✅ FIX: usar Theme.js también para el fondo de thumbnails/ISO (blanco por defecto)
+  const BG = toColorValue(
+    (theme && (theme.thumbBg ?? theme.bgCanvas ?? theme.background ?? theme.bg)) ?? 0xffffff,
+    0xffffff,
+  );
 
   function normalizeAssetKey(s) {
     if (!s) return '';
@@ -464,8 +501,12 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
   function destroySession() {
     if (!session) return;
-    try { session.rt && session.rt.dispose && session.rt.dispose(); } catch (_) {}
-    try { session.scene && session.scene.clear && session.scene.clear(); } catch (_) {}
+    try {
+      session.rt && session.rt.dispose && session.rt.dispose();
+    } catch (_) {}
+    try {
+      session.scene && session.scene.clear && session.scene.clear();
+    } catch (_) {}
     session = null;
     closed = true;
   }
@@ -480,7 +521,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     // Render target (no crea contexto WebGL nuevo)
     const rt = new THREE.WebGLRenderTarget(OFF_W, OFF_H, {
       depthBuffer: true,
-      stencilBuffer: false
+      stencilBuffer: false,
     });
 
     // Canvas 2D auxiliar para convertir pixels -> PNG dataURL
@@ -493,8 +534,14 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(BG);
 
-    const amb = new THREE.AmbientLight(0xffffff, 0.95);
-    const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+    // Luces (también “ambient” desde Theme.js si existe)
+    const ambI =
+      (theme && (theme.thumbAmbientIntensity ?? theme.ambientIntensity)) ?? 0.95;
+    const dirI =
+      (theme && (theme.thumbDirIntensity ?? theme.dirIntensity)) ?? 0.9;
+
+    const amb = new THREE.AmbientLight(0xffffff, ambI);
+    const dir = new THREE.DirectionalLight(0xffffff, dirI);
     dir.position.set(3, 5, 4);
     scene.add(amb, dir);
 
@@ -502,7 +549,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
     const robotClone = core.robot.clone(true);
 
-    // 🔧 Forzar materiales visibles en el CLON (evita thumbnails blancos/invisibles)
+    // 🔧 Ajustes “seguros” para que no quede invisible,
+    // pero SIN sobreescribir color si ya tiene textura/map.
     robotClone.traverse((n) => {
       if (!n || !n.isMesh) return;
 
@@ -510,21 +558,23 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       mats.forEach((m) => {
         if (!m) return;
 
-        // Evita invisibilidad por alpha/transparency
-        m.transparent = false;
-        m.opacity = 1;
-        m.alphaTest = 0;
+        // Evita invisibilidad por alpha/transparency raras
+        if (m.opacity === 0) m.opacity = 1;
+        if (m.transparent && m.opacity >= 0.999) m.transparent = false;
 
         // Evita backface culling (caras invertidas)
         m.side = THREE.DoubleSide;
 
-        // Evita glitches de profundidad
+        // Profundidad normal
         m.depthWrite = true;
         m.depthTest = true;
 
-        // Da un color/emissive mínimo si todo viene blanco
-        if (m.color) m.color.setRGB(0.65, 0.65, 0.65);
-        if (m.emissive) m.emissive.setRGB(0.18, 0.18, 0.18);
+        // Solo si NO hay textura y el material no tiene color útil, damos un gris suave
+        const hasMap = !!(m.map || m.emissiveMap || m.metalnessMap || m.roughnessMap);
+        if (!hasMap && m.color && typeof m.color.getHex === 'function') {
+          const c = m.color.getHex();
+          if (c === 0x000000) m.color.setHex(0x999999);
+        }
 
         m.needsUpdate = true;
       });
@@ -564,7 +614,11 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       _size: new THREE.Vector3(),
     };
 
-    debugLog('[Thumbs] Offscreen session created (shared renderer; no extra WebGL context)');
+    debugLog('[Thumbs] Offscreen session created (shared renderer; theme BG applied)', {
+      BG,
+      ambI,
+      dirI,
+    });
     return session;
   }
 
@@ -585,20 +639,24 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     // lookup robusto
     const list = getCloneMeshesForAssetKey(ses, assetKey);
     if (!list || !list.length) {
-      // fallback anti-blanco: mostrar todo
+      // fallback: mostrar todo
       ses.robotClone.traverse((n) => {
         if (n && n.isMesh) n.visible = true;
       });
       return { usedFallback: true };
     }
 
-    list.forEach((m) => { if (m) m.visible = true; });
+    list.forEach((m) => {
+      if (m) m.visible = true;
+    });
     return { usedFallback: false };
   }
 
   function computeVisibleBox(ses) {
     // Asegurar matrices world
-    try { ses.robotClone.updateWorldMatrix(true, true); } catch (_) {}
+    try {
+      ses.robotClone.updateWorldMatrix(true, true);
+    } catch (_) {}
 
     const box = ses._box;
     const tmp = ses._tmpBox;
@@ -609,8 +667,10 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       if (!n || !n.isMesh || !n.visible) return;
       tmp.setFromObject(n);
       if (tmp.isEmpty()) return;
-      if (!has) { box.copy(tmp); has = true; }
-      else box.union(tmp);
+      if (!has) {
+        box.copy(tmp);
+        has = true;
+      } else box.union(tmp);
     });
 
     if (has) return box;
@@ -657,6 +717,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
       r.setViewport(0, 0, OFF_W, OFF_H);
       r.setScissor(0, 0, OFF_W, OFF_H);
       r.setScissorTest(false);
+
+      // ✅ FIX: limpiar con BG del Theme
       r.setClearColor(BG, 1);
       r.clear(true, true, true);
       r.render(ses.scene, ses.camera);
@@ -691,6 +753,40 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     try {
       if (core && typeof core.setPaused === 'function') core.setPaused(!!on);
     } catch (_) {}
+  }
+
+  // Wait until the URDF meshes stop arriving (assetToMeshes settles).
+  function waitForAssetMapToSettle_local(assetToMeshesLocal, maxWaitMs = 8000, quietMs = 350) {
+    if (!assetToMeshesLocal) return Promise.resolve({ meshes: 0, settled: true, timeout: false });
+    const start = performance.now();
+    let lastCount = -1;
+    let lastChange = performance.now();
+
+    function countNow() {
+      let n = 0;
+      try {
+        assetToMeshesLocal.forEach((arr) => {
+          n += arr && arr.length ? arr.length : 0;
+        });
+      } catch (_) {}
+      return n;
+    }
+
+    return new Promise((resolve) => {
+      function tick() {
+        const now = performance.now();
+        const c = countNow();
+        if (c !== lastCount) {
+          lastCount = c;
+          lastChange = now;
+        }
+        const settled = now - lastChange >= quietMs;
+        const timeout = now - start >= maxWaitMs;
+        if (settled || timeout) resolve({ meshes: c, settled, timeout });
+        else requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    });
   }
 
   async function _thumbNoPrime(assetKey) {
@@ -751,7 +847,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
 
     priming = (async () => {
       try {
-        if (assetToMeshes) await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
+        // ✅ FIX: ahora sí tenemos assetToMeshes aquí
+        if (assetToMeshes) await waitForAssetMapToSettle_local(assetToMeshes, 12000, 450);
 
         await _isoNoPrime();
 
@@ -760,7 +857,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
           await _thumbNoPrime(k);
         }
 
-        debugLog('[Thumbs] primeAll done', { wanted: keys.length, ok: thumbCache.size });
+        debugLog('[Thumbs] primeAll done', { wanted: keys.length, ok: thumbCache.size, BG });
       } finally {
         destroySession();
       }
@@ -797,7 +894,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes) {
     _cache: thumbCache,
   };
 }
-
 
 /* ================= IA opt-in: describe_component_images ================= */
 
@@ -918,11 +1014,7 @@ function extractDescMap(res) {
   }
 
   // Caso actual: data['text/plain'] = "{'base.dae': '...'}"
-  if (
-    data &&
-    typeof data === 'object' &&
-    typeof data['text/plain'] === 'string'
-  ) {
+  if (data && typeof data === 'object' && typeof data['text/plain'] === 'string') {
     const raw = data['text/plain'].trim();
     const parsed = parseMaybePythonDict(raw);
     if (parsed) return parsed;
@@ -945,11 +1037,7 @@ function extractDescMap(res) {
   }
 
   // Array de objetos: tomar el primero
-  if (
-    Array.isArray(data) &&
-    data.length &&
-    typeof data[0] === 'object'
-  ) {
+  if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
     return data[0];
   }
 
@@ -982,8 +1070,6 @@ function parseMaybePythonDict(raw) {
     expr = expr.replace(/\bTrue\b/g, 'true');
     expr = expr.replace(/\bFalse\b/g, 'false');
 
-    // Si usa comillas simples tipo dict Python, no lo tocamos a mano campo por campo:
-    // dejamos que el motor JS lo evalue como objeto literal.
     // Ejemplo: {'base.dae': 'texto'} es válido en new Function("return (...)").
     const obj = new Function('return (' + expr + ')')();
     if (obj && typeof obj === 'object') return obj;
@@ -1023,9 +1109,7 @@ function applyIaDescriptionsToApp(app, map) {
   }
 
   if (!app.__patchedGetComponentDescription) {
-    const orig = app.getComponentDescription
-      ? app.getComponentDescription.bind(app)
-      : null;
+    const orig = app.getComponentDescription ? app.getComponentDescription.bind(app) : null;
 
     app.getComponentDescription = function (assetKey, index = 0) {
       const cd = app.componentDescriptions || {};
@@ -1064,16 +1148,11 @@ function applyIaDescriptionsToApp(app, map) {
 
   try {
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(
-        new CustomEvent('ia_descriptions_ready', { detail }),
-      );
+      window.dispatchEvent(new CustomEvent('ia_descriptions_ready', { detail }));
     }
   } catch (_) {}
 
-  debugLog(
-    '[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido',
-    detail,
-  );
+  debugLog('[IA] Descripciones IA aplicadas; ia_descriptions_ready emitido', detail);
 }
 
 /* =================== Reducción thumbnails ~5KB =================== */
@@ -1094,10 +1173,7 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
       img.src = u;
     });
 
-    const ratio = Math.min(
-      1,
-      Math.max(0.05, maxBytes / (blob.size || maxBytes)),
-    );
+    const ratio = Math.min(1, Math.max(0.05, maxBytes / (blob.size || maxBytes)));
     const scale = Math.sqrt(ratio);
 
     const w = Math.max(32, Math.floor(img.width * scale));
@@ -1117,10 +1193,7 @@ async function makeApproxSizedBase64(dataURL, targetKB = 5) {
     const b64 = out.split(',')[1] || '';
     if (!b64) return null;
 
-    debugLog(
-      '[IA] makeApproxSizedBase64 bytes ~',
-      Math.floor((b64.length * 3) / 4),
-    );
+    debugLog('[IA] makeApproxSizedBase64 bytes ~', Math.floor((b64.length * 3) / 4));
     return b64;
   } catch (e) {
     debugLog('[IA] makeApproxSizedBase64 error', String(e));
@@ -1138,8 +1211,7 @@ function installClickSound(dataURL) {
 
   async function ensure() {
     if (!ctx) {
-      ctx =
-        new (window.AudioContext || window.webkitAudioContext)();
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
     }
     if (!buf) {
       const resp = await fetch(dataURL);
@@ -1150,8 +1222,7 @@ function installClickSound(dataURL) {
 
   function play() {
     if (!ctx) {
-      ctx =
-        new (window.AudioContext || window.webkitAudioContext)();
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
     }
     if (ctx.state === 'suspended') ctx.resume();
 
