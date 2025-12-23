@@ -1,7 +1,7 @@
 # URDF_Render_Script.py
 # Puente Colab <-> JS para descripciones de piezas del URDF. 
 #
-# Uso típico en Colab:
+# Uso típico en Colab: 
 #   from URDF_Render_Script import URDF_Render
 #   URDF_Render("URDFModel")                      # solo viewer
 #   URDF_Render("URDFModel", IA_Widgets=True)     # viewer + IA opt-in
