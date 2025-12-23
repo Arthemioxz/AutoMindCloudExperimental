@@ -213,7 +213,22 @@ export function createToolsDock(app, theme) {
 
   // Attach
   const host = (app?.renderer?.domElement?.parentElement) || document.body;
+
+  // ✅ FIX: ensure overlay is visible at start (correct positioning + no clipping + top z-index)
+  try {
+    const cs = window.getComputedStyle(host);
+    if (cs.position === 'static') host.style.position = 'relative';
+    if (cs.overflow === 'hidden') host.style.overflow = 'visible';
+  } catch (_) {}
+
   host.appendChild(ui.root);
+
+  // Ensure never "invisible but clickable" due to stacking contexts
+  ui.root.style.zIndex = '2147483647';
+  ui.dock.style.zIndex = '2147483646';
+  ui.toggleBtn.style.zIndex = '2147483647';
+  ui.toggleBtn.style.opacity = '1';
+  ui.toggleBtn.style.visibility = 'visible';
 
   // ---------- Controls ----------
   const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
