@@ -361,8 +361,8 @@ def URDF_Visualization(
     html, body {{
       margin:0;
       padding:0;
-      width:100%;
-      height:100%;              /* ✅ el viewer llena el cell */
+      width:75%;
+      height:75%;              /* ✅ el viewer llena el cell */
       overflow:hidden;
       background:#{int(background or 0xFFFFFF):06x};
     }}
