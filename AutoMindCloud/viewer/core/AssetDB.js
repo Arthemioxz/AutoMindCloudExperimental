@@ -1,20 +1,20 @@
 // /viewer/core/AssetDB.js
 // Build a normalized in-memory asset DB and a URDFLoader-compatible loadMeshCb.
 // Three r132 + urdf-loader 0.12.6
-/* global THREE */ 
+/* global THREE */
 
 const ALLOWED_MESH_EXTS = new Set(['dae', 'stl', 'step', 'stp']);
-const ALLOWED_TEX_EXTS  = new Set(['png', 'jpg', 'jpeg']);
+const ALLOWED_TEX_EXTS = new Set(['png', 'jpg', 'jpeg']);
 const EXT_PRIORITY = { dae: 3, stl: 2, step: 1, stp: 1 };
 
 const MIME = {
   png: 'image/png',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
-  stl: 'model/stl',                    // informative; we parse from bytes
+  stl: 'model/stl', // informative; we parse from bytes
   dae: 'model/vnd.collada+xml',
-  step:'model/step',
-  stp: 'model/step'
+  step: 'model/step',
+  stp: 'model/step',
 };
 
 /* ---------- helpers ---------- */
@@ -23,44 +23,85 @@ function normKey(s) {
   return String(s || '')
     .replace(/\\/g, '/')
     .replace(/^\.\//, '')
+    .trim()
     .toLowerCase();
 }
 
 function dropPackagePrefix(k) {
-  return k.startsWith('package://') ? k.slice('package://'.length) : k;
+  // package://pkg/meshes/x.dae  -> pkg/meshes/x.dae
+  // también soporta Package://
+  return String(k || '').toLowerCase().startsWith('package://')
+    ? String(k).slice('package://'.length)
+    : k;
+}
+
+function stripQueryHash(p) {
+  return String(p || '').split('?')[0].split('#')[0];
 }
 
 function basenameNoQuery(p) {
-  const q = String(p || '').split('?')[0].split('#')[0];
+  const q = stripQueryHash(p);
   return q.split('/').pop();
 }
 
 function extOf(p) {
-  const q = String(p || '').split('?')[0].split('#')[0];
+  const q = stripQueryHash(p);
   const i = q.lastIndexOf('.');
   return i >= 0 ? q.slice(i + 1).toLowerCase() : '';
 }
 
 function approxBytesFromB64(b64) {
-  return Math.floor(String(b64 || '').length * 3 / 4);
+  return Math.floor((String(b64 || '').length * 3) / 4);
 }
 
+/**
+ * Genera variantes de lookup MUY robustas:
+ * - mantiene path completo
+ * - sin package://
+ * - basename
+ * - "meshes/<basename>"
+ * - desde el segmento "/meshes/..."
+ * - subpaths quitando prefijos
+ */
 function variantsFor(path) {
   const out = new Set();
-  const p = normKey(path);
-  const pkg = dropPackagePrefix(p);
+
+  const raw = String(path || '');
+  if (!raw) return [];
+
+  const rawNoQ = stripQueryHash(raw);
+  const p0 = normKey(rawNoQ);
+  const p = dropPackagePrefix(p0); // si era package://
+
+  if (p0) out.add(p0);
+  if (p) out.add(p);
+
+  const base0 = basenameNoQuery(p0);
   const base = basenameNoQuery(p);
+  if (base0) out.add(normKey(base0));
+  if (base) out.add(normKey(base));
 
-  out.add(p);
-  out.add(pkg);
-  out.add(base);
+  // intentar "meshes/<base>"
+  if (base) out.add(normKey('meshes/' + base));
+  if (base0) out.add(normKey('meshes/' + base0));
 
-  // también probamos sin el primer segmento (por si hay carpeta "meshes/")
-  const parts = pkg.split('/');
-  for (let i = 1; i < parts.length; i++) {
-    out.add(parts.slice(i).join('/'));
+  // si contiene "/meshes/", tomar desde ahí: "meshes/xxx"
+  const idx = p.indexOf('/meshes/');
+  if (idx >= 0) {
+    const sub = p.slice(idx + 1); // "meshes/xxx"
+    if (sub) out.add(normKey(sub));
+    const subBase = basenameNoQuery(sub);
+    if (subBase) out.add(normKey(subBase));
+    out.add(normKey('meshes/' + subBase));
   }
-  return Array.from(out);
+
+  // también probar sin el primer segmento (por si meshDB guarda "meshes/x" o "x")
+  const parts = p.split('/').filter(Boolean);
+  for (let i = 1; i < parts.length; i++) {
+    out.add(normKey(parts.slice(i).join('/')));
+  }
+
+  return Array.from(out).filter(Boolean);
 }
 
 function dataURLFor(ext, b64) {
@@ -70,7 +111,6 @@ function dataURLFor(ext, b64) {
 
 const textDecoder = new TextDecoder();
 function b64ToUint8(b64) {
-  // atob → bytes
   const bin = atob(String(b64 || ''));
   const len = bin.length;
   const out = new Uint8Array(len);
@@ -91,6 +131,7 @@ function b64ToText(b64) {
  *   byBase: Map<string, string[]>,
  *   has(key: string): boolean,
  *   get(key: string): string|undefined,
+ *   resolve(key: string): string|null,
  *   keys(): string[]
  * }}
  */
@@ -103,44 +144,49 @@ export function buildAssetDB(meshDB = {}) {
     const b64 = meshDB[rawKey];
     if (!b64) return;
 
-    const k = normKey(rawKey);
-    const kNoPkg = dropPackagePrefix(k);
-    const base = basenameNoQuery(k);
+    const k = normKey(stripQueryHash(rawKey));
+    const kNoPkg = normKey(dropPackagePrefix(k));
+    const base = normKey(basenameNoQuery(kNoPkg || k));
 
-    // Registra k
     if (!byKey[k]) byKey[k] = b64;
+    if (kNoPkg && kNoPkg !== k && !byKey[kNoPkg]) byKey[kNoPkg] = b64;
 
-    // Registra variante sin package://
-    if (kNoPkg !== k && !byKey[kNoPkg]) byKey[kNoPkg] = b64;
-
-    // También permite lookup por basename (no exclusivo; puede haber duplicados)
-    const arr = byBase.get(base) || [];
-    arr.push(k);               // guardamos la key "completa" como referencia principal
-    if (kNoPkg !== k) arr.push(kNoPkg);
-    byBase.set(base, Array.from(new Set(arr)));
+    // lookup por basename (pueden haber duplicados)
+    if (base) {
+      const arr = byBase.get(base) || [];
+      arr.push(k);
+      if (kNoPkg && kNoPkg !== k) arr.push(kNoPkg);
+      byBase.set(base, Array.from(new Set(arr)));
+    }
   });
+
+  function resolve(key) {
+    const tries = variantsFor(key);
+    for (const t of tries) {
+      if (byKey[t]) return t;
+    }
+    const base = normKey(basenameNoQuery(key));
+    const arr = byBase.get(base) || [];
+    for (const k of arr) {
+      if (byKey[k]) return k;
+    }
+    return null;
+  }
 
   return {
     byKey,
     byBase,
     has(key) {
-      const ks = variantsFor(key);
-      return !!ks.find((k) => !!byKey[k]);
+      return !!resolve(key);
     },
     get(key) {
-      const ks = variantsFor(key);
-      for (const k of ks) {
-        if (byKey[k]) return byKey[k];
-      }
-      // último recurso: basename
-      const base = basenameNoQuery(key);
-      const arr = byBase.get(base) || [];
-      for (const k of arr) {
-        if (byKey[k]) return byKey[k];
-      }
-      return undefined;
+      const k = resolve(key);
+      return k ? byKey[k] : undefined;
     },
-    keys() { return Object.keys(byKey); }
+    resolve,
+    keys() {
+      return Object.keys(byKey);
+    },
   };
 }
 
@@ -149,25 +195,28 @@ export function buildAssetDB(meshDB = {}) {
 function pickBestKey(tryKeys, assetDB) {
   // Agrupa por basename y elige por prioridad de extensión y tamaño aprox
   const groups = new Map();
+
   for (const kk of tryKeys) {
     const k = normKey(kk);
     const b64 = assetDB.byKey[k];
     if (!b64) continue;
+
     const ext = extOf(k);
     if (!ALLOWED_MESH_EXTS.has(ext)) continue;
+
     const base = basenameNoQuery(k);
     const arr = groups.get(base) || [];
     arr.push({
       key: k,
       ext,
       prio: EXT_PRIORITY[ext] ?? 0,
-      bytes: approxBytesFromB64(b64)
+      bytes: approxBytesFromB64(b64),
     });
     groups.set(base, arr);
   }
-  // Devuelve el mejor del primer grupo con contenido
+
   for (const [, arr] of groups) {
-    arr.sort((a, b) => (b.prio - a.prio) || (b.bytes - a.bytes));
+    arr.sort((a, b) => b.prio - a.prio || b.bytes - a.bytes);
     if (arr[0]) return arr[0].key;
   }
   return null;
@@ -181,18 +230,19 @@ function pickBestKey(tryKeys, assetDB) {
  *
  * @param {*} assetDB - resultado de buildAssetDB()
  * @param {Object} [hooks]
- * @param {(meshOrGroup:THREE.Object3D, assetKey:string)=>void} [hooks.onMeshTag] - se llama tras crear el objeto
+ * @param {(meshOrGroup:THREE.Object3D, assetKey:string)=>void} [hooks.onMeshTag]
  * @returns {(path:string, manager:THREE.LoadingManager, onComplete:(obj:THREE.Object3D)=>void)=>void}
  */
 export function createLoadMeshCb(assetDB, hooks = {}) {
   const daeCache = new Map();
 
   function tagAll(obj, key) {
+    obj.userData = obj.userData || {};
     obj.userData.__assetKey = key;
     obj.traverse((o) => {
       if (o && o.isMesh && o.geometry) {
+        o.userData = o.userData || {};
         o.userData.__assetKey = key;
-        // sombras quedan off por defecto (lo decide UI/Core)
         o.castShadow = true;
         o.receiveShadow = true;
       }
@@ -205,7 +255,15 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
 
   return function loadMeshCb(path, _manager, onComplete) {
     try {
+      // 🔑 Resolver path -> key REAL en assetDB (base64)
+      // Entra: package://pkg/meshes/base.dae
+      // Sale: base.dae o meshes/base.dae (lo que exista en meshDB)
       const tries = variantsFor(path);
+
+      // Si AssetDB tiene resolve() usamos eso también (más directo)
+      const resolved = typeof assetDB.resolve === 'function' ? assetDB.resolve(path) : null;
+      if (resolved) tries.unshift(resolved);
+
       const bestKey = pickBestKey(tries, assetDB);
       if (!bestKey) {
         onComplete(makeEmpty());
@@ -219,7 +277,7 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         return;
       }
 
-      // STEP/STP no se soporta en Three sin parser extra — devolvemos placeholder
+      // STEP/STP no soportado sin parser extra
       if (ext === 'step' || ext === 'stp') {
         onComplete(makeEmpty());
         return;
@@ -231,17 +289,21 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         const loader = new THREE.STLLoader();
         const geom = loader.parse(bytes.buffer);
         geom.computeVertexNormals?.();
+
         const mesh = new THREE.Mesh(
           geom,
           new THREE.MeshStandardMaterial({
             color: 0x7fd4d4,
             roughness: 0.85,
             metalness: 0.12,
-            side: THREE.DoubleSide
-          })
+            side: THREE.DoubleSide,
+          }),
         );
+
         tagAll(mesh, bestKey);
-        hooks.onMeshTag?.(mesh, bestKey);
+        try {
+          hooks.onMeshTag?.(mesh, bestKey);
+        } catch (_) {}
         onComplete(mesh);
         return;
       }
@@ -252,7 +314,9 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         if (daeCache.has(bestKey)) {
           const obj = daeCache.get(bestKey).clone(true);
           tagAll(obj, bestKey);
-          hooks.onMeshTag?.(obj, bestKey);
+          try {
+            hooks.onMeshTag?.(obj, bestKey);
+          } catch (_) {}
           onComplete(obj);
           return;
         }
@@ -267,61 +331,76 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
           if (isFinite(meter) && meter > 0) scale = meter;
         }
 
-        // Manager que mapea URLs a data: desde assetDB (texturas, otras DAEs, etc.)
-        // IMPORTANTE: esperamos a que terminen de cargar las texturas antes de llamar onComplete,
-        // para que las capturas/thumbnails salgan con texturas (no en blanco).
+        // Manager que mapea URLs a data: desde assetDB (texturas, etc.)
+        // ✅ FIX: resolver URLs de texturas con el MISMO sistema robusto (package://, basename, meshes/)
         const mgr = new THREE.LoadingManager();
 
-        let started = false;
-        let finished = false;
+        let itemStarted = false;
+        let loaded = false;
 
-        mgr.onStart = () => { started = true; };
+        mgr.onStart = () => {
+          itemStarted = true;
+        };
         mgr.onLoad = () => {
-          if (finished) return;
-          finished = true;
+          loaded = true;
         };
 
         mgr.setURLModifier((url) => {
-          const v = variantsFor(url);             // prueba varias formas
-          const k = v.find((x) => assetDB.byKey[x]);
-          if (k) {
-            const e = extOf(k);
-            const b = assetDB.byKey[k];
-            return dataURLFor(e, b);
+          // url puede venir como "base.png", "textures/base.png", "package://.../textures/base.png"
+          const texTries = variantsFor(url);
+          // Si el archivo está en meshDB, devolver dataURL
+          for (const k of texTries) {
+            const kk = normKey(k);
+            if (assetDB.byKey[kk]) {
+              const e = extOf(kk);
+              if (ALLOWED_TEX_EXTS.has(e)) return dataURLFor(e, assetDB.byKey[kk]);
+              // si no es textura igual podría ser subasset, lo devolvemos igual:
+              return dataURLFor(e, assetDB.byKey[kk]);
+            }
           }
-          return url; // fallback: deja URL original (por si acaso)
+          // último recurso: basename directo
+          const base = normKey(basenameNoQuery(url));
+          const arr = assetDB.byBase?.get?.(base) || [];
+          for (const kk of arr) {
+            const e = extOf(kk);
+            if (assetDB.byKey[kk] && ALLOWED_TEX_EXTS.has(e)) {
+              return dataURLFor(e, assetDB.byKey[kk]);
+            }
+          }
+          return url; // fallback: deja URL original
         });
 
         const loader = new THREE.ColladaLoader(mgr);
         const collada = loader.parse(daeText, '');
-        const obj = (collada && collada.scene) ? collada.scene : new THREE.Object3D();
+        const obj = collada && collada.scene ? collada.scene : new THREE.Object3D();
         if (scale !== 1.0) obj.scale.setScalar(scale);
 
         const finalize = () => {
-          // Cachea el original y devuelve un clon para no compartir refs
           if (!daeCache.has(bestKey)) daeCache.set(bestKey, obj);
           const clone = obj.clone(true);
           tagAll(clone, bestKey);
-          hooks.onMeshTag?.(clone, bestKey);
+          try {
+            hooks.onMeshTag?.(clone, bestKey);
+          } catch (_) {}
           onComplete(clone);
         };
 
-        // Si ColladaLoader inició cargas (texturas), esperamos a onLoad.
-        // Si no inició nada, finalizamos de inmediato.
-        // Nota: onLoad podría no dispararse si no hubo ningún itemStart.
+        // Si no hubo ningún item start (no texturas), finalizamos ya.
+        // Si hubo cargas, esperamos a que termine el manager.
         Promise.resolve().then(() => {
-          if (!started) {
+          if (!itemStarted) {
             finalize();
             return;
           }
-          if (finished) {
+          if (loaded) {
             finalize();
             return;
           }
-          // Esperar a que el manager termine
           const prevOnLoad = mgr.onLoad;
           mgr.onLoad = () => {
-            try { prevOnLoad?.(); } catch (_) {}
+            try {
+              prevOnLoad?.();
+            } catch (_) {}
             finalize();
           };
         });
@@ -329,10 +408,11 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         return;
       }
 
-      // Ext desconocido (o no permitido): placeholder
       onComplete(makeEmpty());
     } catch (_e) {
-      try { onComplete(makeEmpty()); } catch (_ee) {}
+      try {
+        onComplete(makeEmpty());
+      } catch (_ee) {}
     }
   };
 }
@@ -340,5 +420,5 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
 /* ---------- (opcional) export ALLOWED sets if UI wants them ---------- */
 export const ALLOWED_EXTS = {
   mesh: ALLOWED_MESH_EXTS,
-  tex: ALLOWED_TEX_EXTS
+  tex: ALLOWED_TEX_EXTS,
 };
