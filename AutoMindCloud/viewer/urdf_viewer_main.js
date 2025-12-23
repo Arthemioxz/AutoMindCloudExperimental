@@ -1,9 +1,19 @@
 // /viewer/urdf_viewer_main.js
 // Viewer moderno + thumbnails + IA opt-in con:
 //  - Imagen ISO del robot completo (__robot_iso__)
-//  - Nombres + orden de componentes 
+//  - Nombres + orden de componentes
 //  - Reducción de thumbnails a ~5KB solo para IA
 //  - Parser robusto para el dict que llega desde Colab
+//
+// ✅ FIX PRINCIPAL (tu bug):
+// - Antes: si assetToMeshes quedaba vacío → no había componentes → IA nunca enviaba fotos.
+// - Ahora: si assetToMeshes está vacío, hacemos fallback a las keys de meshDB/assetDB,
+//   y el sistema de thumbnails/IA usa un modo alternativo: renderiza cada asset aislado
+//   cargándolo desde assetDB (sin depender de __assetKey en userData).
+//
+// Resultado:
+// - [IA] Componentes a describir N (>0) incluso cuando assetToMeshes = 0
+// - Se genera ISO + thumbnails y se llama a describe_component_images(entries)
 
 import { THEME } from './Theme.js';
 import * as ViewerCore from './core/ViewerCore.js';
@@ -132,8 +142,9 @@ export function render(opts = {}) {
 
   debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
 
-  // 4) Offscreen thumbnails (FIX: pasar assetToMeshes + THEME)
-  const off = buildOffscreenForThumbnails(core, assetToMeshes, THEME);
+  // 4) Offscreen thumbnails (✅ FIX: pasar assetDB + meshDBKeys para fallback)
+  const meshDBKeys = Object.keys(meshDB || {});
+  const off = buildOffscreenForThumbnails(core, assetToMeshes, THEME, assetDB, meshDBKeys);
   if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
 
   // 5) Interacción
@@ -152,7 +163,7 @@ export function render(opts = {}) {
     robot,
     IA_Widgets,
     assets: {
-      list: () => listAssets(assetToMeshes),
+      list: () => listAssets(assetToMeshes, assetDB, meshDBKeys),
       thumbnail: (assetKey) => off?.thumbnail(assetKey),
     },
     isolate: {
@@ -213,6 +224,15 @@ export function render(opts = {}) {
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
+  // 8) Click sound opcional
+  if (clickAudioDataURL) {
+    try {
+      installClickSound(clickAudioDataURL);
+    } catch (e) {
+      debugLog('installClickSound error', String(e));
+    }
+  }
+
   // 9) Precompute ALL component thumbnails on start (single offscreen viewer),
   // then close the offscreen renderer to free GPU memory.
   (async () => {
@@ -223,10 +243,10 @@ export function render(opts = {}) {
       const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
       debugLog('[Thumbs] settle', settle);
 
-      const keys = Array.from(assetToMeshes.keys());
+      // ✅ FIX: si assetToMeshes está vacío, usamos el fallback list()
+      const keys = app.assets.list().map((x) => x.assetKey);
       await off.primeAll(keys);
 
-      // If anything is listening (optional), notify thumbnails are ready.
       try {
         window.dispatchEvent(new Event('thumbnails_ready'));
       } catch (_) {}
@@ -235,16 +255,7 @@ export function render(opts = {}) {
     }
   })();
 
-  // 8) Click sound opcional
-  if (clickAudioDataURL) {
-    try {
-      installClickSound(clickAudioDataURL);
-    } catch (e) {
-      debugLog('installClickSound error', String(e));
-    }
-  }
-
-  // 9) IA opt-in
+  // 10) IA opt-in
   if (IA_Widgets) {
     debugLog('[IA] IA_Widgets=true → bootstrap IA');
     bootstrapComponentDescriptions(app, assetToMeshes, off);
@@ -252,7 +263,7 @@ export function render(opts = {}) {
     debugLog('[IA] IA_Widgets=false → sin IA');
   }
 
-  // 10) Expose global
+  // 11) Expose global
   if (typeof window !== 'undefined') {
     window.URDFViewer = window.URDFViewer || {};
     try {
@@ -283,18 +294,54 @@ export function render(opts = {}) {
 
 /* ======================= Helpers: assets / isolate ======================= */
 
+function guessAssetKeyFromUserData(userData) {
+  if (!userData || typeof userData !== 'object') return null;
+  const exts = ['.dae', '.stl', '.obj', '.glb', '.gltf', '.ply', '.fbx'];
+  for (const [k, v] of Object.entries(userData)) {
+    if (typeof v !== 'string') continue;
+    const s = v.toLowerCase();
+    if (exts.some((e) => s.includes(e))) return v;
+    // a veces queda como "meshes/base.dae"
+    if (s.includes('meshes/') && exts.some((e) => s.endsWith(e))) return v;
+  }
+  // algunos loaders guardan url/filename en claves típicas
+  const common = [
+    userData.__assetKey,
+    userData.assetKey,
+    userData.filename,
+    userData.url,
+    userData.href,
+    userData.path,
+    userData.mesh,
+    userData.meshFilename,
+  ].filter((x) => typeof x === 'string' && x.trim());
+  if (common.length) return common[0];
+  return null;
+}
+
 function rebuildAssetMapFromRobot(robot, assetToMeshes) {
   const tmp = new Map();
   robot.traverse((o) => {
     if (o && o.isMesh && o.geometry) {
       const k =
         (o.userData &&
-          (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) ||
+          (o.userData.__assetKey ||
+            o.userData.assetKey ||
+            o.userData.filename ||
+            guessAssetKeyFromUserData(o.userData))) ||
         null;
-      if (!k) return;
-      const arr = tmp.get(k) || [];
+
+      // fallback: a veces el key está en el padre
+      const kp =
+        (!k && o.parent && o.parent.userData && guessAssetKeyFromUserData(o.parent.userData)) ||
+        null;
+
+      const keyRaw = k || kp;
+      if (!keyRaw) return;
+
+      const arr = tmp.get(keyRaw) || [];
       arr.push(o);
-      tmp.set(k, arr);
+      tmp.set(keyRaw, arr);
     }
   });
   tmp.forEach((arr, k) => {
@@ -302,19 +349,38 @@ function rebuildAssetMapFromRobot(robot, assetToMeshes) {
   });
 }
 
-function listAssets(assetToMeshes) {
+function listAssets(assetToMeshes, assetDB, meshDBKeys = []) {
+  // ✅ Caso normal: assetToMeshes poblado por onMeshTag()
   const items = [];
-  assetToMeshes.forEach((meshes, assetKey) => {
-    if (!meshes || meshes.length === 0) return;
+  if (assetToMeshes && assetToMeshes.size) {
+    assetToMeshes.forEach((meshes, assetKey) => {
+      if (!meshes || meshes.length === 0) return;
+      const { base, ext } = splitName(assetKey);
+      items.push({ assetKey, base, ext, count: meshes.length });
+    });
+    items.sort((a, b) =>
+      a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }),
+    );
+    return items;
+  }
+
+  // ✅ FIX: fallback si assetToMeshes quedó vacío (tu caso)
+  // Usamos keys del meshDB/assetDB (base64) porque esas son las fuentes reales de assets
+  const keys =
+    (Array.isArray(meshDBKeys) && meshDBKeys.length ? meshDBKeys : null) ||
+    (assetDB && typeof assetDB.keys === 'function' ? assetDB.keys() : null) ||
+    [];
+
+  for (const assetKey of keys) {
     const { base, ext } = splitName(assetKey);
-    items.push({ assetKey, base, ext, count: meshes.length });
-  });
+    items.push({ assetKey, base, ext, count: 1 });
+  }
+
   items.sort((a, b) =>
-    a.base.localeCompare(b.base, undefined, {
-      numeric: true,
-      sensitivity: 'base',
-    }),
+    a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }),
   );
+
+  debugLog('[Assets] fallback listAssets (assetToMeshes vacío)', { count: items.length });
   return items;
 }
 
@@ -395,9 +461,7 @@ function frameMeshes(core, meshes) {
     cam.near = Math.max(maxDim / 1000, 0.001);
     cam.far = Math.max(maxDim * 1500, 1500);
     cam.updateProjectionMatrix();
-    cam.position.copy(
-      center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)),
-    );
+    cam.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
   }
 
   if (ctrl) {
@@ -408,7 +472,7 @@ function frameMeshes(core, meshes) {
 
 /* ============= Offscreen thumbnails: componente + ISO robot ============= */
 
-function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
+function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDBKeys = []) {
   // IMPORTANTE:
   // - NO creamos otro WebGLRenderer (evita “Too many active WebGL contexts”).
   // - Renderizamos a un WebGLRenderTarget usando el MISMO renderer del viewer.
@@ -421,14 +485,12 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
     if (typeof v === 'number' && isFinite(v)) return v >>> 0;
     if (typeof v === 'string') {
       const s = v.trim();
-      // "#rrggbb" or "0xrrggbb" or "rrggbb"
       const hex = s.startsWith('#') ? s.slice(1) : s.startsWith('0x') ? s.slice(2) : s;
       if (/^[0-9a-fA-F]{6}$/.test(hex)) return parseInt(hex, 16) >>> 0;
     }
     return fallback;
   }
 
-  // ✅ FIX: usar Theme.js también para el fondo de thumbnails/ISO (blanco por defecto)
   const BG = toColorValue(
     (theme && (theme.thumbBg ?? theme.bgCanvas ?? theme.background ?? theme.bg)) ?? 0xffffff,
     0xffffff,
@@ -459,13 +521,11 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
     out.add(base);
     out.add(baseLower);
 
-    // sin extensión
     const dot1 = base.lastIndexOf('.');
     if (dot1 > 0) out.add(base.slice(0, dot1));
     const dot2 = baseLower.lastIndexOf('.');
     if (dot2 > 0) out.add(baseLower.slice(0, dot2));
 
-    // agrega subpaths
     const parts = lower.split('/');
     for (let i = 1; i < parts.length; i++) {
       const sub = parts.slice(i).join('/');
@@ -492,7 +552,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
   let session = null;
   let priming = null;
 
-  // Serializa renders para no pelear con el loop principal.
   let chain = Promise.resolve();
   const enqueue = (fn) => {
     chain = chain.then(fn, fn);
@@ -518,27 +577,22 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
 
     const renderer = core.renderer;
 
-    // Render target (no crea contexto WebGL nuevo)
     const rt = new THREE.WebGLRenderTarget(OFF_W, OFF_H, {
       depthBuffer: true,
       stencilBuffer: false,
     });
 
-    // Canvas 2D auxiliar para convertir pixels -> PNG dataURL
     const canvas2d = document.createElement('canvas');
     canvas2d.width = OFF_W;
     canvas2d.height = OFF_H;
     const ctx2d = canvas2d.getContext('2d', { willReadFrequently: true });
 
-    // Escena de thumbnails (clon del robot)
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(BG);
 
-    // Luces (también “ambient” desde Theme.js si existe)
     const ambI =
       (theme && (theme.thumbAmbientIntensity ?? theme.ambientIntensity)) ?? 0.95;
-    const dirI =
-      (theme && (theme.thumbDirIntensity ?? theme.dirIntensity)) ?? 0.9;
+    const dirI = (theme && (theme.thumbDirIntensity ?? theme.dirIntensity)) ?? 0.9;
 
     const amb = new THREE.AmbientLight(0xffffff, ambI);
     const dir = new THREE.DirectionalLight(0xffffff, dirI);
@@ -547,29 +601,21 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
 
     const camera = new THREE.PerspectiveCamera(40, OFF_W / OFF_H, 0.001, 2000);
 
+    // Clon del robot (cuando hay mapeo por userData)
     const robotClone = core.robot.clone(true);
 
-    // 🔧 Ajustes “seguros” para que no quede invisible,
-    // pero SIN sobreescribir color si ya tiene textura/map.
     robotClone.traverse((n) => {
       if (!n || !n.isMesh) return;
 
       const mats = Array.isArray(n.material) ? n.material : [n.material];
       mats.forEach((m) => {
         if (!m) return;
-
-        // Evita invisibilidad por alpha/transparency raras
         if (m.opacity === 0) m.opacity = 1;
         if (m.transparent && m.opacity >= 0.999) m.transparent = false;
-
-        // Evita backface culling (caras invertidas)
         m.side = THREE.DoubleSide;
-
-        // Profundidad normal
         m.depthWrite = true;
         m.depthTest = true;
 
-        // Solo si NO hay textura y el material no tiene color útil, damos un gris suave
         const hasMap = !!(m.map || m.emissiveMap || m.metalnessMap || m.roughnessMap);
         if (!hasMap && m.color && typeof m.color.getHex === 'function') {
           const c = m.color.getHex();
@@ -580,7 +626,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
       });
     });
 
-    // Map keyVariant -> [meshes...]
     const cloneMap = new Map();
     robotClone.traverse((n) => {
       if (!n || !n.isMesh) return;
@@ -608,6 +653,10 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
       camera,
       robotClone,
       cloneMap,
+
+      // ✅ FIX: escena alternativa para “asset aislado” cuando no hay cloneMap match
+      isolatedObj: null,
+
       _tmpBox: new THREE.Box3(),
       _box: new THREE.Box3(),
       _center: new THREE.Vector3(),
@@ -618,52 +667,21 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
       BG,
       ambI,
       dirI,
+      hasCloneMap: cloneMap.size,
     });
     return session;
   }
 
-  function setVisibleOnly(ses, assetKey) {
-    // Oculta todo
-    ses.robotClone.traverse((n) => {
-      if (n && n.isMesh) n.visible = false;
-    });
-
-    // ISO / showAll
-    if (!assetKey) {
-      ses.robotClone.traverse((n) => {
-        if (n && n.isMesh) n.visible = true;
-      });
-      return { usedFallback: false };
-    }
-
-    // lookup robusto
-    const list = getCloneMeshesForAssetKey(ses, assetKey);
-    if (!list || !list.length) {
-      // fallback: mostrar todo
-      ses.robotClone.traverse((n) => {
-        if (n && n.isMesh) n.visible = true;
-      });
-      return { usedFallback: true };
-    }
-
-    list.forEach((m) => {
-      if (m) m.visible = true;
-    });
-    return { usedFallback: false };
-  }
-
-  function computeVisibleBox(ses) {
-    // Asegurar matrices world
+  function computeBoxFromObject(ses, obj3d) {
     try {
-      ses.robotClone.updateWorldMatrix(true, true);
+      obj3d.updateWorldMatrix(true, true);
     } catch (_) {}
-
     const box = ses._box;
-    const tmp = ses._tmpBox;
     box.makeEmpty();
-
+    const tmp = ses._tmpBox;
     let has = false;
-    ses.robotClone.traverse((n) => {
+
+    obj3d.traverse((n) => {
       if (!n || !n.isMesh || !n.visible) return;
       tmp.setFromObject(n);
       if (tmp.isEmpty()) return;
@@ -675,8 +693,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
 
     if (has) return box;
 
-    // fallback final: box de todo el clon
-    tmp.setFromObject(ses.robotClone);
+    tmp.setFromObject(obj3d);
     return tmp;
   }
 
@@ -689,7 +706,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
     let maxDim = Math.max(size.x, size.y, size.z);
     if (!isFinite(maxDim) || maxDim <= 1e-6) maxDim = 1;
 
-    // más cerca que antes (anti-"miniatura")
     const dir = new THREE.Vector3(1, 0.8, 1).normalize();
     const fov = (ses.camera.fov * Math.PI) / 180;
     const dist = (maxDim / Math.tan(Math.max(1e-6, fov / 2))) * 0.55;
@@ -704,7 +720,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
   function renderToDataURL(ses) {
     const r = ses.renderer;
 
-    // Guardar estado renderer
     const prevRT = r.getRenderTarget();
     const prevVp = r.getViewport(new THREE.Vector4());
     const prevSc = r.getScissor(new THREE.Vector4());
@@ -718,7 +733,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
       r.setScissor(0, 0, OFF_W, OFF_H);
       r.setScissorTest(false);
 
-      // ✅ FIX: limpiar con BG del Theme
       r.setClearColor(BG, 1);
       r.clear(true, true, true);
       r.render(ses.scene, ses.camera);
@@ -726,7 +740,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
       const pixels = new Uint8Array(OFF_W * OFF_H * 4);
       r.readRenderTargetPixels(ses.rt, 0, 0, OFF_W, OFF_H, pixels);
 
-      // Flip vertical para canvas
       const ctx = ses.ctx2d;
       const img = ctx.createImageData(OFF_W, OFF_H);
       for (let y = 0; y < OFF_H; y++) {
@@ -740,7 +753,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
       debugLog('[Thumbs] renderToDataURL failed', e);
       return null;
     } finally {
-      // Restaurar estado renderer
       r.setRenderTarget(prevRT);
       r.setViewport(prevVp.x, prevVp.y, prevVp.z, prevVp.w);
       r.setScissor(prevSc.x, prevSc.y, prevSc.z, prevSc.w);
@@ -755,7 +767,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
     } catch (_) {}
   }
 
-  // Wait until the URDF meshes stop arriving (assetToMeshes settles).
   function waitForAssetMapToSettle_local(assetToMeshesLocal, maxWaitMs = 8000, quietMs = 350) {
     if (!assetToMeshesLocal) return Promise.resolve({ meshes: 0, settled: true, timeout: false });
     const start = performance.now();
@@ -789,6 +800,65 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
     });
   }
 
+  // ✅ Nuevo: render de un asset aislado (fallback cuando cloneMap no encuentra meshes)
+  async function renderIsolatedAsset(ses, assetKey) {
+    if (!assetDB || typeof assetDB.get !== 'function') return null;
+
+    const asset = assetDB.get(assetKey);
+    if (!asset) return null;
+
+    // limpia objeto anterior
+    if (ses.isolatedObj) {
+      try {
+        ses.scene.remove(ses.isolatedObj);
+      } catch (_) {}
+      ses.isolatedObj = null;
+    }
+
+    // asset.obj debería ser un Object3D ya listo (según tu AssetDB/createLoadMeshCb)
+    // si asset trae una factory/loader, intentamos resolver
+    let obj = asset.obj || asset.object || asset.scene || null;
+    if (!obj && typeof asset.load === 'function') {
+      try {
+        obj = await asset.load();
+      } catch (_) {}
+    }
+    if (!obj) return null;
+
+    // Clonar para no tocar el original
+    const clone = obj.clone(true);
+    clone.traverse((n) => {
+      if (!n || !n.isMesh) return;
+      n.visible = true;
+      const mats = Array.isArray(n.material) ? n.material : [n.material];
+      mats.forEach((m) => {
+        if (!m) return;
+        if (m.opacity === 0) m.opacity = 1;
+        if (m.transparent && m.opacity >= 0.999) m.transparent = false;
+        m.side = THREE.DoubleSide;
+        m.depthWrite = true;
+        m.depthTest = true;
+        m.needsUpdate = true;
+      });
+    });
+
+    ses.isolatedObj = clone;
+    ses.scene.add(clone);
+
+    const box = computeBoxFromObject(ses, clone);
+    fitCameraIso(ses, box);
+
+    const url = renderToDataURL(ses);
+
+    // removerlo para no contaminar siguientes renders
+    try {
+      ses.scene.remove(clone);
+    } catch (_) {}
+    ses.isolatedObj = null;
+
+    return url;
+  }
+
   async function _thumbNoPrime(assetKey) {
     if (!assetKey) return null;
     if (thumbCache.has(assetKey)) return thumbCache.get(assetKey);
@@ -801,17 +871,36 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
 
       pauseLoop(true);
       try {
-        const vis = setVisibleOnly(ses, assetKey);
-        const box = computeVisibleBox(ses);
-        fitCameraIso(ses, box);
+        // 1) Intento normal: usar cloneMap (si existe)
+        const list = getCloneMeshesForAssetKey(ses, assetKey);
 
-        if (vis && vis.usedFallback) {
-          debugLog('[Thumbs] key mismatch → fallback showAll', { assetKey });
+        if (list && list.length) {
+          // Oculta todo
+          ses.robotClone.traverse((n) => {
+            if (n && n.isMesh) n.visible = false;
+          });
+          list.forEach((m) => {
+            if (m) m.visible = true;
+          });
+
+          const box = computeBoxFromObject(ses, ses.robotClone);
+          fitCameraIso(ses, box);
+
+          const url = renderToDataURL(ses);
+          if (url) thumbCache.set(assetKey, url);
+          return url;
         }
 
-        const url = renderToDataURL(ses);
-        if (url) thumbCache.set(assetKey, url);
-        return url;
+        // 2) ✅ FIX: fallback robusto: render asset aislado desde assetDB
+        const url2 = await renderIsolatedAsset(ses, assetKey);
+        if (url2) {
+          thumbCache.set(assetKey, url2);
+          debugLog('[Thumbs] isolated fallback OK', { assetKey });
+          return url2;
+        }
+
+        debugLog('[Thumbs] NO MATCH (cloneMap + isolated fallback failed)', { assetKey });
+        return null;
       } finally {
         pauseLoop(false);
       }
@@ -829,8 +918,12 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
       try {
         if (isoCache) return isoCache;
 
-        setVisibleOnly(ses, null);
-        const box = computeVisibleBox(ses);
+        // showAll
+        ses.robotClone.traverse((n) => {
+          if (n && n.isMesh) n.visible = true;
+        });
+
+        const box = computeBoxFromObject(ses, ses.robotClone);
         fitCameraIso(ses, box);
 
         const url = renderToDataURL(ses);
@@ -847,7 +940,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
 
     priming = (async () => {
       try {
-        // ✅ FIX: ahora sí tenemos assetToMeshes aquí
         if (assetToMeshes) await waitForAssetMapToSettle_local(assetToMeshes, 12000, 450);
 
         await _isoNoPrime();
@@ -915,12 +1007,21 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   debugLog('[IA] Colab bridge?', hasColab);
   if (!hasColab) return;
 
-  const items = listAssets(assetToMeshes);
-  debugLog('[IA] Componentes a describir', items.length);
-  if (!items.length) return;
-
+  // ✅ FIX: usa app.assets.list() (con fallback) y espera thumbnails si hace falta
   (async () => {
+    const items = app.assets.list();
+    debugLog('[IA] Componentes a describir', items.length);
+    if (!items.length) return;
+
     try {
+      // asegura que iso + thumbs existan
+      try {
+        const keys = items.map((x) => x.assetKey);
+        if (typeof off.primeAll === 'function') await off.primeAll(keys);
+      } catch (e) {
+        debugLog('[IA] primeAll before IA failed (non-fatal)', String(e));
+      }
+
       const entries = [];
 
       // 1) ISO del robot completo
@@ -1003,7 +1104,6 @@ function extractDescMap(res) {
 
   let data = res.data ?? res;
 
-  // Caso Colab típico: data['application/json']
   if (
     data &&
     typeof data === 'object' &&
@@ -1013,20 +1113,17 @@ function extractDescMap(res) {
     return data['application/json'];
   }
 
-  // Caso actual: data['text/plain'] = "{'base.dae': '...'}"
   if (data && typeof data === 'object' && typeof data['text/plain'] === 'string') {
     const raw = data['text/plain'].trim();
     const parsed = parseMaybePythonDict(raw);
     if (parsed) return parsed;
   }
 
-  // Si es string plano, intentar parsear igual
   if (typeof data === 'string') {
     const parsed = parseMaybePythonDict(data.trim());
     if (parsed) return parsed;
   }
 
-  // Si ya es objeto razonable, úsalo
   if (
     data &&
     typeof data === 'object' &&
@@ -1036,7 +1133,6 @@ function extractDescMap(res) {
     return data;
   }
 
-  // Array de objetos: tomar el primero
   if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
     return data[0];
   }
@@ -1044,38 +1140,26 @@ function extractDescMap(res) {
   return null;
 }
 
-/**
- * ✅ Nueva versión robusta:
- *  - Soporta dict Python: {'base.dae': '...'}
- *  - Soporta JSON válido.
- *  - Fallback con Function(...) sólo en este contexto controlado.
- */
 function parseMaybePythonDict(raw) {
   if (!raw) return null;
   raw = String(raw).trim();
   if (!raw.startsWith('{') || !raw.endsWith('}')) return null;
 
-  // 1) Intento JSON directo
   try {
     const j = JSON.parse(raw);
     if (j && typeof j === 'object') return j;
   } catch (_) {}
 
-  // 2) Intento: reemplazar sintaxis Python -> JS y evaluar de forma controlada
   try {
     let expr = raw;
-
-    // Normalizar booleanos / None
     expr = expr.replace(/\bNone\b/g, 'null');
     expr = expr.replace(/\bTrue\b/g, 'true');
     expr = expr.replace(/\bFalse\b/g, 'false');
 
-    // Ejemplo: {'base.dae': 'texto'} es válido en new Function("return (...)").
     const obj = new Function('return (' + expr + ')')();
     if (obj && typeof obj === 'object') return obj;
   } catch (_) {}
 
-  // 3) Fallback muy simple: intentar extraer pares 'k': 'v'
   try {
     const out = {};
     const inner = raw.slice(1, -1);
