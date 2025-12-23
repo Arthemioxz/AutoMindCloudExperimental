@@ -877,6 +877,7 @@ export function createToolsDock(app, theme) {
   togAxes.cb.checked = false;
 
   // Start closed
+  try { styleDockLeft(ui.dock); } catch (_) {}
   set(false);
 
   function onHotkeyH(e) {
