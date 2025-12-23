@@ -892,7 +892,12 @@ export function createToolsDock(app, theme) {
   togAxes.cb.checked = false;
 
   // Start closed
+  // Ensure the dock is anchored like the "post-open" layout EVEN when closed
+  try { styleDockLeft(ui.dock); } catch (_) {}
+
+  // Start closed (now closed position matches the real closed pose)
   set(false);
+
 
   function onHotkeyH(e) {
     const tag = (e.target && e.target.tagName || '').toLowerCase();
