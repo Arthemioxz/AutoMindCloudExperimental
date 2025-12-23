@@ -1,23 +1,19 @@
 # URDF_Render_Script.py
-# Puente Colab <-> JS para descripciones de piezas del URDF. 
+# Puente Colab <-> JS para descripciones de piezas del URDF.
 #
-# Uso típico en Colab: 
+# Uso típico en Colab:
 #   from URDF_Render_Script import URDF_Render
 #   URDF_Render("URDFModel")                      # solo viewer
 #   URDF_Render("URDFModel", IA_Widgets=True)     # viewer + IA opt-in
 #
-# Este script:
-#   - Busca /urdf y /meshes dentro de folder_path.
-#   - Construye un meshDB embebido (base64) para el viewer JS.
-#   - Renderiza un viewer HTML fullscreen para Colab.
-#   - (Opcional) registra el callback "describe_component_images"
-#     para que el JS pueda pedir descripciones vía API externa.
+# FIX (2025-12-23):
+# - El viewer sigue ocupando TODO el #app (renderer full dentro del contenedor)
+# - PERO el "cell/iframe" se limita a 75% de la altura de pantalla para que
+#   se vea completo en cualquier dispositivo.
 #
-# Importante:
-#   - IA_Widgets=False  -> no se manda nada a la API.
-#   - IA_Widgets=True   -> JS llama a describe_component_images(entries).
-#   - Aquí solo definimos el payload; el modelo (GPT-5, etc.) se configura
-#     en tu servicio de Google Cloud.
+# Implementación:
+# - CSS: html/body/#app => 75dvh (fallback calc(var(--vh) * 75))
+# - JS: computeDesiredHeight() => 0.75 * viewportHeight (mínimo 480px)
 
 import os
 import re
@@ -35,426 +31,346 @@ _COLAB_CALLBACK_REGISTERED = False
 
 
 def Download_URDF(Drive_Link, Output_Name="Model"):
-  """
-  Descarga un ZIP de Google Drive y lo deja en /content/Output_Name
-  con subcarpetas /urdf y /meshes.
-  """
-  root_dir = "/content"
-  file_id = Drive_Link.split("/d/")[1].split("/")[0]
-  url = f"https://drive.google.com/uc?id={file_id}"
-  zip_path = os.path.join(root_dir, Output_Name + ".zip")
-  tmp_extract = os.path.join(root_dir, f"__tmp_extract_{Output_Name}")
-  final_dir = os.path.join(root_dir, Output_Name)
+    """
+    Descarga un ZIP de Google Drive y lo deja en /content/Output_Name
+    con subcarpetas /urdf y /meshes.
+    """
+    root_dir = "/content"
+    file_id = Drive_Link.split("/d/")[1].split("/")[0]
+    url = f"https://drive.google.com/uc?id={file_id}"
+    zip_path = os.path.join(root_dir, Output_Name + ".zip")
+    tmp_extract = os.path.join(root_dir, f"__tmp_extract_{Output_Name}")
+    final_dir = os.path.join(root_dir, Output_Name)
 
-  if os.path.exists(tmp_extract):
-      shutil.rmtree(tmp_extract)
-  os.makedirs(tmp_extract, exist_ok=True)
-  if os.path.exists(final_dir):
-      shutil.rmtree(final_dir)
+    if os.path.exists(tmp_extract):
+        shutil.rmtree(tmp_extract)
+    os.makedirs(tmp_extract, exist_ok=True)
+    if os.path.exists(final_dir):
+        shutil.rmtree(final_dir)
 
-  import gdown
-  gdown.download(url, zip_path, quiet=True)
+    import gdown
+    gdown.download(url, zip_path, quiet=True)
 
-  with zipfile.ZipFile(zip_path, "r") as zf:
-      zf.extractall(tmp_extract)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(tmp_extract)
 
-  def junk(name: str) -> bool:
-      return name.startswith(".") or name == "__MACOSX"
+    def junk(name: str) -> bool:
+        return name.startswith(".") or name == "__MACOSX"
 
-  visibles = [n for n in os.listdir(tmp_extract) if not junk(n)]
-  if len(visibles) == 1 and os.path.isdir(os.path.join(tmp_extract, visibles[0])):
-      shutil.move(os.path.join(tmp_extract, visibles[0]), final_dir)
-  else:
-      os.makedirs(final_dir, exist_ok=True)
-      for n in visibles:
-          shutil.move(os.path.join(tmp_extract, n), os.path.join(final_dir, n))
+    visibles = [n for n in os.listdir(tmp_extract) if not junk(n)]
+    if len(visibles) == 1 and os.path.isdir(os.path.join(tmp_extract, visibles[0])):
+        shutil.move(os.path.join(tmp_extract, visibles[0]), final_dir)
+    else:
+        os.makedirs(final_dir, exist_ok=True)
+        for n in visibles:
+            shutil.move(os.path.join(tmp_extract, n), os.path.join(final_dir, n))
 
-  shutil.rmtree(tmp_extract, ignore_errors=True)
-  return final_dir
+    shutil.rmtree(tmp_extract, ignore_errors=True)
+    return final_dir
 
 
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120):
-  """
-  Registra el callback 'describe_component_images' si estamos en Colab.
-  Ahora soporta:
-    - Una entrada opcional __robot_iso__ con la imagen isométrica del robot completo.
-    - Entradas de componentes con:
-        { "key", "name", "index", "image_b64" }
-    - Construye una secuencia ordenada de nombres y la envía como contexto
-      en cada request a la API externa.
-  """
-  global _COLAB_CALLBACK_REGISTERED
-  if _COLAB_CALLBACK_REGISTERED:
-      return
+    """
+    Registra el callback 'describe_component_images' si estamos en Colab.
+    Ahora soporta:
+      - Una entrada opcional __robot_iso__ con la imagen isométrica del robot completo.
+      - Entradas de componentes con:
+          { "key", "name", "index", "image_b64" }
+      - Construye una secuencia ordenada de nombres y la envía como contexto
+        en cada request a la API externa.
+    """
+    global _COLAB_CALLBACK_REGISTERED
+    if _COLAB_CALLBACK_REGISTERED:
+        return
 
-  try:
-      from google.colab import output  # type: ignore
+    try:
+        from google.colab import output  # type: ignore
 
-      api_base = api_base.rstrip("/")
-      infer_url = api_base + API_INFER_PATH
+        api_base = api_base.rstrip("/")
+        infer_url = api_base + API_INFER_PATH
 
-      def _describe_component_images(entries):
-          """
-          entries: [
-            { "key": "__robot_iso__", "image_b64": "...", ... }?,
-            { "key": assetKey, "name": baseName, "index": i, "image_b64": "..." },
-            ...
-          ]
-          Devuelve: { assetKey: descripcion }
-          """
-          print(f"[Colab] describe_component_images: payload recibido")
+        def _describe_component_images(entries):
+            """
+            entries: [
+              { "key": "__robot_iso__", "image_b64": "...", ... }?,
+              { "key": assetKey, "name": baseName, "index": i, "image_b64": "..." },
+              ...
+            ]
+            Devuelve: { assetKey: descripcion }
+            """
+            print("[Colab] describe_component_images: payload recibido")
 
-          if not isinstance(entries, (list, tuple)):
-              print("[Colab] Payload inválido (no lista).")
-              return {}
+            if not isinstance(entries, (list, tuple)):
+                print("[Colab] Payload inválido (no lista).")
+                return {}
 
-          # --- Detectar ISO robot + normalizar componentes ---
-          iso_b64 = None
-          components = []
+            iso_b64 = None
+            components = []
 
-          for raw in entries:
-              if not isinstance(raw, dict):
-                  continue
+            for raw in entries:
+                if not isinstance(raw, dict):
+                    continue
 
-              key = (raw.get("key") or "").strip()
-              img_b64 = (raw.get("image_b64") or "").strip()
-              name = (raw.get("name") or "").strip()
-              idx = raw.get("index", None)
+                key = (raw.get("key") or "").strip()
+                img_b64 = (raw.get("image_b64") or "").strip()
+                name = (raw.get("name") or "").strip()
+                idx = raw.get("index", None)
 
-              # ISO del robot completo
-              if key in (
-                  "__robot_iso__",
-                  "robot_iso",
-                  "__iso__",
-                  "robot",
-                  "full_robot",
-              ):
-                  if img_b64 and not iso_b64:
-                      iso_b64 = img_b64
-                      print("[Colab] Detectada imagen ISO del robot completo.")
-                  continue
+                if key in ("__robot_iso__", "robot_iso", "__iso__", "robot", "full_robot"):
+                    if img_b64 and not iso_b64:
+                        iso_b64 = img_b64
+                        print("[Colab] Detectada imagen ISO del robot completo.")
+                    continue
 
-              if not img_b64:
-                  continue
+                if not img_b64:
+                    continue
 
-              if not key:
-                  key = name or f"comp_{len(components)}"
-              if not name:
-                  name = key
+                if not key:
+                    key = name or f"comp_{len(components)}"
+                if not name:
+                    name = key
 
-              if not isinstance(idx, int) or idx < 0:
-                  idx = len(components)
+                if not isinstance(idx, int) or idx < 0:
+                    idx = len(components)
 
-              components.append(
-                  {
-                      "key": key,
-                      "name": name,
-                      "index": idx,
-                      "image_b64": img_b64,
-                  }
-              )
+                components.append({"key": key, "name": name, "index": idx, "image_b64": img_b64})
 
-          if not components:
-              print("[Colab] Sin componentes válidos en entries.")
-              return {}
+            if not components:
+                print("[Colab] Sin componentes válidos en entries.")
+                return {}
 
-          # Ordenar por índice para fijar secuencia lógica
-          components.sort(key=lambda c: c.get("index", 0))
+            components.sort(key=lambda c: c.get("index", 0))
 
-          # Secuencia de nombres para contexto global
-          sequence_names = [c["name"] for c in components]
-          sequence_str = ", ".join(sequence_names)
+            sequence_names = [c["name"] for c in components]
+            sequence_str = ", ".join(sequence_names)
 
-          print(
-              f"[Colab] Componentes para IA: {len(components)} "
-              f"(secuencia nombres incluida)."
-          )
-          if iso_b64:
-              print("[Colab] Se usará ISO global como contexto en cada request.")
+            print(f"[Colab] Componentes para IA: {len(components)} (secuencia nombres incluida).")
+            if iso_b64:
+                print("[Colab] Se usará ISO global como contexto en cada request.")
 
-          results = {}
+            results = {}
 
-          for comp in components:
-              key = comp["key"]
-              name = comp["name"]
-              idx = comp["index"]
-              img_b64 = comp["image_b64"]
+            for comp in components:
+                key = comp["key"]
+                name = comp["name"]
+                idx = comp["index"]
+                img_b64 = comp["image_b64"]
 
-              # Construir lista de imágenes: primero ISO (si existe), luego componente
-              images = []
-              if iso_b64:
-                  images.append(
-                      {"image_b64": iso_b64, "mime": "image/png"}
-                  )
-              images.append({"image_b64": img_b64, "mime": "image/png"})
+                images = []
+                if iso_b64:
+                    images.append({"image_b64": iso_b64, "mime": "image/png"})
+                images.append({"image_b64": img_b64, "mime": "image/png"})
 
-              # Prompt con contexto fuerte
-              prompt = (
-                  "Eres un modelo experto en robótica y diseño mecánico.\n"
-                  "Analiza exclusivamente el componente actual del robot industrial utilizando "
-                  "la imagen isométrica del robot completo como contexto global, la imagen específica del componente "
-                  "y la secuencia ordenada de nombres de todos los componentes renderizados.\n"
-                  f"Secuencia de nombres: {sequence_str}\n"
-                  f"Componente actual: archivo '{name}' (índice {idx}).\n"
-                  "Explica qué es y cuál es su función con la máxima precisión técnica posible, "
-                  "manteniendo un estilo formal, directo y robótico. "
-                  "No uses expresiones como 'En esta imagen se muestra', 'La pieza es', 'El componente...'"
-                  "'Se observa', 'Podemos ver' o similares. "
-                  "No repitas la consigna ni agregues comentarios sobre el análisis. "
-                  "responde con un máximo de 2 frases."
-              )
+                prompt = (
+                    "Eres un modelo experto en robótica y diseño mecánico.\n"
+                    "Analiza exclusivamente el componente actual del robot industrial utilizando "
+                    "la imagen isométrica del robot completo como contexto global, la imagen específica del componente "
+                    "y la secuencia ordenada de nombres de todos los componentes renderizados.\n"
+                    f"Secuencia de nombres: {sequence_str}\n"
+                    f"Componente actual: archivo '{name}' (índice {idx}).\n"
+                    "Explica qué es y cuál es su función con la máxima precisión técnica posible, "
+                    "manteniendo un estilo formal, directo y robótico. "
+                    "No uses expresiones como 'En esta imagen se muestra', 'La pieza es', 'El componente...'"
+                    "'Se observa', 'Podemos ver' o similares. "
+                    "No repitas la consigna ni agregues comentarios sobre el análisis. "
+                    "responde con un máximo de 2 frases."
+                )
 
-              payload = {
-                  "text": prompt,
-                  "images": images,
-              }
+                payload = {"text": prompt, "images": images}
 
-              try:
-                  r = requests.post(infer_url, json=payload, timeout=timeout)
-              except Exception as e:
-                  print(f"[Colab] Error conexión API para {key}: {e}")
-                  results[key] = ""
-                  continue
+                try:
+                    r = requests.post(infer_url, json=payload, timeout=timeout)
+                except Exception as e:
+                    print(f"[Colab] Error conexión API para {key}: {e}")
+                    results[key] = ""
+                    continue
 
-              if r.status_code != 200:
-                  print(
-                      f"[Colab] API {r.status_code} para {key}: {r.text[:200]}"
-                  )
-                  results[key] = ""
-                  continue
+                if r.status_code != 200:
+                    print(f"[Colab] API {r.status_code} para {key}: {r.text[:200]}")
+                    results[key] = ""
+                    continue
 
-              txt = (r.text or "").strip()
+                txt = (r.text or "").strip()
 
-              # Si viene como JSON con campo 'text' o similar, intentar parsear
-              try:
-                  if txt.startswith("{") and txt.endswith("}"):
-                      j = json.loads(txt)
-                      if isinstance(j, dict):
-                          txt = (
-                              j.get("text")
-                              or j.get("message")
-                              or j.get("content")
-                              or txt
-                          )
-              except Exception:
-                  pass
+                try:
+                    if txt.startswith("{") and txt.endswith("}"):
+                        j = json.loads(txt)
+                        if isinstance(j, dict):
+                            txt = j.get("text") or j.get("message") or j.get("content") or txt
+                except Exception:
+                    pass
 
-              # Si viene entre comillas, parsear como string JSON
-              try:
-                  if txt.startswith('"') and txt.endswith('"'):
-                      txt = json.loads(txt)
-              except Exception:
-                  pass
+                try:
+                    if txt.startswith('"') and txt.endswith('"'):
+                        txt = json.loads(txt)
+                except Exception:
+                    pass
 
-              results[key] = txt or ""
+                results[key] = txt or ""
 
-          print(
-              f"[Colab] describe_component_images: descripciones devueltas "
-              f"para {len(results)} componentes."
-          )
+            print(f"[Colab] describe_component_images: descripciones devueltas para {len(results)} componentes.")
 
-          # Guardado automático del notebook (best-effort)
-          try:
-              from google.colab import _message  # type: ignore
+            try:
+                from google.colab import _message  # type: ignore
+                _message.blocking_request("notebook.save", {})
+                print("[Colab] 💾 Notebook guardado tras recibir descripciones IA.")
+            except Exception as e:
+                print(f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}")
 
-              _message.blocking_request("notebook.save", {})
-              print("[Colab] 💾 Notebook guardado tras recibir descripciones IA.")
-          except Exception as e:
-              print(
-                  f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}"
-              )
+            return results
 
-          return results
+        output.register_callback("describe_component_images", _describe_component_images)
+        _COLAB_CALLBACK_REGISTERED = True
+        print(
+            "[Colab] ✅ Callback 'describe_component_images' registrado "
+            "(IA_Widgets=True, listo para usar tu API con GPT-5 + contexto ISO + secuencia)."
+        )
 
-      output.register_callback(
-          "describe_component_images", _describe_component_images
-      )
-      _COLAB_CALLBACK_REGISTERED = True
-      print(
-          "[Colab] ✅ Callback 'describe_component_images' registrado "
-          "(IA_Widgets=True, listo para usar tu API con GPT-5 + contexto ISO + secuencia)."
-      )
-
-  except Exception as e:
-      print(
-          f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}"
-      )
+    except Exception as e:
+        print(f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}")
 
 
 def URDF_Visualization(
-  folder_path: str = "Model",
-  select_mode: str = "link",
-  background: int | None = 0xFFFFFF,
-  repo: str = "Arthemioxz/AutoMindCloudExperimental",
-  branch: str = "main",
-  compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
-  api_base: str = API_DEFAULT_BASE,
-  IA_Widgets: bool = False,
+    folder_path: str = "Model",
+    select_mode: str = "link",
+    background: int | None = 0xFFFFFF,
+    repo: str = "Arthemioxz/AutoMindCloudExperimental",
+    branch: str = "main",
+    compFile: str = "AutoMindCloud/viewer/urdf_viewer_main.js",
+    api_base: str = API_DEFAULT_BASE,
+    IA_Widgets: bool = False,
 ):
-  """
-  Renderiza el URDF Viewer para Colab.
-  """
-  if IA_Widgets:
-      _register_colab_callback(api_base=api_base)
+    """
+    Renderiza el URDF Viewer para Colab.
+    """
+    if IA_Widgets:
+        _register_colab_callback(api_base=api_base)
 
-  # --- Buscar directorios urdf / meshes ---
+    def find_dirs(root: str):
+        def has_urdf_files(p: str) -> bool:
+            try:
+                return any(name.lower().endswith(".urdf") for name in os.listdir(p))
+            except Exception:
+                return False
 
-  def find_dirs(root: str):
-      # Layouts soportados:
-      #  1) NUEVO (preferido):
-      #       root/
-      #         meshes/
-      #         *.urdf
-      #  2) ANTIGUO:
-      #       root/
-      #         urdf/*.urdf
-      #         meshes/
-      #
-      # Devuelve: (urdf_dir, meshes_dir) donde urdf_dir es la carpeta que contiene los .urdf
+        m = os.path.join(root, "meshes")
+        u = os.path.join(root, "urdf")
+        if os.path.isdir(m):
+            if has_urdf_files(root):
+                return root, m
+            if os.path.isdir(u) and has_urdf_files(u):
+                return u, m
 
-      def has_urdf_files(p: str) -> bool:
-          try:
-              return any(name.lower().endswith(".urdf") for name in os.listdir(p))
-          except Exception:
-              return False
+        if os.path.isdir(root):
+            try:
+                for name in os.listdir(root):
+                    cand = os.path.join(root, name)
+                    if not os.path.isdir(cand):
+                        continue
+                    mm = os.path.join(cand, "meshes")
+                    uu = os.path.join(cand, "urdf")
+                    if os.path.isdir(mm):
+                        if has_urdf_files(cand):
+                            return cand, mm
+                        if os.path.isdir(uu) and has_urdf_files(uu):
+                            return uu, mm
+            except Exception:
+                pass
 
-      # Root directo
-      m = os.path.join(root, "meshes")
-      u = os.path.join(root, "urdf")
-      if os.path.isdir(m):
-          if has_urdf_files(root):
-              return root, m
-          if os.path.isdir(u) and has_urdf_files(u):
-              return u, m
+        return None, None
 
-      # Buscar un nivel abajo
-      if os.path.isdir(root):
-          try:
-              for name in os.listdir(root):
-                  cand = os.path.join(root, name)
-                  if not os.path.isdir(cand):
-                      continue
+    urdf_dir, meshes_dir = find_dirs(folder_path)
+    if not urdf_dir or not meshes_dir:
+        return HTML(
+            f"<b style='color:red'>No se encontró .urdf (en root o /urdf) y /meshes dentro de {folder_path}</b>"
+        )
 
-                  mm = os.path.join(cand, "meshes")
-                  uu = os.path.join(cand, "urdf")
+    urdf_files = [
+        os.path.join(urdf_dir, f)
+        for f in os.listdir(urdf_dir)
+        if f.lower().endswith(".urdf")
+    ]
+    urdf_files.sort(
+        key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
+        reverse=True,
+    )
 
-                  if os.path.isdir(mm):
-                      if has_urdf_files(cand):
-                          return cand, mm
-                      if os.path.isdir(uu) and has_urdf_files(uu):
-                          return uu, mm
-          except Exception:
-              pass
+    urdf_raw = ""
+    mesh_refs: list[str] = []
 
-      return None, None
+    for upath in urdf_files:
+        try:
+            with open(upath, "r", encoding="utf-8", errors="ignore") as f:
+                txt = f.read().lstrip("\ufeff")
+            refs = re.findall(r'filename="([^"]+\.(?:stl|dae|STL|DAE))"', txt, re.IGNORECASE)
+            if refs:
+                urdf_raw = txt
+                mesh_refs = list(dict.fromkeys(refs))
+                break
+        except Exception:
+            pass
 
-  urdf_dir, meshes_dir = find_dirs(folder_path)
-  if not urdf_dir or not meshes_dir:
-      return HTML(
-          f"<b style='color:red'>No se encontró .urdf (en root o /urdf) y /meshes dentro de {folder_path}</b>"
-      )
+    if not urdf_raw and urdf_files:
+        with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
+            urdf_raw = f.read().lstrip("\ufeff")
 
-  # --- URDF principal ---
+    disk_files = []
+    for root, _, files in os.walk(meshes_dir):
+        for name in files:
+            if name.lower().endswith((".stl", ".dae", ".png", ".jpg", ".jpeg")):
+                disk_files.append(os.path.join(root, name))
 
-  urdf_files = [
-      os.path.join(urdf_dir, f)
-      for f in os.listdir(urdf_dir)
-      if f.lower().endswith(".urdf")
-  ]
+    meshes_root_abs = os.path.abspath(meshes_dir)
+    by_rel, by_base = {}, {}
+    for path in disk_files:
+        rel = os.path.relpath(os.path.abspath(path), meshes_root_abs).replace("\\", "/").lower()
+        by_rel[rel] = path
+        by_base[os.path.basename(path).lower()] = path
 
-  urdf_files.sort(
-      key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0,
-      reverse=True,
-  )
+    _cache: dict[str, str] = {}
+    mesh_db: dict[str, str] = {}
 
-  urdf_raw = ""
-  mesh_refs: list[str] = []
+    def b64(path: str) -> str:
+        if path not in _cache:
+            with open(path, "rb") as f:
+                _cache[path] = base64.b64encode(f.read()).decode("ascii")
+        return _cache[path]
 
-  for upath in urdf_files:
-      try:
-          with open(upath, "r", encoding="utf-8", errors="ignore") as f:
-              txt = f.read().lstrip("\ufeff")
-          refs = re.findall(
-              r'filename="([^"]+\.(?:stl|dae|STL|DAE))"', txt, re.IGNORECASE
-          )
-          if refs:
-              urdf_raw = txt
-              mesh_refs = list(dict.fromkeys(refs))
-              break
-      except Exception:
-          pass
+    def add_entry(key: str, path: str):
+        k = key.replace("\\", "/")
+        if k not in mesh_db:
+            mesh_db[k] = b64(path)
 
-  if not urdf_raw and urdf_files:
-      with open(urdf_files[0], "r", encoding="utf-8", errors="ignore") as f:
-          urdf_raw = f.read().lstrip("\ufeff")
+    for ref in mesh_refs:
+        raw = ref.replace("\\", "/")
+        lower = raw.lower()
+        base = os.path.basename(lower)
+        rel = lower.lstrip("./")
+        cand = by_rel.get(rel) or by_rel.get(rel.replace("package://", "")) or by_base.get(base)
+        if cand:
+            add_entry(raw, cand)
+            add_entry(lower, cand)
+            add_entry(base, cand)
 
-  # --- Construir meshDB embedido ---
+    for base_name, path in by_base.items():
+        if base_name not in mesh_db:
+            add_entry(base_name, path)
 
-  disk_files = []
-  for root, _, files in os.walk(meshes_dir):
-      for name in files:
-          if name.lower().endswith((".stl", ".dae", ".png", ".jpg", ".jpeg")):
-              disk_files.append(os.path.join(root, name))
+    def esc_js(s: str) -> str:
+        return (
+            s.replace("\\", "\\\\")
+            .replace("`", "\\`")
+            .replace("$", "\\$")
+            .replace("</script>", "<\\/script>")
+        )
 
-  meshes_root_abs = os.path.abspath(meshes_dir)
-  by_rel, by_base = {}, {}
-  for path in disk_files:
-      rel = (
-          os.path.relpath(os.path.abspath(path), meshes_root_abs)
-          .replace("\\", "/")
-          .lower()
-      )
-      by_rel[rel] = path
-      by_base[os.path.basename(path).lower()] = path
+    urdf_js = esc_js(urdf_raw or "")
+    mesh_js = json.dumps(mesh_db)
+    bg_js = "null" if background is None else str(int(background))
+    sel_js = json.dumps(select_mode)
+    ia_js = "true" if IA_Widgets else "false"
 
-  _cache: dict[str, str] = {}
-  mesh_db: dict[str, str] = {}
-
-  def b64(path: str) -> str:
-      if path not in _cache:
-          with open(path, "rb") as f:
-              _cache[path] = base64.b64encode(f.read()).decode("ascii")
-      return _cache[path]
-
-  def add_entry(key: str, path: str):
-      k = key.replace("\\", "/")
-      if k not in mesh_db:
-          mesh_db[k] = b64(path)
-
-  for ref in mesh_refs:
-      raw = ref.replace("\\", "/")
-      lower = raw.lower()
-      base = os.path.basename(lower)
-      rel = lower.lstrip("./")
-      cand = (
-          by_rel.get(rel)
-          or by_rel.get(rel.replace("package://", ""))
-          or by_base.get(base)
-      )
-      if cand:
-          add_entry(raw, cand)
-          add_entry(lower, cand)
-          add_entry(base, cand)
-
-  for base_name, path in by_base.items():
-      if base_name not in mesh_db:
-          add_entry(base_name, path)
-
-  def esc_js(s: str) -> str:
-      return (
-          s.replace("\\", "\\\\")
-          .replace("`", "\\`")
-          .replace("$", "\\$")
-          .replace("</script>", "<\\/script>")
-      )
-
-  urdf_js = esc_js(urdf_raw or "")
-  mesh_js = json.dumps(mesh_db)
-  bg_js = "null" if background is None else str(int(background))
-  sel_js = json.dumps(select_mode)
-  ia_js = "true" if IA_Widgets else "false"
-
-  html = f"""<!doctype html>
+    html = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
@@ -470,12 +386,12 @@ def URDF_Visualization(
       margin:0;
       padding:0;
       width:100%;
-      height:100dvh;
+      height:75dvh; /* ✅ 75% del viewport */
       overflow:hidden;
       background:#{int(background or 0xFFFFFF):06x};
     }}
-    @supports not (height: 100dvh) {{
-      html, body {{ height: calc(var(--vh) * 100); }}
+    @supports not (height: 75dvh) {{
+      html, body {{ height: calc(var(--vh) * 75); }}
     }}
     body {{
       padding-top: env(safe-area-inset-top);
@@ -487,11 +403,11 @@ def URDF_Visualization(
       position:fixed;
       inset:0;
       width:100vw;
-      height:100dvh;
+      height:75dvh; /* ✅ renderer llena todo el contenedor, contenedor = 75vh */
       touch-action:none;
     }}
-    @supports not (height: 100dvh) {{
-      #app {{ height: calc(var(--vh) * 100); }}
+    @supports not (height: 75dvh) {{
+      #app {{ height: calc(var(--vh) * 75); }}
     }}
     .badge {{
       position:fixed;
@@ -515,9 +431,6 @@ def URDF_Visualization(
     </div>
   </div>
 
-
-
-
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
@@ -525,6 +438,8 @@ def URDF_Visualization(
   <script defer src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
 
   <script type="module">
+    const VIEWPORT_FRACTION = 0.75;
+
     function applyVHVar() {{
       const viewport = window.visualViewport?.height || window.innerHeight || 600;
       const vh = viewport * 0.01;
@@ -539,12 +454,11 @@ def URDF_Visualization(
         document.documentElement.clientHeight ||
         0;
 
-      const docScrollH = Math.max(
-        document.documentElement?.scrollHeight || 0,
-        document.body?.scrollHeight || 0
-      );
+      // ✅ queremos que el iframe/cell mida 75% del viewport real
+      const target = Math.floor(viewportH * VIEWPORT_FRACTION);
 
-      return Math.max(viewportH, docScrollH, 600);
+      // mínimo para que no colapse en pantallas chicas
+      return Math.max(target, 480);
     }}
 
     function setColabFrameHeight() {{
@@ -630,12 +544,17 @@ def URDF_Visualization(
       function onResize() {{
         try {{
           if (!app || typeof app.resize !== 'function') return;
+
+          // ancho: igual que antes (full width)
           const w =
             window.innerWidth ||
             document.documentElement.clientWidth ||
             document.body.clientWidth ||
             800;
+
+          // alto: 75% viewport
           const h = computeDesiredHeight();
+
           app.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
         }} catch (_e) {{}}
       }}
@@ -659,4 +578,4 @@ def URDF_Visualization(
 </body>
 </html>
 """
-  return HTML(html)
+    return HTML(html)
