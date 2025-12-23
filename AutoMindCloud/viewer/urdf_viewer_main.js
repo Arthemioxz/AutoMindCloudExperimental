@@ -5,15 +5,11 @@
 //  - Reducción de thumbnails a ~5KB solo para IA
 //  - Parser robusto para el dict que llega desde Colab
 //
-// ✅ FIX PRINCIPAL (tu bug):
-// - Antes: si assetToMeshes quedaba vacío → no había componentes → IA nunca enviaba fotos.
-// - Ahora: si assetToMeshes está vacío, hacemos fallback a las keys de meshDB/assetDB,
-//   y el sistema de thumbnails/IA usa un modo alternativo: renderiza cada asset aislado
-//   cargándolo desde assetDB (sin depender de __assetKey en userData).
-//
-// Resultado:
-// - [IA] Componentes a describir N (>0) incluso cuando assetToMeshes = 0
-// - Se genera ISO + thumbnails y se llama a describe_component_images(entries)
+// ✅ FIX (REAL):
+// - El URDF pide meshes con paths tipo: package://pkg/meshes/base.dae
+// - Tu meshDB (base64) típicamente tiene keys: base.dae / meshes/base.dae
+// - createLoadMeshCb NO encontraba la key → cargaba por URL → no onMeshTag → assetToMeshes vacío
+// - Solución: resolver/normalizar el path entrante a una key existente en meshDB antes de llamar al loader.
 
 import { THEME } from './Theme.js';
 import * as ViewerCore from './core/ViewerCore.js';
@@ -48,6 +44,84 @@ function debugLog(...args) {
   } catch (_) {}
 }
 
+/* ========================= Key resolver (package:// -> meshDB key) ========================= */
+
+function normalizeAssetKey(s) {
+  if (!s) return '';
+  let t = String(s).trim();
+  t = t.split('?')[0].split('#')[0];
+  t = t.replace(/^package:\/\//i, ''); // package://pkg/meshes/a.dae -> pkg/meshes/a.dae
+  t = t.replace(/\\/g, '/');
+  // si viene como "file://..." o "http..." no lo tocamos aquí (igual se intenta por basename)
+  return t.trim();
+}
+
+function variantsForKey(path) {
+  const out = new Set();
+  const raw = String(path || '');
+  if (!raw) return [];
+  const clean = normalizeAssetKey(raw);
+  if (!clean) return [];
+
+  const lower = clean.toLowerCase();
+  const base = clean.split('/').pop();
+  const baseLower = lower.split('/').pop();
+
+  // original y lower
+  out.add(clean);
+  out.add(lower);
+
+  // basename
+  out.add(base);
+  out.add(baseLower);
+
+  // si clean incluye "meshes/..." también probar desde meshes/
+  const idx = lower.indexOf('/meshes/');
+  if (idx >= 0) {
+    const sub = clean.slice(idx + 1); // "meshes/base.dae"
+    out.add(sub);
+    out.add(sub.toLowerCase());
+    out.add(sub.split('/').pop());
+    out.add(sub.toLowerCase().split('/').pop());
+  }
+
+  // sin extensión
+  const dot1 = base.lastIndexOf('.');
+  if (dot1 > 0) out.add(base.slice(0, dot1));
+  const dot2 = baseLower.lastIndexOf('.');
+  if (dot2 > 0) out.add(baseLower.slice(0, dot2));
+
+  // subpaths por si meshDB guarda "pkg/meshes/x.dae" o "meshes/x.dae"
+  const parts = lower.split('/');
+  for (let i = 0; i < parts.length; i++) {
+    const sub = parts.slice(i).join('/');
+    out.add(sub);
+    out.add(sub.split('/').pop());
+  }
+
+  return Array.from(out).filter(Boolean);
+}
+
+function buildKeyResolver(meshDBKeys) {
+  const dict = new Map(); // variantLower -> canonicalKey
+  const keys = Array.isArray(meshDBKeys) ? meshDBKeys : [];
+  for (const k of keys) {
+    const vars = variantsForKey(k);
+    for (const v of vars) dict.set(String(v).toLowerCase(), k);
+    // también por key "tal cual"
+    dict.set(String(k).toLowerCase(), k);
+  }
+
+  return function resolveKey(path) {
+    const vars = variantsForKey(path);
+    for (const v of vars) {
+      const hit = dict.get(String(v).toLowerCase());
+      if (hit) return hit;
+    }
+    return path; // no encontrado, dejar tal cual (loader puede intentar por URL)
+  };
+}
+
 /* ============================ Render ============================ */
 
 export function render(opts = {}) {
@@ -63,7 +137,6 @@ export function render(opts = {}) {
 
   debugLog('render() init', { selectMode, background, IA_Widgets });
 
-  // Wait until the URDF meshes stop arriving (assetToMeshes settles).
   function waitForAssetMapToSettle(assetToMeshes, maxWaitMs = 8000, quietMs = 350) {
     const start = performance.now();
     let lastCount = -1;
@@ -110,11 +183,15 @@ export function render(opts = {}) {
     );
   const core = _createViewer({ container, background });
 
-  // 2) Asset DB
+  // 2) Asset DB + resolver
   const assetDB = buildAssetDB(meshDB);
+  const meshDBKeys = Object.keys(meshDB || {});
+  const resolveKey = buildKeyResolver(meshDBKeys);
+
   const assetToMeshes = new Map(); // assetKey -> Mesh[]
 
-  const loadMeshCb = createLoadMeshCb(assetDB, {
+  // Loader base64 (original)
+  const innerLoadMeshCb = createLoadMeshCb(assetDB, {
     onMeshTag(obj, assetKey) {
       const list = assetToMeshes.get(assetKey) || [];
       obj.traverse((o) => {
@@ -131,10 +208,34 @@ export function render(opts = {}) {
     },
   });
 
+  // ✅ FIX: wrapper que resuelve package://... hacia key en meshDB
+  const loadMeshCb = function (...args) {
+    try {
+      const path = args[0];
+      const resolved = resolveKey(path);
+
+      if (resolved !== path) {
+        // para depurar: ahora deberías ver que resuelve a base.dae / meshes/base.dae, etc.
+        // debugLog('[MeshKey] resolve', { path, resolved });
+        args[0] = resolved;
+      } else {
+        // también intentar con basename si path era url rara
+        const base = String(path || '').split(/[\\/]/).pop();
+        if (base) {
+          const resolved2 = resolveKey(base);
+          if (resolved2 !== base) args[0] = resolved2;
+        }
+      }
+    } catch (_) {}
+
+    return innerLoadMeshCb.apply(this, args);
+  };
+
   // 3) Cargar URDF
   const robot = core.loadURDF(urdfContent, { loadMeshCb });
   debugLog('Robot loaded', { hasRobot: !!robot });
 
+  // Si por algo igual quedó vacío, intentamos reconstruir desde userData
   if (robot && !assetToMeshes.size) {
     debugLog('assetToMeshes vacío, reconstruyendo desde userData');
     rebuildAssetMapFromRobot(robot, assetToMeshes);
@@ -142,9 +243,8 @@ export function render(opts = {}) {
 
   debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
 
-  // 4) Offscreen thumbnails (✅ FIX: pasar assetDB + meshDBKeys para fallback)
-  const meshDBKeys = Object.keys(meshDB || {});
-  const off = buildOffscreenForThumbnails(core, assetToMeshes, THEME, assetDB, meshDBKeys);
+  // 4) Offscreen thumbnails (sistema original: robotClone + cloneMap)
+  const off = buildOffscreenForThumbnails(core, assetToMeshes, THEME);
   if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
 
   // 5) Interacción
@@ -157,13 +257,13 @@ export function render(opts = {}) {
     selectMode,
   });
 
-  // 6) Facade app para UI + IA
+  // 6) Facade app
   const app = {
     ...core,
     robot,
     IA_Widgets,
     assets: {
-      list: () => listAssets(assetToMeshes, assetDB, meshDBKeys),
+      list: () => listAssets(assetToMeshes),
       thumbnail: (assetKey) => off?.thumbnail(assetKey),
     },
     isolate: {
@@ -224,27 +324,15 @@ export function render(opts = {}) {
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // 8) Click sound opcional
-  if (clickAudioDataURL) {
-    try {
-      installClickSound(clickAudioDataURL);
-    } catch (e) {
-      debugLog('installClickSound error', String(e));
-    }
-  }
-
-  // 9) Precompute ALL component thumbnails on start (single offscreen viewer),
-  // then close the offscreen renderer to free GPU memory.
+  // 8) Precompute thumbs (igual que antes)
   (async () => {
     try {
       if (!off || typeof off.primeAll !== 'function') return;
 
-      // Wait for URDF mesh loading to settle so the offscreen clone includes everything.
       const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
       debugLog('[Thumbs] settle', settle);
 
-      // ✅ FIX: si assetToMeshes está vacío, usamos el fallback list()
-      const keys = app.assets.list().map((x) => x.assetKey);
+      const keys = Array.from(assetToMeshes.keys());
       await off.primeAll(keys);
 
       try {
@@ -254,6 +342,15 @@ export function render(opts = {}) {
       debugLog('[Thumbs] auto prime error', String(e));
     }
   })();
+
+  // 9) Click sound opcional
+  if (clickAudioDataURL) {
+    try {
+      installClickSound(clickAudioDataURL);
+    } catch (e) {
+      debugLog('installClickSound error', String(e));
+    }
+  }
 
   // 10) IA opt-in
   if (IA_Widgets) {
@@ -294,54 +391,18 @@ export function render(opts = {}) {
 
 /* ======================= Helpers: assets / isolate ======================= */
 
-function guessAssetKeyFromUserData(userData) {
-  if (!userData || typeof userData !== 'object') return null;
-  const exts = ['.dae', '.stl', '.obj', '.glb', '.gltf', '.ply', '.fbx'];
-  for (const [k, v] of Object.entries(userData)) {
-    if (typeof v !== 'string') continue;
-    const s = v.toLowerCase();
-    if (exts.some((e) => s.includes(e))) return v;
-    // a veces queda como "meshes/base.dae"
-    if (s.includes('meshes/') && exts.some((e) => s.endsWith(e))) return v;
-  }
-  // algunos loaders guardan url/filename en claves típicas
-  const common = [
-    userData.__assetKey,
-    userData.assetKey,
-    userData.filename,
-    userData.url,
-    userData.href,
-    userData.path,
-    userData.mesh,
-    userData.meshFilename,
-  ].filter((x) => typeof x === 'string' && x.trim());
-  if (common.length) return common[0];
-  return null;
-}
-
 function rebuildAssetMapFromRobot(robot, assetToMeshes) {
   const tmp = new Map();
   robot.traverse((o) => {
     if (o && o.isMesh && o.geometry) {
       const k =
         (o.userData &&
-          (o.userData.__assetKey ||
-            o.userData.assetKey ||
-            o.userData.filename ||
-            guessAssetKeyFromUserData(o.userData))) ||
+          (o.userData.__assetKey || o.userData.assetKey || o.userData.filename)) ||
         null;
-
-      // fallback: a veces el key está en el padre
-      const kp =
-        (!k && o.parent && o.parent.userData && guessAssetKeyFromUserData(o.parent.userData)) ||
-        null;
-
-      const keyRaw = k || kp;
-      if (!keyRaw) return;
-
-      const arr = tmp.get(keyRaw) || [];
+      if (!k) return;
+      const arr = tmp.get(k) || [];
       arr.push(o);
-      tmp.set(keyRaw, arr);
+      tmp.set(k, arr);
     }
   });
   tmp.forEach((arr, k) => {
@@ -349,38 +410,19 @@ function rebuildAssetMapFromRobot(robot, assetToMeshes) {
   });
 }
 
-function listAssets(assetToMeshes, assetDB, meshDBKeys = []) {
-  // ✅ Caso normal: assetToMeshes poblado por onMeshTag()
+function listAssets(assetToMeshes) {
   const items = [];
-  if (assetToMeshes && assetToMeshes.size) {
-    assetToMeshes.forEach((meshes, assetKey) => {
-      if (!meshes || meshes.length === 0) return;
-      const { base, ext } = splitName(assetKey);
-      items.push({ assetKey, base, ext, count: meshes.length });
-    });
-    items.sort((a, b) =>
-      a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }),
-    );
-    return items;
-  }
-
-  // ✅ FIX: fallback si assetToMeshes quedó vacío (tu caso)
-  // Usamos keys del meshDB/assetDB (base64) porque esas son las fuentes reales de assets
-  const keys =
-    (Array.isArray(meshDBKeys) && meshDBKeys.length ? meshDBKeys : null) ||
-    (assetDB && typeof assetDB.keys === 'function' ? assetDB.keys() : null) ||
-    [];
-
-  for (const assetKey of keys) {
+  assetToMeshes.forEach((meshes, assetKey) => {
+    if (!meshes || meshes.length === 0) return;
     const { base, ext } = splitName(assetKey);
-    items.push({ assetKey, base, ext, count: 1 });
-  }
-
+    items.push({ assetKey, base, ext, count: meshes.length });
+  });
   items.sort((a, b) =>
-    a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }),
+    a.base.localeCompare(b.base, undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    }),
   );
-
-  debugLog('[Assets] fallback listAssets (assetToMeshes vacío)', { count: items.length });
   return items;
 }
 
@@ -461,7 +503,9 @@ function frameMeshes(core, meshes) {
     cam.near = Math.max(maxDim / 1000, 0.001);
     cam.far = Math.max(maxDim * 1500, 1500);
     cam.updateProjectionMatrix();
-    cam.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
+    cam.position.copy(
+      center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)),
+    );
   }
 
   if (ctrl) {
@@ -470,14 +514,9 @@ function frameMeshes(core, meshes) {
   }
 }
 
-/* ============= Offscreen thumbnails: componente + ISO robot ============= */
+/* ============= Offscreen thumbnails: sistema original (clone robot + cloneMap) ============= */
 
-function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDBKeys = []) {
-  // IMPORTANTE:
-  // - NO creamos otro WebGLRenderer (evita “Too many active WebGL contexts”).
-  // - Renderizamos a un WebGLRenderTarget usando el MISMO renderer del viewer.
-  // - Pausamos el render loop del viewer mientras capturamos thumbnails (evita renders en blanco).
-  // - NO hacemos dispose() de geometrías/texturas/materiales compartidos con el robot principal.
+function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
   const OFF_W = 320,
     OFF_H = 320;
 
@@ -496,7 +535,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
     0xffffff,
   );
 
-  function normalizeAssetKey(s) {
+  function normalizeKey(s) {
     if (!s) return '';
     let t = String(s).trim();
     t = t.split('?')[0].split('#')[0];
@@ -509,7 +548,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
     const out = new Set();
     const raw = String(path || '');
     if (!raw) return [];
-    const clean = normalizeAssetKey(raw);
+    const clean = normalizeKey(raw);
     if (!clean) return [];
     const lower = clean.toLowerCase();
 
@@ -545,7 +584,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
     return null;
   }
 
-  const thumbCache = new Map(); // assetKey -> dataURL
+  const thumbCache = new Map();
   let isoCache = null;
 
   let closed = false;
@@ -592,7 +631,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
 
     const ambI =
       (theme && (theme.thumbAmbientIntensity ?? theme.ambientIntensity)) ?? 0.95;
-    const dirI = (theme && (theme.thumbDirIntensity ?? theme.dirIntensity)) ?? 0.9;
+    const dirI =
+      (theme && (theme.thumbDirIntensity ?? theme.dirIntensity)) ?? 0.9;
 
     const amb = new THREE.AmbientLight(0xffffff, ambI);
     const dir = new THREE.DirectionalLight(0xffffff, dirI);
@@ -601,7 +641,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
 
     const camera = new THREE.PerspectiveCamera(40, OFF_W / OFF_H, 0.001, 2000);
 
-    // Clon del robot (cuando hay mapeo por userData)
     const robotClone = core.robot.clone(true);
 
     robotClone.traverse((n) => {
@@ -615,13 +654,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
         m.side = THREE.DoubleSide;
         m.depthWrite = true;
         m.depthTest = true;
-
-        const hasMap = !!(m.map || m.emissiveMap || m.metalnessMap || m.roughnessMap);
-        if (!hasMap && m.color && typeof m.color.getHex === 'function') {
-          const c = m.color.getHex();
-          if (c === 0x000000) m.color.setHex(0x999999);
-        }
-
         m.needsUpdate = true;
       });
     });
@@ -629,8 +661,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
     const cloneMap = new Map();
     robotClone.traverse((n) => {
       if (!n || !n.isMesh) return;
-      n.castShadow = false;
-      n.receiveShadow = false;
 
       const ud = n.userData || {};
       const keyRaw = ud.__assetKey || ud.assetKey || ud.filename || null;
@@ -642,6 +672,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
         cloneMap.get(key).push(n);
       }
     });
+
     scene.add(robotClone);
 
     session = {
@@ -653,10 +684,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
       camera,
       robotClone,
       cloneMap,
-
-      // ✅ FIX: escena alternativa para “asset aislado” cuando no hay cloneMap match
-      isolatedObj: null,
-
       _tmpBox: new THREE.Box3(),
       _box: new THREE.Box3(),
       _center: new THREE.Vector3(),
@@ -672,16 +699,17 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
     return session;
   }
 
-  function computeBoxFromObject(ses, obj3d) {
+  function computeVisibleBox(ses) {
     try {
-      obj3d.updateWorldMatrix(true, true);
+      ses.robotClone.updateWorldMatrix(true, true);
     } catch (_) {}
-    const box = ses._box;
-    box.makeEmpty();
-    const tmp = ses._tmpBox;
-    let has = false;
 
-    obj3d.traverse((n) => {
+    const box = ses._box;
+    const tmp = ses._tmpBox;
+    box.makeEmpty();
+
+    let has = false;
+    ses.robotClone.traverse((n) => {
       if (!n || !n.isMesh || !n.visible) return;
       tmp.setFromObject(n);
       if (tmp.isEmpty()) return;
@@ -692,8 +720,7 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
     });
 
     if (has) return box;
-
-    tmp.setFromObject(obj3d);
+    tmp.setFromObject(ses.robotClone);
     return tmp;
   }
 
@@ -767,96 +794,30 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
     } catch (_) {}
   }
 
-  function waitForAssetMapToSettle_local(assetToMeshesLocal, maxWaitMs = 8000, quietMs = 350) {
-    if (!assetToMeshesLocal) return Promise.resolve({ meshes: 0, settled: true, timeout: false });
-    const start = performance.now();
-    let lastCount = -1;
-    let lastChange = performance.now();
-
-    function countNow() {
-      let n = 0;
-      try {
-        assetToMeshesLocal.forEach((arr) => {
-          n += arr && arr.length ? arr.length : 0;
-        });
-      } catch (_) {}
-      return n;
-    }
-
-    return new Promise((resolve) => {
-      function tick() {
-        const now = performance.now();
-        const c = countNow();
-        if (c !== lastCount) {
-          lastCount = c;
-          lastChange = now;
-        }
-        const settled = now - lastChange >= quietMs;
-        const timeout = now - start >= maxWaitMs;
-        if (settled || timeout) resolve({ meshes: c, settled, timeout });
-        else requestAnimationFrame(tick);
-      }
-      requestAnimationFrame(tick);
+  function setVisibleOnly(ses, assetKey) {
+    ses.robotClone.traverse((n) => {
+      if (n && n.isMesh) n.visible = false;
     });
-  }
 
-  // ✅ Nuevo: render de un asset aislado (fallback cuando cloneMap no encuentra meshes)
-  async function renderIsolatedAsset(ses, assetKey) {
-    if (!assetDB || typeof assetDB.get !== 'function') return null;
-
-    const asset = assetDB.get(assetKey);
-    if (!asset) return null;
-
-    // limpia objeto anterior
-    if (ses.isolatedObj) {
-      try {
-        ses.scene.remove(ses.isolatedObj);
-      } catch (_) {}
-      ses.isolatedObj = null;
-    }
-
-    // asset.obj debería ser un Object3D ya listo (según tu AssetDB/createLoadMeshCb)
-    // si asset trae una factory/loader, intentamos resolver
-    let obj = asset.obj || asset.object || asset.scene || null;
-    if (!obj && typeof asset.load === 'function') {
-      try {
-        obj = await asset.load();
-      } catch (_) {}
-    }
-    if (!obj) return null;
-
-    // Clonar para no tocar el original
-    const clone = obj.clone(true);
-    clone.traverse((n) => {
-      if (!n || !n.isMesh) return;
-      n.visible = true;
-      const mats = Array.isArray(n.material) ? n.material : [n.material];
-      mats.forEach((m) => {
-        if (!m) return;
-        if (m.opacity === 0) m.opacity = 1;
-        if (m.transparent && m.opacity >= 0.999) m.transparent = false;
-        m.side = THREE.DoubleSide;
-        m.depthWrite = true;
-        m.depthTest = true;
-        m.needsUpdate = true;
+    if (!assetKey) {
+      ses.robotClone.traverse((n) => {
+        if (n && n.isMesh) n.visible = true;
       });
+      return { usedFallback: false };
+    }
+
+    const list = getCloneMeshesForAssetKey(ses, assetKey);
+    if (!list || !list.length) {
+      ses.robotClone.traverse((n) => {
+        if (n && n.isMesh) n.visible = true;
+      });
+      return { usedFallback: true };
+    }
+
+    list.forEach((m) => {
+      if (m) m.visible = true;
     });
-
-    ses.isolatedObj = clone;
-    ses.scene.add(clone);
-
-    const box = computeBoxFromObject(ses, clone);
-    fitCameraIso(ses, box);
-
-    const url = renderToDataURL(ses);
-
-    // removerlo para no contaminar siguientes renders
-    try {
-      ses.scene.remove(clone);
-    } catch (_) {}
-    ses.isolatedObj = null;
-
-    return url;
+    return { usedFallback: false };
   }
 
   async function _thumbNoPrime(assetKey) {
@@ -871,36 +832,17 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
 
       pauseLoop(true);
       try {
-        // 1) Intento normal: usar cloneMap (si existe)
-        const list = getCloneMeshesForAssetKey(ses, assetKey);
+        const vis = setVisibleOnly(ses, assetKey);
+        const box = computeVisibleBox(ses);
+        fitCameraIso(ses, box);
 
-        if (list && list.length) {
-          // Oculta todo
-          ses.robotClone.traverse((n) => {
-            if (n && n.isMesh) n.visible = false;
-          });
-          list.forEach((m) => {
-            if (m) m.visible = true;
-          });
-
-          const box = computeBoxFromObject(ses, ses.robotClone);
-          fitCameraIso(ses, box);
-
-          const url = renderToDataURL(ses);
-          if (url) thumbCache.set(assetKey, url);
-          return url;
+        if (vis && vis.usedFallback) {
+          debugLog('[Thumbs] key mismatch → fallback showAll', { assetKey });
         }
 
-        // 2) ✅ FIX: fallback robusto: render asset aislado desde assetDB
-        const url2 = await renderIsolatedAsset(ses, assetKey);
-        if (url2) {
-          thumbCache.set(assetKey, url2);
-          debugLog('[Thumbs] isolated fallback OK', { assetKey });
-          return url2;
-        }
-
-        debugLog('[Thumbs] NO MATCH (cloneMap + isolated fallback failed)', { assetKey });
-        return null;
+        const url = renderToDataURL(ses);
+        if (url) thumbCache.set(assetKey, url);
+        return url;
       } finally {
         pauseLoop(false);
       }
@@ -918,12 +860,8 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
       try {
         if (isoCache) return isoCache;
 
-        // showAll
-        ses.robotClone.traverse((n) => {
-          if (n && n.isMesh) n.visible = true;
-        });
-
-        const box = computeBoxFromObject(ses, ses.robotClone);
+        setVisibleOnly(ses, null);
+        const box = computeVisibleBox(ses);
         fitCameraIso(ses, box);
 
         const url = renderToDataURL(ses);
@@ -940,8 +878,6 @@ function buildOffscreenForThumbnails(core, assetToMeshes, theme, assetDB, meshDB
 
     priming = (async () => {
       try {
-        if (assetToMeshes) await waitForAssetMapToSettle_local(assetToMeshes, 12000, 450);
-
         await _isoNoPrime();
 
         const keys = Array.isArray(assetKeys) ? assetKeys : [];
@@ -1007,21 +943,12 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   debugLog('[IA] Colab bridge?', hasColab);
   if (!hasColab) return;
 
-  // ✅ FIX: usa app.assets.list() (con fallback) y espera thumbnails si hace falta
+  const items = listAssets(assetToMeshes);
+  debugLog('[IA] Componentes a describir', items.length);
+  if (!items.length) return;
+
   (async () => {
-    const items = app.assets.list();
-    debugLog('[IA] Componentes a describir', items.length);
-    if (!items.length) return;
-
     try {
-      // asegura que iso + thumbs existan
-      try {
-        const keys = items.map((x) => x.assetKey);
-        if (typeof off.primeAll === 'function') await off.primeAll(keys);
-      } catch (e) {
-        debugLog('[IA] primeAll before IA failed (non-fatal)', String(e));
-      }
-
       const entries = [];
 
       // 1) ISO del robot completo
