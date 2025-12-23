@@ -1,11 +1,10 @@
 # URDF_Render_Script.py
 # Puente Colab <-> JS para descripciones de piezas del URDF.
 #
-# FIX (palpitación / “pulsing” del output cell):
-# - Mantiene el viewer a 75% del viewport (como antes)
-# - El renderer SIEMPRE llena el #app (tamaño del output cell)
-# - Elimina el loop de resize: NO usa ResizeObserver (eso suele causar feedback con setIframeHeight)
-# - setIframeHeight() ahora es estable: solo aplica si el alto cambió “de verdad” (umbral) + throttle por rAF
+# FIX (2025-12-23):
+# - Mantiene el output cell al 75% de la altura de pantalla (estable)
+# - El renderer SIEMPRE llena el output cell (100% del iframe)
+# - Elimina el “ciclo” de encogimiento (no calcula altura desde el viewport del iframe)
 
 import os
 import re
@@ -64,9 +63,9 @@ def Download_URDF(Drive_Link, Output_Name="Model"):
 def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120):
     """
     Registra el callback 'describe_component_images' si estamos en Colab.
-    Ahora soporta:
-      - ISO global del robot (__robot_iso__)
-      - Componentes { key, name, index, image_b64 }
+    Soporta:
+      - __robot_iso__ (imagen robot completo)
+      - componentes { key, name, index, image_b64 }
     """
     global _COLAB_CALLBACK_REGISTERED
     if _COLAB_CALLBACK_REGISTERED:
@@ -359,19 +358,13 @@ def URDF_Visualization(
                  user-scalable=no, viewport-fit=cover"/>
   <title>URDF Viewer</title>
   <style>
-    :root {{
-      --vh: 1vh;
-    }}
     html, body {{
       margin:0;
       padding:0;
       width:100%;
-      height:75dvh; /* ✅ 75% como antes */
+      height:100%;              /* ✅ el viewer llena el cell */
       overflow:hidden;
       background:#{int(background or 0xFFFFFF):06x};
-    }}
-    @supports not (height: 75dvh) {{
-      html, body {{ height: calc(var(--vh) * 75); }}
     }}
     body {{
       padding-top: env(safe-area-inset-top);
@@ -382,12 +375,9 @@ def URDF_Visualization(
     #app {{
       position:fixed;
       inset:0;
-      width:100vw;
-      height:75dvh; /* ✅ renderer = tamaño del output cell */
+      width:100%;
+      height:100%;              /* ✅ renderer = tamaño del output cell */
       touch-action:none;
-    }}
-    @supports not (height: 75dvh) {{
-      #app {{ height: calc(var(--vh) * 75); }}
     }}
     .badge {{
       position:fixed;
@@ -405,6 +395,7 @@ def URDF_Visualization(
 </head>
 <body>
   <div id="app"></div>
+
   <div style="padding-left:20px; overflow:visible; position:fixed; right:0; bottom:0; z-index:999999;">
     <div class="badge" style="display:inline-block; transform: scale(2.5) translateX(-15px); transform-origin: bottom right; margin:0; overflow:visible; pointer-events:none;">
       <img src="https://raw.githubusercontent.com/Arthemioxz/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="AutoMind" style="display:block; height:40px; width:auto;"/>
@@ -420,41 +411,59 @@ def URDF_Visualization(
   <script type="module">
     const VIEWPORT_FRACTION = 0.75;
 
-    function viewportHeight() {{
-      return (
-        window.visualViewport?.height ||
-        window.innerHeight ||
-        document.documentElement.clientHeight ||
-        600
-      );
+    // --- Altura estable (NO basada en el viewport del iframe) ---
+    function getStableBaseHeight() {{
+      // 1) intentar top.innerHeight (mejor) - puede fallar por cross-origin
+      try {{
+        if (window.top && window.top !== window && typeof window.top.innerHeight === 'number') {{
+          return window.top.innerHeight;
+        }}
+      }} catch (_e) {{}}
+
+      // 2) screen.availHeight (estable)
+      if (window.screen && typeof window.screen.availHeight === 'number' && window.screen.availHeight > 0) {{
+        return window.screen.availHeight;
+      }}
+
+      // 3) screen.height
+      if (window.screen && typeof window.screen.height === 'number' && window.screen.height > 0) {{
+        return window.screen.height;
+      }}
+
+      // 4) fallback
+      return window.innerHeight || 700;
     }}
 
-    function applyVHVar() {{
-      const vh = viewportHeight() * 0.01;
-      document.documentElement.style.setProperty('--vh', `${{vh}}px`);
+    function desiredIframeHeightPx() {{
+      const base = getStableBaseHeight();
+      const h = Math.floor(base * VIEWPORT_FRACTION);
+      return Math.max(h, 520);
     }}
 
-    function desiredHeightPx() {{
-      // ✅ Solo depende del viewport real (no scrollHeight) para evitar feedback loops
-      const h = Math.floor(viewportHeight() * VIEWPORT_FRACTION);
-      return Math.max(h, 480);
-    }}
-
-    // --- Anti-“palpitación”: throttle + umbral de cambio ---
-    let _lastIframeH = 0;
+    // --- Anti-palpitación: umbral + throttle ---
+    let _lastH = 0;
     let _pending = false;
 
     function setColabFrameHeightStable() {{
-      const h = desiredHeightPx();
-
-      // umbral: evita que 1-2 px de diferencia dispare un resize loop
-      if (Math.abs(h - _lastIframeH) <= 2) return;
-
-      _lastIframeH = h;
+      const h = desiredIframeHeightPx();
+      if (Math.abs(h - _lastH) <= 3) return;
+      _lastH = h;
       try {{
         if (window.google?.colab?.output?.setIframeHeight) {{
           window.google.colab.output.setIframeHeight(h, true);
         }}
+      }} catch (_e) {{}}
+    }}
+
+    function resizeRendererToCell() {{
+      if (!window.__urdfApp || typeof window.__urdfApp.resize !== 'function') return;
+
+      const el = document.getElementById('app');
+      const rect = el?.getBoundingClientRect?.();
+      const w = Math.max(1, Math.floor(rect?.width || window.innerWidth || 800));
+      const h = Math.max(1, Math.floor(rect?.height || window.innerHeight || 600));
+      try {{
+        window.__urdfApp.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
       }} catch (_e) {{}}
     }}
 
@@ -463,34 +472,22 @@ def URDF_Visualization(
       _pending = true;
       requestAnimationFrame(() => {{
         _pending = false;
-        applyVHVar();
         setColabFrameHeightStable();
-        if (window.__urdfApp && typeof window.__urdfApp.resize === 'function') {{
-          const w =
-            window.innerWidth ||
-            document.documentElement.clientWidth ||
-            document.body?.clientWidth ||
-            800;
-          const h = desiredHeightPx();
-          try {{
-            window.__urdfApp.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
-          }} catch (_e) {{}}
-        }}
+        // después de ajustar el iframe, resize del renderer
+        setTimeout(resizeRendererToCell, 0);
       }});
     }}
 
-    // Inicial
+    // Primer layout (1 vez) + reintentos suaves
     scheduleLayout();
+    setTimeout(scheduleLayout, 120);
+    setTimeout(scheduleLayout, 350);
 
-    // ✅ SOLO eventos de viewport (NO ResizeObserver) -> evita loops con setIframeHeight
+    // En rotación / resize real del dispositivo:
     window.addEventListener('resize', scheduleLayout, {{ passive:true }});
     if (window.visualViewport) {{
       window.visualViewport.addEventListener('resize', scheduleLayout, {{ passive:true }});
     }}
-
-    // Reintentos suaves (por si Colab tarda en aplicar el iframe height)
-    setTimeout(scheduleLayout, 80);
-    setTimeout(scheduleLayout, 300);
 
     const repo     = {json.dumps(repo)};
     const branch   = {json.dumps(branch)};
@@ -543,12 +540,11 @@ def URDF_Visualization(
       console.error('[URDF] No se pudo cargar urdf_viewer_main.js o falta render()');
     }} else {{
       const app = mod.render(opts);
-      // Guardamos referencia global para resize estable
       window.__urdfApp = app;
 
-      // Forzar 1 layout justo después de render
+      // Ajuste final post-render
       scheduleLayout();
-      setTimeout(scheduleLayout, 150);
+      setTimeout(resizeRendererToCell, 80);
     }}
   </script>
 </body>
