@@ -1,5 +1,5 @@
 # URDF_Render_Script.py
-# Puente Colab <-> JS para descripciones de piezas del URDF.
+# Puente Colab <-> JS para descripciones de piezas del URDF. 
 #
 # Uso típico en Colab:
 #   from URDF_Render_Script import URDF_Render
