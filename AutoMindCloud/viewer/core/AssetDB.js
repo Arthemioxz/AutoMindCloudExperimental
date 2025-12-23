@@ -268,7 +268,19 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         }
 
         // Manager que mapea URLs a data: desde assetDB (texturas, otras DAEs, etc.)
+        // IMPORTANTE: esperamos a que terminen de cargar las texturas antes de llamar onComplete,
+        // para que las capturas/thumbnails salgan con texturas (no en blanco).
         const mgr = new THREE.LoadingManager();
+
+        let started = false;
+        let finished = false;
+
+        mgr.onStart = () => { started = true; };
+        mgr.onLoad = () => {
+          if (finished) return;
+          finished = true;
+        };
+
         mgr.setURLModifier((url) => {
           const v = variantsFor(url);             // prueba varias formas
           const k = v.find((x) => assetDB.byKey[x]);
@@ -285,13 +297,35 @@ export function createLoadMeshCb(assetDB, hooks = {}) {
         const obj = (collada && collada.scene) ? collada.scene : new THREE.Object3D();
         if (scale !== 1.0) obj.scale.setScalar(scale);
 
-        // Cachea el original y devuelve un clon para no compartir refs
-        daeCache.set(bestKey, obj);
-        const clone = obj.clone(true);
+        const finalize = () => {
+          // Cachea el original y devuelve un clon para no compartir refs
+          if (!daeCache.has(bestKey)) daeCache.set(bestKey, obj);
+          const clone = obj.clone(true);
+          tagAll(clone, bestKey);
+          hooks.onMeshTag?.(clone, bestKey);
+          onComplete(clone);
+        };
 
-        tagAll(clone, bestKey);
-        hooks.onMeshTag?.(clone, bestKey);
-        onComplete(clone);
+        // Si ColladaLoader inició cargas (texturas), esperamos a onLoad.
+        // Si no inició nada, finalizamos de inmediato.
+        // Nota: onLoad podría no dispararse si no hubo ningún itemStart.
+        Promise.resolve().then(() => {
+          if (!started) {
+            finalize();
+            return;
+          }
+          if (finished) {
+            finalize();
+            return;
+          }
+          // Esperar a que el manager termine
+          const prevOnLoad = mgr.onLoad;
+          mgr.onLoad = () => {
+            try { prevOnLoad?.(); } catch (_) {}
+            finalize();
+          };
+        });
+
         return;
       }
 
@@ -308,4 +342,3 @@ export const ALLOWED_EXTS = {
   mesh: ALLOWED_MESH_EXTS,
   tex: ALLOWED_TEX_EXTS
 };
-
