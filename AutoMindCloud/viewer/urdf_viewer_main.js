@@ -5,11 +5,13 @@
 //  - Reducción de thumbnails a ~5KB solo para IA
 //  - Parser robusto para el dict que llega desde Colab
 //
-// FIX PRINCIPAL (tu pedido):
-//  ✅ NO depende de assetToMeshes para enviar a IA.
-//  ✅ Si ya existen capturas (window.Base64Images / Base64Images), las usa y las envía.
-//  ✅ Si NO existen capturas, recién ahí hace fallback al sistema offscreen.
+// ✅ FIX PRINCIPAL (lo que estabas pidiendo):
+//  - NO depende de offscreen para IA.
+//  - Toma las fotos YA capturadas (window.Base64Images / Base64Images) y las envía a Colab invokeFunction.
+//  - Si assetToMeshes está vacío, igual arma lista de componentes desde assetDB (meshDB keys).
 //
+// Nota: esto NO cambia tu sistema original de capturas.
+// Solo “engancha” el envío cuando IA_Widgets=true.
 
 import { THEME } from './Theme.js';
 import * as ViewerCore from './core/ViewerCore.js';
@@ -138,9 +140,9 @@ export function render(opts = {}) {
 
   debugLog('assetToMeshes keys', Array.from(assetToMeshes.keys()));
 
-  // 4) Offscreen thumbnails
-  const off = buildOffscreenForThumbnails(core, assetToMeshes, THEME);
-  if (!off) debugLog('Offscreen thumbnails no disponible (no robot)');
+  // 4) Offscreen thumbnails (opcional). NO lo usamos para IA si ya hay capturas.
+  const off = safeBuildOffscreenForThumbnails(core, assetToMeshes, THEME);
+  if (!off) debugLog('Offscreen thumbnails no disponible (no robot o deshabilitado)');
 
   // 5) Interacción
   const inter = attachInteraction({
@@ -158,8 +160,9 @@ export function render(opts = {}) {
     robot,
     IA_Widgets,
     assets: {
-      list: () => listAssets(assetToMeshes),
-      thumbnail: (assetKey) => off?.thumbnail(assetKey),
+      // ✅ FIX: lista robusta (si assetToMeshes vacío, usa assetDB)
+      list: () => listAssetsSmart(assetToMeshes, assetDB),
+      thumbnail: (assetKey) => off?.thumbnail?.(assetKey) ?? null,
     },
     isolate: {
       asset: (assetKey) => isolateAsset(core, assetToMeshes, assetKey),
@@ -191,10 +194,23 @@ export function render(opts = {}) {
       return '';
     },
 
+    // Si tu sistema original ya llena window.Base64Images, esto solo lo expone.
     async collectAllThumbnails() {
       const items = app.assets.list();
-      Base64Images.length = 0;
 
+      // Si ya hay fotos capturadas por tu sistema original, no las recalculamos.
+      const existing = (typeof window !== 'undefined' && Array.isArray(window.Base64Images))
+        ? window.Base64Images
+        : Base64Images;
+
+      if (Array.isArray(existing) && existing.length) {
+        Base64Images = existing.slice();
+        debugLog('collectAllThumbnails: usando Base64Images existente', { count: Base64Images.length });
+        return Base64Images;
+      }
+
+      // Fallback: si NO existe, intentamos generar con offscreen (si está disponible)
+      Base64Images.length = 0;
       for (const it of items) {
         try {
           const url = await app.assets.thumbnail(it.assetKey);
@@ -219,11 +235,20 @@ export function render(opts = {}) {
   const tools = createToolsDock(app, THEME);
   const comps = createComponentsPanel(app, THEME);
 
-  // 8) Precompute thumbnails (si hay keys). No rompe si assetToMeshes está vacío.
+  // 8) Click sound opcional
+  if (clickAudioDataURL) {
+    try {
+      installClickSound(clickAudioDataURL);
+    } catch (e) {
+      debugLog('installClickSound error', String(e));
+    }
+  }
+
+  // 9) (opcional) prime offscreen thumbnails solo para UI si quieres.
+  // No lo hacemos obligatorio porque tú NO quieres depender de esto para IA.
   (async () => {
     try {
       if (!off || typeof off.primeAll !== 'function') return;
-
       const settle = await waitForAssetMapToSettle(assetToMeshes, 12000, 450);
       debugLog('[Thumbs] settle', settle);
 
@@ -238,19 +263,10 @@ export function render(opts = {}) {
     }
   })();
 
-  // 9) Click sound opcional
-  if (clickAudioDataURL) {
-    try {
-      installClickSound(clickAudioDataURL);
-    } catch (e) {
-      debugLog('installClickSound error', String(e));
-    }
-  }
-
   // 10) IA opt-in
   if (IA_Widgets) {
-    debugLog('[IA] IA_Widgets=true → bootstrap IA');
-    bootstrapComponentDescriptions(app, assetToMeshes, off);
+    debugLog('[IA] IA_Widgets=true → bootstrap IA (usa capturas existentes primero)');
+    bootstrapComponentDescriptions(app, assetToMeshes, assetDB, off);
   } else {
     debugLog('[IA] IA_Widgets=false → sin IA');
   }
@@ -305,22 +321,6 @@ function rebuildAssetMapFromRobot(robot, assetToMeshes) {
   });
 }
 
-function listAssets(assetToMeshes) {
-  const items = [];
-  assetToMeshes.forEach((meshes, assetKey) => {
-    if (!meshes || meshes.length === 0) return;
-    const { base, ext } = splitName(assetKey);
-    items.push({ assetKey, base, ext, count: meshes.length });
-  });
-  items.sort((a, b) =>
-    a.base.localeCompare(b.base, undefined, {
-      numeric: true,
-      sensitivity: 'base',
-    }),
-  );
-  return items;
-}
-
 function splitName(key) {
   const clean = String(key || '').split('?')[0].split('#')[0];
   const base = clean.split('/').pop();
@@ -329,6 +329,48 @@ function splitName(key) {
     base: dot >= 0 ? base.slice(0, dot) : base,
     ext: dot >= 0 ? base.slice(dot + 1).toLowerCase() : '',
   };
+}
+
+function listAssetsSmart(assetToMeshes, assetDB) {
+  // 1) Preferimos el mapa real del URDFLoader si existe
+  const items = [];
+  try {
+    assetToMeshes.forEach((meshes, assetKey) => {
+      if (!meshes || meshes.length === 0) return;
+      const { base, ext } = splitName(assetKey);
+      items.push({ assetKey, base, ext, count: meshes.length });
+    });
+  } catch (_) {}
+
+  if (items.length) {
+    items.sort((a, b) =>
+      a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }),
+    );
+    return items;
+  }
+
+  // 2) ✅ FIX: si assetToMeshes está vacío, construimos desde meshDB (assetDB)
+  const fallback = [];
+  const keys = (assetDB && typeof assetDB.keys === 'function') ? assetDB.keys() : [];
+  const seenBase = new Set();
+
+  // Nos quedamos con meshes “reales”
+  const allowed = new Set(['dae', 'stl', 'step', 'stp']);
+  for (const k of keys) {
+    const { base, ext } = splitName(k);
+    if (!allowed.has(ext)) continue;
+    // evita duplicados por base (típicamente base.dae y base.jpg)
+    if (seenBase.has(base)) continue;
+    seenBase.add(base);
+    fallback.push({ assetKey: k, base, ext, count: 0 });
+  }
+
+  fallback.sort((a, b) =>
+    a.base.localeCompare(b.base, undefined, { numeric: true, sensitivity: 'base' }),
+  );
+
+  debugLog('[Assets] fallback listAssets (assetToMeshes vacío)', { count: fallback.length });
+  return fallback;
 }
 
 function isolateAsset(core, assetToMeshes, assetKey) {
@@ -409,20 +451,24 @@ function frameMeshes(core, meshes) {
   }
 }
 
-/* ============= Offscreen thumbnails: componente + ISO robot ============= */
-/*  (tu sistema actual queda intacto; no lo cambio) */
+/* ================= Offscreen thumbnails (opcional) ================= */
 
-function buildOffscreenForThumbnails(core, assetToMeshes, theme) {
-  // ... (TU MISMO CÓDIGO offscreen AQUÍ)
-  // Para mantener el mensaje utilizable: pega exactamente tu buildOffscreenForThumbnails actual sin cambios.
-  // ⚠️ Importante: no lo modifiqué porque tú pediste no cambiar el sistema de capturas.
-  return null;
+// ✅ No cambiamos tu sistema original.
+// Pero evitamos que “rompa” IA si no existe.
+function safeBuildOffscreenForThumbnails(core, assetToMeshes, theme) {
+  try {
+    // Si tú tienes una versión real de buildOffscreenForThumbnails en otro archivo,
+    // puedes engancharla aquí. Por ahora, no es requerida para IA.
+    // Retornamos null para no inventar un sistema de capturas distinto.
+    return null;
+  } catch (_) {
+    return null;
+  }
 }
 
 /* ================= IA opt-in: describe_component_images ================= */
-/* ✅ FIX: enviar las capturas YA tomadas (Base64Images) aunque assetToMeshes esté vacío */
 
-function bootstrapComponentDescriptions(app, assetToMeshes, off) {
+function bootstrapComponentDescriptions(app, assetToMeshes, assetDB, off) {
   debugLog('[IA] bootstrapComponentDescriptions start');
 
   const hasColab =
@@ -437,100 +483,82 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
 
   (async () => {
     try {
+      // ✅ 1) Esperar las capturas existentes (tu sistema original)
+      const existing = await waitForExistingCaptures(12000);
+
+      const items = listAssetsSmart(assetToMeshes, assetDB);
+      debugLog('[IA] Componentes a describir', items.length);
+
+      // Si no hay items, aún así podemos mandar solo el ISO si existe
       const entries = [];
 
-      // 0) PRIMERO: usa capturas YA existentes (tu sistema original de capturas)
-      const existing =
-        (typeof window !== 'undefined' && Array.isArray(window.Base64Images) && window.Base64Images) ||
-        (Array.isArray(Base64Images) && Base64Images) ||
-        [];
+      // ISO opcional (si tu sistema lo guarda)
+      // Soportamos:
+      //  - window.RobotISOBase64 (b64 puro)
+      //  - window.__robot_iso_b64__ (b64 puro)
+      //  - window.RobotISODataURL (dataURL)
+      //  - window.__robot_iso_dataurl__ (dataURL)
+      const isoB64 = extractAnyIsoBase64();
+      if (isoB64) {
+        entries.push({
+          key: '__robot_iso__',
+          name: 'robot_iso',
+          index: -1,
+          image_b64: isoB64,
+        });
+        debugLog('[IA] __robot_iso__ agregado (desde capturas existentes)');
+      }
 
-      if (existing.length) {
-        debugLog('[IA] usando Base64Images existentes', { count: existing.length });
-
-        let i = 0;
-        for (const img of existing) {
-          if (!img) continue;
-
-          // Normaliza: si viene como dataURL, extrae base64
-          const b64 =
-            typeof img === 'string'
-              ? (img.includes(',') ? (img.split(',')[1] || '') : img)
-              : '';
-
+      // ✅ 2) Armar payload desde Base64Images (NO offscreen)
+      if (Array.isArray(existing) && existing.length) {
+        // Emparejamos por índice con la lista de componentes (si existe).
+        // Si hay más fotos que items, truncamos; si hay menos fotos, truncamos items.
+        const n = Math.min(existing.length, items.length || existing.length);
+        for (let i = 0; i < n; i++) {
+          const it = items[i] || { assetKey: `component_${i}`, base: `component_${i}` };
+          const b64 = String(existing[i] || '').trim();
           if (!b64) continue;
 
           entries.push({
-            key: `capture_${i}`,
-            name: `capture_${i}`,
+            key: it.assetKey,
+            name: it.base || it.assetKey,
             index: i,
             image_b64: b64,
           });
-          i += 1;
         }
-      }
 
-      // 1) Fallback SOLO si no existen capturas: ISO + thumbnails
-      if (!entries.length) {
+        debugLog('[IA] entries desde Base64Images', {
+          images: existing.length,
+          components: items.length,
+          sent: entries.length,
+        });
+      } else {
         debugLog('[IA] Base64Images vacío → fallback a offscreen');
 
-        if (!off || typeof off.thumbnail !== 'function') {
+        // Fallback opcional (solo si existe offscreen REAL)
+        if (off && typeof off.thumbnail === 'function' && items.length) {
+          let idx = 0;
+          for (const it of items) {
+            const url = await off.thumbnail(it.assetKey);
+            if (!url) continue;
+            const b64 = await makeApproxSizedBase64(url, 5);
+            if (!b64) continue;
+            entries.push({ key: it.assetKey, name: it.base, index: idx, image_b64: b64 });
+            idx++;
+          }
+          debugLog('[IA] entries desde offscreen fallback', entries.length);
+        } else {
           debugLog('[IA] Offscreen no disponible; cancelando IA');
           return;
         }
-
-        // ISO del robot completo
-        if (typeof off.iso === 'function') {
-          try {
-            const isoUrl = await off.iso();
-            if (isoUrl) {
-              const isoB64 = await makeApproxSizedBase64(isoUrl, 8);
-              if (isoB64) {
-                entries.push({
-                  key: '__robot_iso__',
-                  name: 'robot_iso',
-                  index: -1,
-                  image_b64: isoB64,
-                });
-                debugLog('[IA] __robot_iso__ agregado al payload IA');
-              }
-            }
-          } catch (e) {
-            debugLog('[IA] Error generando ISO robot', String(e));
-          }
-        }
-
-        const items = listAssets(assetToMeshes);
-        debugLog('[IA] Componentes a describir (fallback)', items.length);
-
-        let idx = 0;
-        for (const ent of items) {
-          try {
-            const url = await off.thumbnail(ent.assetKey);
-            if (!url) continue;
-
-            const b64 = await makeApproxSizedBase64(url, 5);
-            if (!b64) continue;
-
-            entries.push({
-              key: ent.assetKey,
-              name: ent.base,
-              index: idx,
-              image_b64: b64,
-            });
-            idx += 1;
-          } catch (e) {
-            debugLog('[IA] Error thumb IA', ent.assetKey, String(e));
-          }
-        }
       }
 
-      debugLog('[IA] entries generadas', entries.length);
       if (!entries.length) {
-        debugLog('[IA] No hay imágenes para enviar (entries=0)');
+        debugLog('[IA] No hay entries para enviar');
         return;
       }
 
+      // ✅ 3) Enviar a Colab (tu python debe llamar tu API GPT y devolver un dict)
       let res;
       try {
         res = await window.google.colab.kernel.invokeFunction(
@@ -558,6 +586,44 @@ function bootstrapComponentDescriptions(app, assetToMeshes, off) {
   })();
 }
 
+/* ================= Captures wait / ISO helpers ================= */
+
+async function waitForExistingCaptures(maxWaitMs = 12000) {
+  const t0 = performance.now();
+  while (performance.now() - t0 < maxWaitMs) {
+    const arr =
+      (typeof window !== 'undefined' && Array.isArray(window.Base64Images) && window.Base64Images) ||
+      (Array.isArray(Base64Images) && Base64Images) ||
+      null;
+
+    if (Array.isArray(arr) && arr.length) return arr;
+
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  return (
+    (typeof window !== 'undefined' && Array.isArray(window.Base64Images) && window.Base64Images) ||
+    (Array.isArray(Base64Images) && Base64Images) ||
+    []
+  );
+}
+
+function extractAnyIsoBase64() {
+  try {
+    if (typeof window === 'undefined') return null;
+
+    const b64Direct = window.RobotISOBase64 || window.__robot_iso_b64__;
+    if (typeof b64Direct === 'string' && b64Direct.trim()) return b64Direct.trim();
+
+    const dataUrl = window.RobotISODataURL || window.__robot_iso_dataurl__;
+    if (typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+      const b64 = dataUrl.split(',')[1] || '';
+      return b64 || null;
+    }
+  } catch (_) {}
+  return null;
+}
+
 /* ====== extractDescMap / parseMaybePythonDict / applyIaDescriptions ===== */
 
 function extractDescMap(res) {
@@ -565,6 +631,7 @@ function extractDescMap(res) {
 
   let data = res.data ?? res;
 
+  // Caso Colab típico: data['application/json']
   if (
     data &&
     typeof data === 'object' &&
@@ -574,17 +641,20 @@ function extractDescMap(res) {
     return data['application/json'];
   }
 
+  // Caso actual: data['text/plain'] = "{'base.dae': '...'}"
   if (data && typeof data === 'object' && typeof data['text/plain'] === 'string') {
     const raw = data['text/plain'].trim();
     const parsed = parseMaybePythonDict(raw);
     if (parsed) return parsed;
   }
 
+  // Si es string plano, intentar parsear igual
   if (typeof data === 'string') {
     const parsed = parseMaybePythonDict(data.trim());
     if (parsed) return parsed;
   }
 
+  // Si ya es objeto razonable, úsalo
   if (
     data &&
     typeof data === 'object' &&
@@ -594,6 +664,7 @@ function extractDescMap(res) {
     return data;
   }
 
+  // Array de objetos: tomar el primero
   if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
     return data[0];
   }
@@ -606,20 +677,24 @@ function parseMaybePythonDict(raw) {
   raw = String(raw).trim();
   if (!raw.startsWith('{') || !raw.endsWith('}')) return null;
 
+  // 1) Intento JSON directo
   try {
     const j = JSON.parse(raw);
     if (j && typeof j === 'object') return j;
   } catch (_) {}
 
+  // 2) Intento: reemplazar sintaxis Python -> JS y evaluar de forma controlada
   try {
     let expr = raw;
     expr = expr.replace(/\bNone\b/g, 'null');
     expr = expr.replace(/\bTrue\b/g, 'true');
     expr = expr.replace(/\bFalse\b/g, 'false');
+
     const obj = new Function('return (' + expr + ')')();
     if (obj && typeof obj === 'object') return obj;
   } catch (_) {}
 
+  // 3) Fallback simple: pares 'k': 'v'
   try {
     const out = {};
     const inner = raw.slice(1, -1);
