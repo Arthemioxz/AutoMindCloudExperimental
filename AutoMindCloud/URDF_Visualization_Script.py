@@ -1,19 +1,11 @@
 # URDF_Render_Script.py
 # Puente Colab <-> JS para descripciones de piezas del URDF.
 #
-# Uso típico en Colab:
-#   from URDF_Render_Script import URDF_Render
-#   URDF_Render("URDFModel")                      # solo viewer
-#   URDF_Render("URDFModel", IA_Widgets=True)     # viewer + IA opt-in
-#
-# FIX (2025-12-23):
-# - El viewer sigue ocupando TODO el #app (renderer full dentro del contenedor)
-# - PERO el "cell/iframe" se limita a 75% de la altura de pantalla para que
-#   se vea completo en cualquier dispositivo.
-#
-# Implementación:
-# - CSS: html/body/#app => 75dvh (fallback calc(var(--vh) * 75))
-# - JS: computeDesiredHeight() => 0.75 * viewportHeight (mínimo 480px)
+# FIX (palpitación / “pulsing” del output cell):
+# - Mantiene el viewer a 75% del viewport (como antes)
+# - El renderer SIEMPRE llena el #app (tamaño del output cell)
+# - Elimina el loop de resize: NO usa ResizeObserver (eso suele causar feedback con setIframeHeight)
+# - setIframeHeight() ahora es estable: solo aplica si el alto cambió “de verdad” (umbral) + throttle por rAF
 
 import os
 import re
@@ -73,11 +65,8 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
     """
     Registra el callback 'describe_component_images' si estamos en Colab.
     Ahora soporta:
-      - Una entrada opcional __robot_iso__ con la imagen isométrica del robot completo.
-      - Entradas de componentes con:
-          { "key", "name", "index", "image_b64" }
-      - Construye una secuencia ordenada de nombres y la envía como contexto
-        en cada request a la API externa.
+      - ISO global del robot (__robot_iso__)
+      - Componentes { key, name, index, image_b64 }
     """
     global _COLAB_CALLBACK_REGISTERED
     if _COLAB_CALLBACK_REGISTERED:
@@ -90,14 +79,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         infer_url = api_base + API_INFER_PATH
 
         def _describe_component_images(entries):
-            """
-            entries: [
-              { "key": "__robot_iso__", "image_b64": "...", ... }?,
-              { "key": assetKey, "name": baseName, "index": i, "image_b64": "..." },
-              ...
-            ]
-            Devuelve: { assetKey: descripcion }
-            """
             print("[Colab] describe_component_images: payload recibido")
 
             if not isinstance(entries, (list, tuple)):
@@ -140,7 +121,6 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 return {}
 
             components.sort(key=lambda c: c.get("index", 0))
-
             sequence_names = [c["name"] for c in components]
             sequence_str = ", ".join(sequence_names)
 
@@ -386,7 +366,7 @@ def URDF_Visualization(
       margin:0;
       padding:0;
       width:100%;
-      height:75dvh; /* ✅ 75% del viewport */
+      height:75dvh; /* ✅ 75% como antes */
       overflow:hidden;
       background:#{int(background or 0xFFFFFF):06x};
     }}
@@ -403,7 +383,7 @@ def URDF_Visualization(
       position:fixed;
       inset:0;
       width:100vw;
-      height:75dvh; /* ✅ renderer llena todo el contenedor, contenedor = 75vh */
+      height:75dvh; /* ✅ renderer = tamaño del output cell */
       touch-action:none;
     }}
     @supports not (height: 75dvh) {{
@@ -440,29 +420,37 @@ def URDF_Visualization(
   <script type="module">
     const VIEWPORT_FRACTION = 0.75;
 
-    function applyVHVar() {{
-      const viewport = window.visualViewport?.height || window.innerHeight || 600;
-      const vh = viewport * 0.01;
-      document.documentElement.style.setProperty('--vh', `${{vh}}px`);
-    }}
-    applyVHVar();
-
-    function computeDesiredHeight() {{
-      const viewportH =
+    function viewportHeight() {{
+      return (
         window.visualViewport?.height ||
         window.innerHeight ||
         document.documentElement.clientHeight ||
-        0;
-
-      // ✅ queremos que el iframe/cell mida 75% del viewport real
-      const target = Math.floor(viewportH * VIEWPORT_FRACTION);
-
-      // mínimo para que no colapse en pantallas chicas
-      return Math.max(target, 480);
+        600
+      );
     }}
 
-    function setColabFrameHeight() {{
-      const h = Math.ceil(computeDesiredHeight());
+    function applyVHVar() {{
+      const vh = viewportHeight() * 0.01;
+      document.documentElement.style.setProperty('--vh', `${{vh}}px`);
+    }}
+
+    function desiredHeightPx() {{
+      // ✅ Solo depende del viewport real (no scrollHeight) para evitar feedback loops
+      const h = Math.floor(viewportHeight() * VIEWPORT_FRACTION);
+      return Math.max(h, 480);
+    }}
+
+    // --- Anti-“palpitación”: throttle + umbral de cambio ---
+    let _lastIframeH = 0;
+    let _pending = false;
+
+    function setColabFrameHeightStable() {{
+      const h = desiredHeightPx();
+
+      // umbral: evita que 1-2 px de diferencia dispare un resize loop
+      if (Math.abs(h - _lastIframeH) <= 2) return;
+
+      _lastIframeH = h;
       try {{
         if (window.google?.colab?.output?.setIframeHeight) {{
           window.google.colab.output.setIframeHeight(h, true);
@@ -470,24 +458,39 @@ def URDF_Visualization(
       }} catch (_e) {{}}
     }}
 
-    const ro = new ResizeObserver(() => {{
-      applyVHVar();
-      setColabFrameHeight();
-    }});
-    ro.observe(document.body);
-
-    window.addEventListener('resize', () => {{
-      applyVHVar();
-      setColabFrameHeight();
-    }});
-    if (window.visualViewport) {{
-      window.visualViewport.addEventListener('resize', () => {{
+    function scheduleLayout() {{
+      if (_pending) return;
+      _pending = true;
+      requestAnimationFrame(() => {{
+        _pending = false;
         applyVHVar();
-        setColabFrameHeight();
+        setColabFrameHeightStable();
+        if (window.__urdfApp && typeof window.__urdfApp.resize === 'function') {{
+          const w =
+            window.innerWidth ||
+            document.documentElement.clientWidth ||
+            document.body?.clientWidth ||
+            800;
+          const h = desiredHeightPx();
+          try {{
+            window.__urdfApp.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
+          }} catch (_e) {{}}
+        }}
       }});
     }}
 
-    setTimeout(setColabFrameHeight, 60);
+    // Inicial
+    scheduleLayout();
+
+    // ✅ SOLO eventos de viewport (NO ResizeObserver) -> evita loops con setIframeHeight
+    window.addEventListener('resize', scheduleLayout, {{ passive:true }});
+    if (window.visualViewport) {{
+      window.visualViewport.addEventListener('resize', scheduleLayout, {{ passive:true }});
+    }}
+
+    // Reintentos suaves (por si Colab tarda en aplicar el iframe height)
+    setTimeout(scheduleLayout, 80);
+    setTimeout(scheduleLayout, 300);
 
     const repo     = {json.dumps(repo)};
     const branch   = {json.dumps(branch)};
@@ -540,39 +543,12 @@ def URDF_Visualization(
       console.error('[URDF] No se pudo cargar urdf_viewer_main.js o falta render()');
     }} else {{
       const app = mod.render(opts);
+      // Guardamos referencia global para resize estable
+      window.__urdfApp = app;
 
-      function onResize() {{
-        try {{
-          if (!app || typeof app.resize !== 'function') return;
-
-          // ancho: igual que antes (full width)
-          const w =
-            window.innerWidth ||
-            document.documentElement.clientWidth ||
-            document.body.clientWidth ||
-            800;
-
-          // alto: 75% viewport
-          const h = computeDesiredHeight();
-
-          app.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
-        }} catch (_e) {{}}
-      }}
-
-      window.addEventListener('resize', onResize);
-      if (window.visualViewport) {{
-        window.visualViewport.addEventListener('resize', onResize);
-      }}
-
-      setTimeout(() => {{
-        onResize();
-        setColabFrameHeight();
-      }}, 0);
-
-      setTimeout(() => {{
-        onResize();
-        setColabFrameHeight();
-      }}, 500);
+      // Forzar 1 layout justo después de render
+      scheduleLayout();
+      setTimeout(scheduleLayout, 150);
     }}
   </script>
 </body>
