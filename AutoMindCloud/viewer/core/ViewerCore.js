@@ -410,6 +410,11 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   });
   renderer.setPixelRatio(pixelRatio || window.devicePixelRatio || 1);
   renderer.setSize(rootEl.clientWidth || 1, rootEl.clientHeight || 1);
+
+  // Ensure DAE/texture colors are not rendered too dark (Three.js r132).
+  // Matches the older viewer's sRGB output behavior.
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.gammaFactor = 2.2;
   renderer.domElement.style.width = '100%';
   renderer.domElement.style.height = '100%';
   renderer.domElement.style.display = 'block';
