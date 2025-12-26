@@ -1,4 +1,4 @@
-// /viewer/ui/ToolsDock.js / checkpoint
+// /viewer/ui/ToolsDock.js
 // Floating tools dock: render modes, explode (smoothed & robust), section plane (ROBOT ONLY), views, projection, scene toggles, snapshot.
 /* global THREE */
 
@@ -20,6 +20,9 @@ export function createToolsDock(app, theme) {
   if (theme && theme.shadows) {
     theme.shadow ??= (theme.shadows.lg || theme.shadows.md || theme.shadows.sm);
   }
+
+  // UI scale: 50% smaller UI (only affects dock + toggle button visuals)
+  const UI_SCALE = 0.5;
 
   // ---------- DOM ----------
   const ui = {
@@ -157,6 +160,7 @@ export function createToolsDock(app, theme) {
     overflow: 'hidden',
     display: 'none'
   });
+  ui.dock.style.transformOrigin = 'top left';
 
   Object.assign(ui.header.style, {
     display: 'flex',
@@ -187,17 +191,25 @@ export function createToolsDock(app, theme) {
     boxShadow: theme.shadow,
     pointerEvents: 'auto',
     zIndex: '10000',
+    transformOrigin: 'top right',
+    transform: `scale(${UI_SCALE})`,
     transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
   });
   ui.toggleBtn.addEventListener('mouseenter', () => {
-    ui.toggleBtn.style.transform = 'translateY(-1px) scale(1.02)';
+    ui.toggleBtn.style.transform = `translateY(-1px) scale(${UI_SCALE * 1.02})`;
     ui.toggleBtn.style.background = theme.tealFaint;
     ui.toggleBtn.style.borderColor = theme.tealSoft ?? theme.teal;
   });
   ui.toggleBtn.addEventListener('mouseleave', () => {
-    ui.toggleBtn.style.transform = 'none';
+    ui.toggleBtn.style.transform = `scale(${UI_SCALE})`;
     ui.toggleBtn.style.background = theme.bgPanel;
     ui.toggleBtn.style.borderColor = theme.stroke;
+  });
+  ui.toggleBtn.addEventListener('mousedown', () => {
+    ui.toggleBtn.style.transform = `translateY(0) scale(${UI_SCALE * 0.99})`;
+  });
+  ui.toggleBtn.addEventListener('mouseup', () => {
+    ui.toggleBtn.style.transform = `translateY(-1px) scale(${UI_SCALE * 1.02})`;
   });
 
   // Header button (Snapshot)
@@ -215,20 +227,10 @@ export function createToolsDock(app, theme) {
   const host = (app?.renderer?.domElement?.parentElement) || document.body;
   host.appendChild(ui.root);
 
-  // UI scale (50% más chico) — NO toca transforms/animaciones/hotkeys
-  const UI_SCALE = 0.5;
-
-  ui.dock.style.transformOrigin = 'top left';
-  ui.dock.style.scale = String(UI_SCALE);
-
-  ui.toggleBtn.style.transformOrigin = 'top right';
-  ui.toggleBtn.style.scale = String(UI_SCALE);
-
-  
   // ---------- Controls ----------
   const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
 
-  // Explode (slider drives a smoothed spring tween; see ExplodeManager below)
+  // Explode
   const explodeSlider = mkSlider(0, 1, 0.01, 0);
 
   // Section
@@ -237,7 +239,7 @@ export function createToolsDock(app, theme) {
   const secEnable = mkToggle('Enable section');
   const secShowPlane = mkToggle('Show slice plane');
 
-  // Views row (NO per-row Snapshot button)
+  // Views row
   const rowCam = document.createElement('div');
   Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
   const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
@@ -266,7 +268,7 @@ export function createToolsDock(app, theme) {
   // ---------- Logic ----------
 
   // ------------------ CONFIG ------------------
-  const CLOSED_TX = -520; // px, off-screen to the left
+  const CLOSED_TX = -520; // px
   let isOpen = false;
 
   // Prepare dock styles once
@@ -274,7 +276,7 @@ export function createToolsDock(app, theme) {
     display: 'block',
     willChange: 'transform, opacity',
     transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
-    transform: `translateX(${CLOSED_TX}px)`,
+    transform: `translateX(${CLOSED_TX}px) scale(${UI_SCALE})`,
     opacity: '0',
     pointerEvents: 'none'
   });
@@ -284,30 +286,26 @@ export function createToolsDock(app, theme) {
     isOpen = open;
 
     if (open) {
-      // OPEN tween
       ui.dock.style.opacity = '1';
-      ui.dock.style.transform = 'translateX(0)';
+      ui.dock.style.transform = `translateX(0) scale(${UI_SCALE})`;
       ui.dock.style.pointerEvents = 'auto';
       ui.toggleBtn.textContent = 'Close Tools';
       try { styleDockLeft(ui.dock); } catch (_) {}
       syncExplodeUI();
     } else {
-      // CLOSE tween
       ui.dock.style.opacity = '0';
-      ui.dock.style.transform = `translateX(${CLOSED_TX}px)`;
+      ui.dock.style.transform = `translateX(${CLOSED_TX}px) scale(${UI_SCALE})`;
       ui.dock.style.pointerEvents = 'none';
       ui.toggleBtn.textContent = 'Open Tools';
     }
   }
 
-  // Wrappers
   function openDock() { set(true); }
   function closeDock() { set(false); }
 
-  // ------------------ EVENT ------------------
   ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
-  // Snapshot (header only) — offscreen render target fallback (no preserveDrawingBuffer needed)
+  // Snapshot
   ui.fitBtn.addEventListener('click', () => {
     const { renderer, scene, camera, composer } = app;
 
@@ -321,7 +319,6 @@ export function createToolsDock(app, theme) {
       a.remove();
     };
 
-    // fast path
     try {
       renderer.setRenderTarget(null);
       if (composer) composer.render(); else renderer.render(scene, camera);
@@ -332,7 +329,6 @@ export function createToolsDock(app, theme) {
       console.warn('[Snapshot] fast path failed, trying offscreen RT.', e);
     }
 
-    // robust path
     try {
       const size = renderer.getSize(new THREE.Vector2());
       const dpr = renderer.getPixelRatio();
@@ -404,7 +400,6 @@ export function createToolsDock(app, theme) {
   let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
   let sectionPlane = null, secVisual = null;
 
-  // --- Helpers to apply clipping ONLY to robot meshes, without touching grid/ground/axes ---
   function traverseRobotMeshes(fn) {
     if (!app.robot) return;
     app.robot.traverse((o) => {
@@ -417,13 +412,11 @@ export function createToolsDock(app, theme) {
   function setMaterialClipping(mat, plane) {
     if (!mat) return;
     mat.clippingPlanes = plane ? [plane] : null;
-    // keep defaults sane
     mat.clipIntersection = false;
     mat.clipShadows = true;
     mat.needsUpdate = true;
   }
 
-  // We avoid affecting shared materials by cloning robot materials once per mesh
   function ensureClippableMaterials(mesh) {
     if (!mesh || !mesh.material) return;
     if (mesh.userData && mesh.userData.__clipOriginalMaterial) return;
@@ -441,16 +434,12 @@ export function createToolsDock(app, theme) {
   }
 
   function applyRobotOnlyClipping(plane) {
-    // localClippingEnabled must be true for per-material clipping to work
     app.renderer.localClippingEnabled = true;
-
-    // IMPORTANT: keep GLOBAL clipping planes empty so helpers are never clipped
     app.renderer.clippingPlanes = [];
 
     traverseRobotMeshes((mesh) => {
       ensureClippableMaterials(mesh);
 
-      // switch robot mesh to its cloned materials (so shared materials won't affect helpers)
       if (mesh.userData && mesh.userData.__clipClonedMaterial) {
         mesh.material = mesh.userData.__clipClonedMaterial;
       }
@@ -461,23 +450,19 @@ export function createToolsDock(app, theme) {
   }
 
   function clearRobotOnlyClipping() {
-    // restore original materials back to the robot meshes
     traverseRobotMeshes((mesh) => {
       if (mesh.userData && mesh.userData.__clipOriginalMaterial) {
-        // clear clipping on cloned mats (optional, keeps state clean)
         const cm = mesh.userData.__clipClonedMaterial;
         const mats = Array.isArray(cm) ? cm : [cm];
         for (const m of mats) setMaterialClipping(m, null);
 
         mesh.material = mesh.userData.__clipOriginalMaterial;
       } else if (mesh.material) {
-        // fallback: just clear clipping
         const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         for (const m of mats) setMaterialClipping(m, null);
       }
     });
 
-    // disable clipping system
     app.renderer.clippingPlanes = [];
     app.renderer.localClippingEnabled = false;
   }
@@ -524,7 +509,6 @@ export function createToolsDock(app, theme) {
   }
 
   function updateSectionPlane() {
-    // ALWAYS keep global clipping planes empty so grid/helpers are never clipped
     app.renderer.clippingPlanes = [];
 
     if (!secEnabled || !app.robot) {
@@ -557,15 +541,12 @@ export function createToolsDock(app, theme) {
 
     sectionPlane = plane;
 
-    // ✅ APPLY CLIPPING TO ROBOT ONLY
     applyRobotOnlyClipping(plane);
 
-    // Visual plane (never clipped because we do NOT use global clipping)
     ensureSectionVisual();
     refreshSectionVisual(maxDim, center);
     secVisual.visible = !!secPlaneVisible;
 
-    // Orient the teal plane to match clipping plane normal
     const look = new THREE.Vector3().copy(n);
     const up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
@@ -613,7 +594,6 @@ export function createToolsDock(app, theme) {
     requestAnimationFrame(step);
   }
 
-  // Store default distance once (at init)
   let DEFAULT_RADIUS = null;
 
   function initDefaultRadius(app_) {
@@ -702,7 +682,7 @@ export function createToolsDock(app, theme) {
   togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
   // ============================================================
-  // EXPLODE MANAGER (kept as-is except a tiny bugfix: amount() must be inside manager)
+  // EXPLODE MANAGER
   // ============================================================
   function makeExplodeManager() {
     const registry = [];
@@ -881,12 +861,10 @@ export function createToolsDock(app, theme) {
     Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
   }
 
-  // Defaults
   togGrid.cb.checked = false;
   togGround.cb.checked = false;
   togAxes.cb.checked = false;
 
-  // Start closed
   try { styleDockLeft(ui.dock); } catch (_) {}
   set(false);
 
@@ -902,14 +880,12 @@ export function createToolsDock(app, theme) {
   }
   document.addEventListener('keydown', onHotkeyH, true);
 
-  // Public API
   function destroy() {
     try { ui.toggleBtn.remove(); } catch (_) { }
     try { ui.dock.remove(); } catch (_) { }
     try { ui.root.remove(); } catch (_) { }
 
     try {
-      // ensure we restore robot materials and disable clipping
       clearRobotOnlyClipping();
       if (secVisual) app.scene.remove(secVisual);
     } catch (_) { }
