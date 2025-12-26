@@ -14,6 +14,9 @@ export function createToolsDock(app, theme) {
   if (!app || !app.scene || !app.renderer || !app.camera || !app.controls) {
     throw new Error('[ToolsDock] Missing required viewer APIs');
   }
+  if (typeof THREE === 'undefined') {
+    throw new Error('[ToolsDock] THREE is not defined (load three.js before ToolsDock.js)');
+  }
 
   // Theme defaults
   theme = theme || {};
@@ -27,12 +30,11 @@ export function createToolsDock(app, theme) {
   const HDR_BG = theme.colors.hdrBg ?? TEAL;
   const HDR_TEXT = theme.colors.hdrText ?? '#ffffff';
 
-  if (theme && theme.shadows) {
-    // keep (used by other modules if needed)
-  }
-
-  // UI scale (50% more tiny)
+  // ✅ UI 50% smaller
   const UI_SCALE = 0.5;
+
+  // ✅ Single source of truth
+  const CLOSED_TX = -520;
 
   const renderer = app.renderer;
   const scene = app.scene;
@@ -74,13 +76,14 @@ export function createToolsDock(app, theme) {
     background: PANEL_BG,
     boxShadow: `0 12px 36px ${SHADOW}`,
     overflow: 'hidden',
-    pointerEvents: 'auto',
 
-    // IMPORTANT: include scale inside same transform used for open/close
+    // ✅ start CLOSED like STEP script
+    opacity: '0',
+    pointerEvents: 'none',
+
     willChange: 'transform, opacity',
     transformOrigin: 'top left',
-    transform: `translateX(-520px) scale(${UI_SCALE})`,
-    opacity: '0',
+    transform: `translateX(${CLOSED_TX}px) scale(${UI_SCALE})`,
     transition:
       'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 180ms ease',
   });
@@ -100,7 +103,8 @@ export function createToolsDock(app, theme) {
     cursor: 'pointer',
     boxShadow: `0 12px 36px ${SHADOW}`,
     zIndex: '10000',
-    transition: 'transform 120ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease',
+    transition:
+      'transform 120ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease',
   });
 
   // Apply scale to floating toggle button (keeps hover animations)
@@ -137,7 +141,11 @@ export function createToolsDock(app, theme) {
   Object.assign(hdrLeft.style, { fontWeight: '800', color: HDR_TEXT });
 
   const hdrRight = document.createElement('div');
-  Object.assign(hdrRight.style, { display: 'flex', gap: '6px', alignItems: 'center' });
+  Object.assign(hdrRight.style, {
+    display: 'flex',
+    gap: '6px',
+    alignItems: 'center',
+  });
 
   const mkButton = (text) => {
     const b = document.createElement('button');
@@ -151,7 +159,8 @@ export function createToolsDock(app, theme) {
       fontWeight: '700',
       cursor: 'pointer',
       boxShadow: '0 10px 24px rgba(0,0,0,.12)',
-      transition: 'transform 120ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease',
+      transition:
+        'transform 120ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease',
       userSelect: 'none',
     });
     b.addEventListener('mouseenter', () => {
@@ -185,15 +194,19 @@ export function createToolsDock(app, theme) {
     const r = document.createElement('div');
     Object.assign(r.style, {
       display: 'grid',
-      gridTemplateColumns: '120px 1fr',
+      gridTemplateColumns: label ? '120px 1fr' : '1fr',
       gap: '10px',
       alignItems: 'center',
       margin: '6px 0',
     });
-    const l = document.createElement('div');
-    l.textContent = label;
-    Object.assign(l.style, { color: MUTED, fontWeight: '700' });
-    r.appendChild(l);
+
+    if (label) {
+      const l = document.createElement('div');
+      l.textContent = label;
+      Object.assign(l.style, { color: MUTED, fontWeight: '700' });
+      r.appendChild(l);
+    }
+
     r.appendChild(child);
     return r;
   };
@@ -223,7 +236,7 @@ export function createToolsDock(app, theme) {
     s.max = String(max);
     s.step = String(step);
     s.value = String(val);
-    Object.assign(s.style, { padding: '8px', accentColor: TEAL });
+    Object.assign(s.style, { padding: '8px', accentColor: TEAL, width: '100%' });
     return s;
   };
 
@@ -270,11 +283,8 @@ export function createToolsDock(app, theme) {
     b.style.padding = '8px';
     b.style.borderRadius = '10px';
     b.style.boxShadow = '0 10px 24px rgba(0,0,0,.10)';
+    viewsRow.appendChild(b);
   });
-  viewsRow.appendChild(bIso);
-  viewsRow.appendChild(bTop);
-  viewsRow.appendChild(bFront);
-  viewsRow.appendChild(bRight);
 
   const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
 
@@ -299,54 +309,55 @@ export function createToolsDock(app, theme) {
   ui.toggleBtn.textContent = 'Open Tools';
 
   // Mount
-  const container = app.container || app.domElement?.parentElement || document.body;
-  container.style.position = container.style.position || 'relative';
+  const container =
+    app.container || app.domElement?.parentElement || renderer.domElement?.parentElement || document.body;
+  if (container && container.style) {
+    container.style.position = container.style.position || 'relative';
+  }
   container.appendChild(ui.root);
   ui.root.appendChild(ui.dock);
   ui.root.appendChild(ui.toggleBtn);
 
   // State
-  const CLOSED_TX = -520;
   let dockOpen = false;
 
   function setDock(open) {
     dockOpen = !!open;
     if (dockOpen) {
-      ui.dock.style.transform = `translateX(0) scale(${UI_SCALE})`;
+      ui.dock.style.transform = `translateX(0px) scale(${UI_SCALE})`;
       ui.dock.style.opacity = '1';
-      ui.toggleBtn.textContent = 'Close Tools';
       ui.dock.style.pointerEvents = 'auto';
+      ui.toggleBtn.textContent = 'Close Tools';
     } else {
       ui.dock.style.transform = `translateX(${CLOSED_TX}px) scale(${UI_SCALE})`;
       ui.dock.style.opacity = '0';
-      ui.toggleBtn.textContent = 'Open Tools';
       ui.dock.style.pointerEvents = 'none';
+      ui.toggleBtn.textContent = 'Open Tools';
     }
   }
 
+  // start closed
   setDock(false);
 
   ui.toggleBtn.addEventListener('click', () => setDock(!dockOpen));
 
   // Hotkeys: t / c
-  document.addEventListener(
-    'keydown',
-    (e) => {
-      const tag = ((e.target && e.target.tagName) || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing)
-        return;
+  const onKeyDown = (e) => {
+    const tag = ((e.target && e.target.tagName) || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
 
-      if (e.key === 't' || e.key === 'T' || e.key === 'c' || e.key === 'C') {
-        e.preventDefault();
-        setDock(!dockOpen);
-      }
-    },
-    true,
-  );
+    if (e.key === 't' || e.key === 'T' || e.key === 'c' || e.key === 'C') {
+      e.preventDefault();
+      setDock(!dockOpen);
+    }
+  };
+  document.addEventListener('keydown', onKeyDown, true);
 
   // Snapshot
   snapBtn.addEventListener('click', () => {
     try {
+      // ensure latest frame
+      try { renderer.render(scene, camera); } catch (_) {}
       const url = renderer.domElement.toDataURL('image/png');
       const a = document.createElement('a');
       a.href = url;
@@ -356,7 +367,6 @@ export function createToolsDock(app, theme) {
   });
 
   // -------- Scene helpers (Grid/Ground/Axes) ----------
-  // Reuse if already created by app; otherwise create minimal ones
   const grid = app.gridHelper || (() => {
     const g = new THREE.GridHelper(10, 20, 0x0ea5a6, 0x0ea5a6);
     g.visible = false;
@@ -374,7 +384,6 @@ export function createToolsDock(app, theme) {
   })();
 
   const dirLight = app.dirLight || (() => {
-    // Try find a directional light; if none, create one
     let dl = null;
     scene.traverse((n) => {
       if (!dl && n && n.isDirectionalLight) dl = n;
@@ -403,9 +412,11 @@ export function createToolsDock(app, theme) {
   })();
 
   // Shadows default OFF
-  renderer.shadowMap.enabled = renderer.shadowMap.enabled || false;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  dirLight.castShadow = dirLight.castShadow || false;
+  if (renderer.shadowMap) {
+    renderer.shadowMap.enabled = !!renderer.shadowMap.enabled;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  }
+  dirLight.castShadow = !!dirLight.castShadow;
 
   // Model access
   const getModelRoot = () => app.robot || app.model || app.sceneModel || null;
@@ -533,9 +544,10 @@ export function createToolsDock(app, theme) {
     const dim = maxDim * 1.2;
 
     const look = n.clone();
-    const up = Math.abs(look.dot(new THREE.Vector3(0, 1, 0))) > 0.999
-      ? new THREE.Vector3(1, 0, 0)
-      : new THREE.Vector3(0, 1, 0);
+    const up =
+      Math.abs(look.dot(new THREE.Vector3(0, 1, 0))) > 0.999
+        ? new THREE.Vector3(1, 0, 0)
+        : new THREE.Vector3(0, 1, 0);
 
     const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0, 0, 0), look, up);
     const q = new THREE.Quaternion().setFromRotationMatrix(m);
@@ -569,7 +581,6 @@ export function createToolsDock(app, theme) {
     const pad = 1.18;
     const effectiveRadius = boundsInfo.radius * pad;
 
-    // get aspect safely
     const w = app.container?.clientWidth || renderer.domElement.clientWidth || 800;
     const h = app.container?.clientHeight || renderer.domElement.clientHeight || 600;
     const aspect = w / h;
@@ -665,12 +676,10 @@ export function createToolsDock(app, theme) {
     const wantOrtho = projSel.value === 'Orthographic';
 
     if (!ortho) {
-      // No orthographic camera available
       projSel.value = 'Perspective';
       return;
     }
 
-    // temporarily disable section (same logic as before)
     const wasSectionEnabled = secEnabled;
     if (secEnabled) {
       secEnabled = false;
@@ -688,11 +697,14 @@ export function createToolsDock(app, theme) {
 
     if (wantOrtho && camera.isPerspectiveCamera) {
       const dir = camera.position.clone().sub(target).normalize();
-      const span = b ? Math.max(b.box.getSize(new THREE.Vector3()).length(), 1) : 1;
+      const size = b ? b.box.getSize(new THREE.Vector3()) : new THREE.Vector3(1, 1, 1);
+      const span = Math.max(size.x, size.y, size.z, 1);
+
       ortho.left = -span * aspect;
       ortho.right = span * aspect;
       ortho.top = span;
       ortho.bottom = -span;
+
       ortho.position.copy(target).add(dir.multiplyScalar(span * 2));
       ortho.up.copy(camera.up);
       ortho.lookAt(target);
@@ -733,7 +745,7 @@ export function createToolsDock(app, theme) {
     const on = !!togGround.cb.checked;
 
     ground.visible = on;
-    renderer.shadowMap.enabled = on;
+    if (renderer.shadowMap) renderer.shadowMap.enabled = on;
     dirLight.castShadow = on;
 
     const root = getModelRoot();
@@ -753,12 +765,16 @@ export function createToolsDock(app, theme) {
     axesHelper.visible = !!togAxes.cb.checked;
   });
 
-  // Public API (optional)
+  // Public API
   return {
     setOpen: setDock,
     isOpen: () => dockOpen,
     root: ui.root,
     dock: ui.dock,
     toggleBtn: ui.toggleBtn,
+    dispose: () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+      try { ui.root.remove(); } catch (_) {}
+    },
   };
 }
