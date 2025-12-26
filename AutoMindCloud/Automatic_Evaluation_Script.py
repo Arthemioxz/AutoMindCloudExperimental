@@ -258,20 +258,22 @@ from IPython.display import display, Markdown
 
 
 
-
 # =========================================================
-# IA_CalculusSummary (FULL)
-# ✅ Converts API output:
-#    \( ... \)  ->  $ ... $
-#    \[ ... \]  ->  $$ ... $$
-# ✅ Copies EXACTLY the converted API output (not the parsed summary)
-# ✅ Copy button matches ComponentsPanel.js button (style + hover)
+# IA_CalculusSummary (FULL) — FIXED (no f-string curly-brace bugs)
+# ✅ Converts API output delimiters:
+#       \( ... \)  ->  $ ... $
+#       \[ ... \]  ->  $$ ... $$
+# ✅ Copies EXACTLY the (converted) API output text
+# ✅ Copy button matches ComponentsPanel.js button:
+#    - padding, radius, border, background, fontWeight, cursor
+#    - boxShadow, pointerEvents, transition
+#    - hover: translateY(-1px) scale(1.02), teal faint bg, teal border
 # =========================================================
 
 import requests, re, html, json, uuid
 from IPython.display import display, HTML
 
-# Optional fallback if you don't define Color elsewhere
+# If you don't define Color elsewhere, this fallback is used
 try:
     Color
 except NameError:
@@ -289,19 +291,16 @@ def _convert_tex_delims_to_dollars(s: str) -> str:
     """
     if not s:
         return ""
-
     s = s.replace("\\ (", "\\(").replace("\\ )", "\\)")
-
     # display first
     s = re.sub(r"\\\[(.*?)\\\]", r"$$\1$$", s, flags=re.S)
     # inline
     s = re.sub(r"\\\((.*?)\\\)", r"$\1$", s, flags=re.S)
-
     return s
 
 
 # =========================================================
-# 🔹 POLLI_TEXT: cliente robusto
+# 🔹 POLLI_TEXT: robust client (returns converted output)
 # =========================================================
 def polli_text(
     prompt: str,
@@ -336,7 +335,7 @@ def polli_text(
 
 
 # =====================================
-# 🔹 Utilidades de limpieza y parsing
+# 🔹 Cleaning & parsing
 # =====================================
 _num_pat = re.compile(r"^\s*(\d+)[\.\)]\s+(.*)")
 
@@ -357,24 +356,35 @@ def _looks_like_heading(line: str) -> bool:
     return any(rx.match(line.strip()) for rx in _heading_regexes)
 
 
+def _strip_boilerplate(s: str) -> str:
+    s = (s or "").lstrip()
+    s = re.sub(
+        r"^(claro|por supuesto|aquí tienes|a continuación).*?\n+",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    lines = [l.rstrip() for l in s.splitlines()]
+    lines = [l for l in lines if not _looks_like_heading(l)]
+    return "\n".join(lines).strip()
+
+
+# ========= escapes HTML but keeps math blocks ($...$, $$...$$) =========
 def _escape_keep_math(s: str) -> str:
-    # Keep $...$ and $$...$$ segments unescaped, escape the rest
-    math_pattern = re.compile(r"(\$\$.*?\$\$|\$.*?\$|\\\[.*?\\\]|\\\(.*?\\\))", re.S)
+    s = s or ""
+
+    # detect math segments
+    math_pattern = re.compile(r"(\$\$.*?\$\$|\$.*?\$)", re.S)
     math_ops_re = re.compile(r"(\\[a-zA-Z]+|[_^=+\-*/=])")
 
     def _maybe_unmath(seg: str) -> str:
-        # Keep $$...$$ always
+        # Always keep display math
         if seg.startswith("$$") and seg.endswith("$$"):
             return seg
 
-        # Inline $...$
+        # Inline math $...$
         if seg.startswith("$") and seg.endswith("$"):
             inner = seg[1:-1]
-        # Legacy delimiters (shouldn't happen often after conversion, but safe)
-        elif seg.startswith("\\(") and seg.endswith("\\)"):
-            inner = seg[2:-2]
-        elif seg.startswith("\\[") and seg.endswith("\\]"):
-            inner = seg[2:-2]
         else:
             return seg
 
@@ -385,7 +395,7 @@ def _escape_keep_math(s: str) -> str:
         tokens = inner_stripped.replace("\n", " ").split()
         has_math_ops = bool(math_ops_re.search(inner_stripped))
 
-        # If it's basically a sentence, escape it (avoid math delimiters around text)
+        # Heuristic: if it's basically a sentence, don't treat as math
         if len(tokens) >= 6 and not has_math_ops:
             return html.escape(inner_stripped)
 
@@ -399,8 +409,6 @@ def _escape_keep_math(s: str) -> str:
         if len(tokens) >= 4 and not has_math_ops and letters_ratio > 0.6:
             return html.escape(inner_stripped)
 
-        # Otherwise keep as math
-        # Preserve original seg (so delimiters remain)
         return seg
 
     parts = math_pattern.split(s)
@@ -415,23 +423,11 @@ def _escape_keep_math(s: str) -> str:
     return "".join(out)
 
 
-def _strip_boilerplate(s: str) -> str:
-    s = s.lstrip()
-    s = re.sub(
-        r"^(claro|por supuesto|aquí tienes|a continuación).*?\n+",
-        "",
-        s,
-        flags=re.IGNORECASE,
-    )
-    lines = [l.rstrip() for l in s.splitlines()]
-    lines = [l for l in lines if not _looks_like_heading(l)]
-    return "\n".join(lines).strip()
-
-
 def _split_summary_and_steps(text: str):
     text = _strip_boilerplate(text)
     lines = [re.sub(r"\s+", " ", l).strip() for l in text.splitlines() if l.strip()]
 
+    # remove headings like "1. Resumen", "2. Pasos"
     lines = [
         re.sub(r"^\s*\(?\s*1\s*\)?\s*\.?\s*Resumen\s*:?\s*", "", l, flags=re.IGNORECASE)
         for l in lines
@@ -477,7 +473,8 @@ def _safe_textarea_payload(s: str) -> str:
 
 
 # =====================================
-# 🔹 Render + MathJax + Copy API output (Components button)
+# 🔹 Render HTML + MathJax + Copy converted API output
+# (NO f-strings here to avoid NameError with JS braces)
 # =====================================
 def _render_html(summary: str, steps: list, font_type: str, language: str, api_output_text_converted: str):
     uid = uuid.uuid4().hex[:10]
@@ -499,199 +496,217 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, api_o
         copied_label = "¡Copiado!"
         copy_fail_label = "No se pudo copiar"
 
-    # Match ComponentsPanel.js button look/feel
     teal = Color or "#0ea5a6"
     tealFaint = "rgba(14,165,166,0.12)"
     stroke = "rgba(0,0,0,0.15)"
     bgPanel = "rgba(255,255,255,0.92)"
     shadow = "0 10px 25px rgba(0,0,0,0.12)"
 
-    css = f"""
+    steps_html = ""
+    if steps:
+        steps_html = "<div class='title title2'>__TITLE_STEPS__</div>" + "".join(
+            f'<p class="p step"><span class="idx">{i}.</span>{_escape_keep_math(s)}</p>'
+            for i, s in enumerate(steps, 1)
+        )
+
+    template = """
 <link href="https://fonts.googleapis.com/css2?family=Anton:wght@400;700&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;600&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link href="https://fonts.cdnfonts.com/css/latin-modern-roman" rel="stylesheet">
+
 <style>
-  .calc-wrap {{
+  .calc-wrap {
     max-width:980px;
     margin:8px auto;
     padding:8px 4px;
-    font-family:'{font_type}','Fira Sans',system-ui;
+    font-family: '__FONT__','Fira Sans',system-ui;
     position:relative;
-  }}
+  }
 
-  .title-row {{
+  .title-row {
     display:flex;
     align-items:center;
     justify-content:space-between;
     gap:12px;
     margin:8px 0 10px;
-  }}
+  }
 
-  .title {{
+  .title {
     font-family:'Anton',sans-serif;
-    color:{teal};
+    color: __TEAL__;
     font-size:22px;
     font-weight:700;
     letter-spacing:1.5px;
     margin:0;
-  }}
+  }
 
-  /* EXACT ComponentsPanel.js-like button base style */
-  .copy-btn {{
-    padding:8px 12px;
-    border-radius:12px;
-    border:1px solid {stroke};
-    background:{bgPanel};
-    color:#111;
-    font-weight:700;
-    cursor:pointer;
-    box-shadow:{shadow};
-    transition:all .12s ease;
-    pointer-events:auto;
-    user-select:none;
-  }}
+  .title2 { margin-top:14px; }
 
-  .copy-msg {{
+  /* ComponentsPanel.js-like button base style */
+  .copy-btn {
+    padding: 8px 12px;
+    border-radius: 12px;
+    border: 1px solid __STROKE__;
+    background: __BGPANEL__;
+    color: #111;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: __SHADOW__;
+    pointer-events: auto;
+    transition: all .12s ease;
+    user-select: none;
+  }
+
+  .copy-msg {
     font-size:12px;
     opacity:0.85;
-    color:{teal};
+    color: __TEAL__;
     min-width:110px;
     margin-left:10px;
-  }}
+  }
 
-  .p {{
+  .p {
     font-size:18px;
     line-height:1.6;
     margin:8px 0;
-  }}
-  .summary {{
-    color:{teal};
-  }}
-  .step {{
-    margin:10px 0;
-    color:{teal};
-  }}
-  .idx {{
-    margin-right:8px;
-    font-weight:900;
-  }}
+  }
 
-  .copy-src {{
+  .summary { color: __TEAL__; }
+  .step { margin:10px 0; color: __TEAL__; }
+  .idx { margin-right:8px; font-weight:900; }
+
+  /* hidden textarea for robust copying */
+  .copy-src {
     position:absolute;
     left:-9999px;
     top:-9999px;
     width:1px;
     height:1px;
     opacity:0;
-  }}
+  }
 </style>
 
 <script>
-window.MathJax={{
-  tex:{
-    inlineMath:[['$','$'],['\\\\(','\\\\)']],
-    displayMath:[['$$','$$'],['\\\\[','\\\\]']]
+window.MathJax = {
+  tex: {
+    inlineMath: [['$','$'], ['\\\\(','\\\\)']],
+    displayMath: [['$$','$$'], ['\\\\[','\\\\]']]
   },
-  options:{skipHtmlTags:['script','noscript','style','textarea','pre','code']}
-}};
+  options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
+};
 </script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
 
-<script>
-(function() {{
-  const TEAL = "{teal}";
-  const TEAL_FAINT = "{tealFaint}";
-  const STROKE = "{stroke}";
-  const BG_PANEL = "{bgPanel}";
+<div class="calc-wrap">
+  <div class="title-row">
+    <div class="title">__TITLE_SUMMARY__</div>
+    <div>
+      <button id="__BTN_ID__" class="copy-btn">__COPY_LABEL__</button>
+      <span id="__MSG_ID__" class="copy-msg"></span>
+    </div>
+  </div>
 
-  function setMsg(text) {{
-    const el = document.getElementById("{msg_id}");
+  <textarea id="__COPY_SRC_ID__" class="copy-src" readonly>__COPY_TEXT__</textarea>
+
+  <p class="p summary">__SUMMARY_HTML__</p>
+
+  __STEPS_HTML__
+</div>
+
+<script>
+(function () {
+  const TEAL = "__TEAL__";
+  const TEAL_FAINT = "__TEAL_FAINT__";
+  const STROKE = "__STROKE__";
+  const BG_PANEL = "__BGPANEL__";
+
+  function setMsg(text) {
+    const el = document.getElementById("__MSG_ID__");
     if (!el) return;
     el.textContent = text || "";
-    if (text) {{
+    if (text) {
       clearTimeout(el.__t);
-      el.__t = setTimeout(() => el.textContent = "", 1200);
-    }}
-  }}
+      el.__t = setTimeout(() => { el.textContent = ""; }, 1200);
+    }
+  }
 
-  async function copyConvertedApiOutput() {{
-    const ta = document.getElementById("{copy_src_id}");
+  async function doCopy() {
+    const ta = document.getElementById("__COPY_SRC_ID__");
     if (!ta) return;
     const text = ta.value || "";
 
-    try {{
-      if (navigator.clipboard && window.isSecureContext) {{
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text);
-        setMsg("{copied_label}");
+        setMsg("__COPIED__");
         return;
-      }}
-    }} catch (e) {{}}
+      }
+    } catch (e) {}
 
-    try {{
+    try {
       ta.style.opacity = "1";
       ta.select();
       ta.setSelectionRange(0, ta.value.length);
       const ok = document.execCommand("copy");
       ta.style.opacity = "0";
-      setMsg(ok ? "{copied_label}" : "{copy_fail_label}");
-    }} catch (e) {{
-      setMsg("{copy_fail_label}");
-    }}
-  }}
+      setMsg(ok ? "__COPIED__" : "__COPY_FAIL__");
+    } catch (e) {
+      setMsg("__COPY_FAIL__");
+    }
+  }
 
-  function wireButton() {{
-    const btn = document.getElementById("{btn_id}");
+  function wire() {
+    const btn = document.getElementById("__BTN_ID__");
     if (!btn) return;
 
-    // Hover behavior EXACTLY like ComponentsPanel.js
-    btn.addEventListener("mouseenter", () => {{
+    // Hover like ComponentsPanel.js
+    btn.addEventListener("mouseenter", () => {
       btn.style.transform = "translateY(-1px) scale(1.02)";
       btn.style.background = TEAL_FAINT;
       btn.style.borderColor = TEAL;
-    }});
-    btn.addEventListener("mouseleave", () => {{
+    });
+    btn.addEventListener("mouseleave", () => {
       btn.style.transform = "none";
       btn.style.background = BG_PANEL;
       btn.style.borderColor = STROKE;
-    }});
-    btn.addEventListener("click", () => copyConvertedApiOutput());
-  }}
+    });
 
-  setTimeout(wireButton, 0);
-}})();
+    btn.addEventListener("click", doCopy);
+  }
+
+  setTimeout(wire, 0);
+})();
 </script>
 """
 
-    textarea = f"""
-<textarea id="{copy_src_id}" class="copy-src" readonly>{_safe_textarea_payload(api_output_text_converted)}</textarea>
-"""
+    out = template
+    out = out.replace("__FONT__", str(font_type))
+    out = out.replace("__TEAL__", str(teal))
+    out = out.replace("__TEAL_FAINT__", str(tealFaint))
+    out = out.replace("__STROKE__", str(stroke))
+    out = out.replace("__BGPANEL__", str(bgPanel))
+    out = out.replace("__SHADOW__", str(shadow))
 
-    body = f"""
-<div class="calc-wrap">
-  <div class="title-row">
-    <div class="title">{title_resumen}</div>
-    <div>
-      <button id="{btn_id}" class="copy-btn">{copy_label}</button>
-      <span id="{msg_id}" class="copy-msg"></span>
-    </div>
-  </div>
+    out = out.replace("__TITLE_SUMMARY__", title_resumen)
+    out = out.replace("__TITLE_STEPS__", title_pasos)
+    out = out.replace("__COPY_LABEL__", copy_label)
 
-  {textarea}
+    out = out.replace("__BTN_ID__", btn_id)
+    out = out.replace("__MSG_ID__", msg_id)
+    out = out.replace("__COPY_SRC_ID__", copy_src_id)
 
-  <p class="p summary">{_escape_keep_math(summary)}</p>
+    out = out.replace("__COPIED__", copied_label)
+    out = out.replace("__COPY_FAIL__", copy_fail_label)
 
-  {"<div class='title' style='margin-top:14px;'>" + title_pasos + "</div>" if steps else ""}
-  {''.join(
-      f'<p class="p step"><span class="idx">{i}.</span>{_escape_keep_math(s)}</p>'
-      for i, s in enumerate(steps, 1)
-  )}
-</div>
-"""
-    return css + body
+    out = out.replace("__COPY_TEXT__", _safe_textarea_payload(api_output_text_converted))
+    out = out.replace("__SUMMARY_HTML__", _escape_keep_math(summary))
+    out = out.replace("__STEPS_HTML__", steps_html)
+
+    return out
 
 
 # =====================================
-# 🔹 Función principal
+# 🔹 Main function
 # =====================================
 def IA_CalculusSummary(
     numero: int,
@@ -699,15 +714,15 @@ def IA_CalculusSummary(
     font_type: str = "Latin Modern Roman",
 ):
     """
-    Usa la variable global 'documento' como entrada.
+    Uses global 'documento' as input.
     Render: Summary + Steps (MathJax)
-    Copy button: copies the converted API output ($/$$ delimiters)
+    Copy button: copies the converted API output ($/$$ delimiters) exactly
     """
     global documento
 
     lang = (language or "spanish").strip().lower()
 
-    # IMPORTANT: ask the model for dollars too (but we ALSO convert anyway)
+    # We ASK for $/$$, but we ALSO convert whatever comes back, to guarantee $/$$
     if lang.startswith("en"):
         base = (
             "Write in English, academic tone, formal and impersonal (third person). "
@@ -717,9 +732,7 @@ def IA_CalculusSummary(
             "(2) then a numbered list of steps 1., 2., 3., etc. "
             "IMPORTANT: All mathematical notation MUST be correctly delimited: "
             "use $ ... $ for inline formulas and $$ ... $$ for display equations. "
-            "Use LaTeX ONLY for short mathematical expressions, never for whole sentences. "
-            "If the model tries to wrap an entire sentence with $ ... $, rewrite it so that "
-            "only the specific mathematical expressions are in LaTeX."
+            "Use LaTeX ONLY for short mathematical expressions, never for whole sentences."
         )
     else:
         base = (
@@ -730,10 +743,7 @@ def IA_CalculusSummary(
             "(2) luego una enumeración con pasos numerados 1., 2., 3., etc. "
             "IMPORTANTE: Toda notación matemática DEBE ir delimitada correctamente: "
             "usa $ ... $ para fórmulas en línea y $$ ... $$ para ecuaciones en bloque. "
-            "Usa LaTeX SOLO para expresiones matemáticas cortas, nunca para oraciones completas. "
-            "Si el modelo intenta rodear una oración completa con $ ... $, "
-            "reformula la oración para que únicamente las expresiones matemáticas específicas "
-            "aparezcan en LaTeX."
+            "Usa LaTeX SOLO para expresiones matemáticas cortas, nunca para oraciones completas."
         )
 
     if numero == 1:
@@ -747,12 +757,12 @@ def IA_CalculusSummary(
 
     prompt = f"{base}{detalle}\n\nContenido a resumir / Content to summarize:\n\n{documento}"
 
-    # 1) Get API output (already converted to $/$$ by polli_text)
-    api_out_converted = polli_text(prompt)
+    # 1) get API output (already converted to $/$$)
+    api_out = polli_text(prompt)
 
-    # 2) Parse for display
-    summary, steps = _split_summary_and_steps(api_out_converted)
+    # 2) parse for display
+    summary, steps = _split_summary_and_steps(api_out)
 
-    # 3) Render HTML; copy button copies api_out_converted exactly
-    html_out = _render_html(summary, steps, font_type, language, api_output_text_converted=api_out_converted)
+    # 3) render; copy button copies api_out exactly
+    html_out = _render_html(summary, steps, font_type, language, api_out)
     display(HTML(html_out))
