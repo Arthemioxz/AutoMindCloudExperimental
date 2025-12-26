@@ -1,532 +1,543 @@
-// /viewer/ui/ToolsDock.js
-// Floating "Viewer Tools" dock (left) + toggle button (top-right)
-// - Solid/Wireframe/X-Ray/Ghost render
-// - Section plane on whole robot
-// - Iso/Top/Front/Right tween views
-// - Projection switch
-// - Grid / Ground+Shadows / Axes toggles
-// - Snapshot button
-// - Hotkeys: 't' or 'c' toggle tools
-
+// /viewer/ui/ToolsDock.js / checkpoint
+// Floating tools dock: render modes, explode (smoothed & robust), section plane (ROBOT ONLY), views, projection, scene toggles, snapshot.
 /* global THREE */
 
 export function createToolsDock(app, theme) {
-  if (!app || !app.scene || !app.renderer || !app.camera || !app.controls) {
-    throw new Error('[ToolsDock] Missing required viewer APIs');
+  if (!app || !app.camera || !app.controls || !app.renderer)
+    throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
+
+  // --- Normalize theme to flat keys (works with your Theme.js nested shape) ---
+  if (theme && theme.colors) {
+    theme.teal       ??= theme.colors.teal;
+    theme.tealSoft   ??= theme.colors.tealSoft;
+    theme.tealFaint  ??= theme.colors.tealFaint;
+    theme.bgPanel    ??= theme.colors.panelBg;
+    theme.bgCanvas   ??= theme.colors.canvasBg;
+    theme.stroke     ??= theme.colors.stroke;
+    theme.text       ??= theme.colors.text;
+    theme.textMuted  ??= theme.colors.textMuted;
   }
-  if (typeof THREE === 'undefined') {
-    throw new Error('[ToolsDock] THREE is not defined (load three.js before ToolsDock.js)');
+  if (theme && theme.shadows) {
+    theme.shadow ??= (theme.shadows.lg || theme.shadows.md || theme.shadows.sm);
   }
 
-  // Theme defaults
-  theme = theme || {};
-  theme.colors = theme.colors || {};
-  const TEAL = theme.colors.teal ?? '#0ea5a6';
-  const BORDER = theme.colors.border ?? '#e6e6e6';
-  const TEXT = theme.colors.text ?? '#0b3b3c';
-  const MUTED = theme.colors.muted ?? '#577e7f';
-  const SHADOW = theme.colors.shadow ?? 'rgba(0,0,0,.14)';
-  const PANEL_BG = theme.colors.panelBg ?? '#ffffff';
-  const HDR_BG = theme.colors.hdrBg ?? TEAL;
-  const HDR_TEXT = theme.colors.hdrText ?? '#ffffff';
-
-  // ✅ CSS variable equivalent to:
+  // ============================================================
+  // ✅ 50% UI SIZE SYSTEM (ONLY ADDITION)
+  // Equivalent to:
   // :root { --tools-scale: 0.5; }
-  try {
-    document.documentElement.style.setProperty('--tools-scale', '0.5');
-  } catch (_) {
-    // ignore
-  }
+  // ============================================================
+  try { document.documentElement.style.setProperty('--tools-scale', '0.5'); } catch (_) {}
 
-  // ✅ Single source of truth for CLOSED translateX
-  const CLOSED_TX = -520;
-
-  const renderer = app.renderer;
-  const scene = app.scene;
-
-  const persp = app.camera; // main
-  const ortho = app.orthoCamera || null;
-  let camera = app.camera;
-  const controls = app.controls;
-
-  // Helpers
-  const clamp01 = (x) => Math.max(0, Math.min(1, x));
-  const easeInOutCubic = (t) =>
-    t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-
-  // UI root
+  // ---------- DOM ----------
   const ui = {
     root: document.createElement('div'),
     dock: document.createElement('div'),
-    toggleBtn: document.createElement('button'),
+    header: document.createElement('div'),
+    title: document.createElement('div'),
+    fitBtn: document.createElement('button'),
+    body: document.createElement('div'),
+    toggleBtn: document.createElement('button')
   };
 
-  Object.assign(ui.root.style, {
-    position: 'absolute',
-    inset: '0',
-    pointerEvents: 'none',
-    zIndex: '9999',
-    fontFamily:
-      '"Computer Modern","CMU Serif",Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial',
-  });
-
-  // Panel base
-  Object.assign(ui.dock.style, {
-    position: 'absolute',
-    top: '54px',
-    left: '14px',
-    width: '440px',
-    borderRadius: '18px',
-    border: `1px solid ${BORDER}`,
-    background: PANEL_BG,
-    boxShadow: `0 12px 36px ${SHADOW}`,
-    overflow: 'hidden',
-
-    // ✅ start CLOSED like STEP script
-    opacity: '0',
-    pointerEvents: 'none',
-
-    willChange: 'transform, opacity',
-    transformOrigin: 'top left',
-    transform: `translateX(${CLOSED_TX}px) scale(var(--tools-scale))`,
-    transition:
-      'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 180ms ease',
-  });
-
-  // Toggle button (top-right floating)
-  Object.assign(ui.toggleBtn.style, {
-    position: 'absolute',
-    right: '14px',
-    top: '14px',
-    pointerEvents: 'auto',
-    padding: '8px 12px',
-    borderRadius: '999px',
-    border: `1px solid ${BORDER}`,
-    background: '#ffffff',
-    color: TEXT,
-    fontWeight: '700',
-    cursor: 'pointer',
-    boxShadow: `0 12px 36px ${SHADOW}`,
-    zIndex: '10000',
-    transition:
-      'transform 120ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease',
-    userSelect: 'none',
-  });
-
-  // Apply scale to floating toggle button (keeps hover animations)
-  ui.toggleBtn.style.transformOrigin = 'top right';
-  ui.toggleBtn.style.transform = `scale(var(--tools-scale))`;
-
-  ui.toggleBtn.addEventListener('mouseenter', () => {
-    ui.toggleBtn.style.transform =
-      `translateY(-1px) scale(calc(var(--tools-scale) * 1.02))`;
-    ui.toggleBtn.style.background = '#ecfeff';
-    ui.toggleBtn.style.borderColor = TEAL;
-    ui.toggleBtn.style.boxShadow = '0 16px 40px rgba(0,0,0,.18)';
-  });
-  ui.toggleBtn.addEventListener('mouseleave', () => {
-    ui.toggleBtn.style.transform = `scale(var(--tools-scale))`;
-    ui.toggleBtn.style.background = '#ffffff';
-    ui.toggleBtn.style.borderColor = BORDER;
-    ui.toggleBtn.style.boxShadow = `0 12px 36px ${SHADOW}`;
-  });
-
-  // Header
-  const hdr = document.createElement('div');
-  Object.assign(hdr.style, {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: '8px',
-    padding: '10px 12px',
-    borderBottom: `1px solid ${BORDER}`,
-    background: HDR_BG,
-  });
-
-  const hdrLeft = document.createElement('div');
-  hdrLeft.textContent = 'Viewer Tools';
-  Object.assign(hdrLeft.style, { fontWeight: '800', color: HDR_TEXT });
-
-  const hdrRight = document.createElement('div');
-  Object.assign(hdrRight.style, {
-    display: 'flex',
-    gap: '6px',
-    alignItems: 'center',
-  });
-
-  const mkButton = (text) => {
+  // ---------- Helpers (with hover animations intact) ----------
+  const mkButton = (label) => {
     const b = document.createElement('button');
-    b.textContent = text;
+    b.textContent = label;
     Object.assign(b.style, {
       padding: '8px 12px',
       borderRadius: '12px',
-      border: `1px solid ${BORDER}`,
-      background: '#ffffff',
-      color: TEXT,
+      border: `1px solid ${theme.stroke}`,
+      background: theme.bgPanel,
+      color: theme.text,
       fontWeight: '700',
       cursor: 'pointer',
-      boxShadow: '0 10px 24px rgba(0,0,0,.12)',
-      transition:
-        'transform 120ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease',
-      userSelect: 'none',
+      pointerEvents: 'auto',
+      boxShadow: theme.shadow,
+      transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease'
     });
+    // Hover/active animations (KEEP)
     b.addEventListener('mouseenter', () => {
       b.style.transform = 'translateY(-1px) scale(1.02)';
-      b.style.background = '#ecfeff';
-      b.style.borderColor = TEAL;
-      b.style.boxShadow = '0 16px 40px rgba(0,0,0,.16)';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.tealFaint;
+      b.style.borderColor = theme.tealSoft ?? theme.teal;
     });
     b.addEventListener('mouseleave', () => {
       b.style.transform = 'none';
-      b.style.background = '#ffffff';
-      b.style.borderColor = BORDER;
-      b.style.boxShadow = '0 10px 24px rgba(0,0,0,.12)';
+      b.style.boxShadow = theme.shadow;
+      b.style.background = theme.bgPanel;
+      b.style.borderColor = theme.stroke;
+    });
+    b.addEventListener('mousedown', () => {
+      b.style.transform = 'translateY(0) scale(0.99)';
+    });
+    b.addEventListener('mouseup', () => {
+      b.style.transform = 'translateY(-1px) scale(1.02)';
     });
     return b;
   };
 
-  const snapBtn = mkButton('Snapshot');
-  snapBtn.style.padding = '6px 12px';
-  snapBtn.style.borderRadius = '999px';
-  hdrRight.appendChild(snapBtn);
-
-  hdr.appendChild(hdrLeft);
-  hdr.appendChild(hdrRight);
-
-  // Body
-  const body = document.createElement('div');
-  Object.assign(body.style, { padding: '10px 12px' });
-
-  const row = (label, child) => {
-    const r = document.createElement('div');
-    Object.assign(r.style, {
+  const mkRow = (label, child) => {
+    const row = document.createElement('div');
+    Object.assign(row.style, {
       display: 'grid',
-      gridTemplateColumns: label ? '120px 1fr' : '1fr',
+      gridTemplateColumns: '120px 1fr',
       gap: '10px',
       alignItems: 'center',
-      margin: '6px 0',
+      margin: '6px 0'
     });
-
-    if (label) {
-      const l = document.createElement('div');
-      l.textContent = label;
-      Object.assign(l.style, { color: MUTED, fontWeight: '700' });
-      r.appendChild(l);
-    }
-
-    r.appendChild(child);
-    return r;
+    const l = document.createElement('div');
+    l.textContent = label;
+    Object.assign(l.style, { color: theme.textMuted, fontWeight: '700' });
+    row.appendChild(l);
+    row.appendChild(child);
+    return row;
   };
 
-  const mkSelect = (opts, val) => {
-    const s = document.createElement('select');
-    Object.assign(s.style, {
+  const mkSelect = (options, value) => {
+    const sel = document.createElement('select');
+    options.forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o; opt.textContent = o; sel.appendChild(opt);
+    });
+    sel.value = value;
+    Object.assign(sel.style, {
       padding: '8px',
-      border: `1px solid ${BORDER}`,
+      border: `1px solid ${theme.stroke}`,
       borderRadius: '10px',
-      accentColor: TEAL,
-      width: '100%',
+      pointerEvents: 'auto',
+      background: theme.bgPanel,
+      color: theme.text,
+      transition: 'border-color 120ms ease, box-shadow 120ms ease'
     });
-    opts.forEach((o) => {
-      const op = document.createElement('option');
-      op.value = o;
-      op.textContent = o;
-      s.appendChild(op);
+    sel.addEventListener('focus', () => {
+      sel.style.borderColor = theme.teal;
+      sel.style.boxShadow = theme.shadow;
     });
-    s.value = val;
-    return s;
+    sel.addEventListener('blur', () => {
+      sel.style.borderColor = theme.stroke;
+      sel.style.boxShadow = 'none';
+    });
+    return sel;
   };
 
-  const mkSlider = (min, max, step, val) => {
+  const mkSlider = (min, max, step, value) => {
     const s = document.createElement('input');
-    s.type = 'range';
-    s.min = String(min);
-    s.max = String(max);
-    s.step = String(step);
-    s.value = String(val);
-    Object.assign(s.style, { padding: '8px', accentColor: TEAL, width: '100%' });
+    s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
+    s.style.width = '100%';
+    s.style.accentColor = theme.teal;
     return s;
   };
 
-  const mkToggle = (label, init = false) => {
+  const mkToggle = (label) => {
     const wrap = document.createElement('label');
-    Object.assign(wrap.style, {
-      display: 'flex',
-      gap: '8px',
-      alignItems: 'center',
-      cursor: 'pointer',
-      userSelect: 'none',
-    });
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = init;
-    cb.style.accentColor = TEAL;
-    const sp = document.createElement('span');
-    sp.textContent = label;
-    Object.assign(sp.style, { fontWeight: '700', color: TEXT });
-    wrap.appendChild(cb);
-    wrap.appendChild(sp);
+    const cb = document.createElement('input'); cb.type = 'checkbox';
+    const span = document.createElement('span'); span.textContent = label;
+    Object.assign(wrap.style, { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', pointerEvents: 'auto' });
+    cb.style.accentColor = theme.teal;
+    Object.assign(span.style, { fontWeight: '700', color: theme.text });
+    wrap.appendChild(cb); wrap.appendChild(span);
     return { wrap, cb };
   };
 
-  const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
-
-  const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
-  const secDist = mkSlider(-1, 1, 0.001, 0);
-  const secToggle = mkToggle('Enable section', false);
-  const secPlaneToggle = mkToggle('Show slice plane', false);
-
-  const viewsRow = document.createElement('div');
-  Object.assign(viewsRow.style, {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(4,1fr)',
-    gap: '8px',
-    margin: '8px 0',
+  // Root overlay
+  Object.assign(ui.root.style, {
+    position: 'absolute',
+    left: '0', top: '0',
+    width: '100%', height: '100%',
+    pointerEvents: 'none',
+    zIndex: '9999',
+    fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
   });
 
-  const bIso = mkButton('Iso');
-  const bTop = mkButton('Top');
-  const bFront = mkButton('Front');
-  const bRight = mkButton('Right');
-  [bIso, bTop, bFront, bRight].forEach((b) => {
-    b.style.padding = '8px';
-    b.style.borderRadius = '10px';
-    b.style.boxShadow = '0 10px 24px rgba(0,0,0,.10)';
-    viewsRow.appendChild(b);
+  // Dock
+  Object.assign(ui.dock.style, {
+    position: 'absolute',
+    right: '14px',
+    top: '14px',
+    width: '440px',
+    background: theme.bgPanel,
+    border: `1px solid ${theme.stroke}`,
+    borderRadius: '18px',
+    boxShadow: theme.shadow,
+    pointerEvents: 'auto',
+    overflow: 'hidden',
+    display: 'none',
+
+    // ✅ scale system (ONLY ADDITION)
+    transformOrigin: 'top right',
+    transform: 'scale(var(--tools-scale))'
   });
 
-  const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
+  Object.assign(ui.header.style, {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '10px 12px',
+    borderBottom: `1px solid ${theme.stroke}`,
+    background: '#0ea5a6'
+  });
 
-  const togGrid = mkToggle('Grid', false);
-  const togGround = mkToggle('Ground & shadows', false);
-  const togAxes = mkToggle('XYZ axes', false);
+  ui.title.textContent = 'Viewer Tools';
+  Object.assign(ui.title.style, { fontWeight: '800', color: '#ffffff' });
 
-  body.appendChild(row('Render mode', renderModeSel));
-  body.appendChild(row('Section axis', axisSel));
-  body.appendChild(row('Section dist', secDist));
-  body.appendChild(row('', secToggle.wrap));
-  body.appendChild(row('', secPlaneToggle.wrap));
-  body.appendChild(row('Views', viewsRow));
-  body.appendChild(row('Projection', projSel));
-  body.appendChild(row('', togGrid.wrap));
-  body.appendChild(row('', togGround.wrap));
-  body.appendChild(row('', togAxes.wrap));
+  Object.assign(ui.body.style, { padding: '10px 12px' });
 
-  ui.dock.appendChild(hdr);
-  ui.dock.appendChild(body);
-
+  // Floating toggle button (with hover)
   ui.toggleBtn.textContent = 'Open Tools';
+  Object.assign(ui.toggleBtn.style, {
+    position: 'absolute',
+    right: '14px',
+    top: '14px',
+    padding: '8px 12px',
+    borderRadius: '12px',
+    border: `1px solid ${theme.stroke}`,
+    background: theme.bgPanel,
+    color: theme.text,
+    fontWeight: '700',
+    boxShadow: theme.shadow,
+    pointerEvents: 'auto',
+    zIndex: '10000',
+    transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease',
 
-  // Mount
-  const container =
-    app.container ||
-    app.domElement?.parentElement ||
-    renderer.domElement?.parentElement ||
-    document.body;
+    // ✅ scale system (ONLY ADDITION)
+    transformOrigin: 'top right',
+    transform: 'scale(var(--tools-scale))'
+  });
+  ui.toggleBtn.addEventListener('mouseenter', () => {
+    // ✅ keep hover animation but preserve scale
+    ui.toggleBtn.style.transform = 'translateY(-1px) scale(calc(var(--tools-scale) * 1.02))';
+    ui.toggleBtn.style.background = theme.tealFaint;
+    ui.toggleBtn.style.borderColor = theme.tealSoft ?? theme.teal;
+  });
+  ui.toggleBtn.addEventListener('mouseleave', () => {
+    // ✅ restore scaled base
+    ui.toggleBtn.style.transform = 'scale(var(--tools-scale))';
+    ui.toggleBtn.style.background = theme.bgPanel;
+    ui.toggleBtn.style.borderColor = theme.stroke;
+  });
 
-  if (container && container.style) {
-    container.style.position = container.style.position || 'relative';
-  }
+  // Header button (Snapshot)
+  ui.fitBtn = mkButton('Snapshot');
+  Object.assign(ui.fitBtn.style, { padding: '6px 10px', borderRadius: '10px' });
 
-  container.appendChild(ui.root);
+  ui.header.appendChild(ui.title);
+  ui.header.appendChild(ui.fitBtn);
+  ui.dock.appendChild(ui.header);
+  ui.dock.appendChild(ui.body);
   ui.root.appendChild(ui.dock);
   ui.root.appendChild(ui.toggleBtn);
 
-  // State
-  let dockOpen = false;
+  // Attach
+  const host = (app?.renderer?.domElement?.parentElement) || document.body;
+  host.appendChild(ui.root);
 
-  function setDock(open) {
-    dockOpen = !!open;
-    if (dockOpen) {
-      ui.dock.style.transform = `translateX(0px) scale(var(--tools-scale))`;
+  // ---------- Controls ----------
+  const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
+
+  // Explode (slider drives a smoothed spring tween; see ExplodeManager below)
+  const explodeSlider = mkSlider(0, 1, 0.01, 0);
+
+  // Section
+  const axisSel = mkSelect(['X', 'Y', 'Z'], 'X');
+  const secDist = mkSlider(-1, 1, 0.001, 0);
+  const secEnable = mkToggle('Enable section');
+  const secShowPlane = mkToggle('Show slice plane');
+
+  // Views row (NO per-row Snapshot button)
+  const rowCam = document.createElement('div');
+  Object.assign(rowCam.style, { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', margin: '8px 0' });
+  const bIso = mkButton('Iso'), bTop = mkButton('Top'), bFront = mkButton('Front'), bRight = mkButton('Right');
+  [bIso, bTop, bFront, bRight].forEach(b => { b.style.padding = '8px'; b.style.borderRadius = '10px'; });
+
+  // Projection + Scene toggles
+  const projSel = mkSelect(['Perspective', 'Orthographic'], 'Perspective');
+  const togGrid = mkToggle('Grid');
+  const togGround = mkToggle('Ground & shadows');
+  const togAxes = mkToggle('XYZ axes');
+
+  // Assemble rows
+  ui.body.appendChild(mkRow('Render mode', renderModeSel));
+  ui.body.appendChild(mkRow('Explode', explodeSlider));
+  ui.body.appendChild(mkRow('Section axis', axisSel));
+  ui.body.appendChild(mkRow('Section dist', secDist));
+  ui.body.appendChild(mkRow('', secEnable.wrap));
+  ui.body.appendChild(mkRow('', secShowPlane.wrap));
+  ui.body.appendChild(mkRow('Views', rowCam));
+  rowCam.appendChild(bIso); rowCam.appendChild(bTop); rowCam.appendChild(bFront); rowCam.appendChild(bRight);
+  ui.body.appendChild(mkRow('Projection', projSel));
+  ui.body.appendChild(mkRow('', togGrid.wrap));
+  ui.body.appendChild(mkRow('', togGround.wrap));
+  ui.body.appendChild(mkRow('', togAxes.wrap));
+
+  // ---------- Logic ----------
+
+  // ------------------ CONFIG ------------------
+  const CLOSED_TX = -520; // px, off-screen to the left
+  let isOpen = false;
+
+  // Prepare dock styles once
+  Object.assign(ui.dock.style, {
+    display: 'block',
+    willChange: 'transform, opacity',
+    transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
+    // ✅ keep translateX + scale together (ONLY CHANGE)
+    transform: `translateX(${CLOSED_TX}px) scale(var(--tools-scale))`,
+    opacity: '0',
+    pointerEvents: 'none'
+  });
+
+  // ------------------ TWEEN LOGIC ------------------
+  function set(open) {
+    isOpen = open;
+
+    if (open) {
+      // OPEN tween
       ui.dock.style.opacity = '1';
+      ui.dock.style.transform = `translateX(0) scale(var(--tools-scale))`;
       ui.dock.style.pointerEvents = 'auto';
       ui.toggleBtn.textContent = 'Close Tools';
+      try { styleDockLeft(ui.dock); } catch (_) {}
+      syncExplodeUI();
     } else {
-      ui.dock.style.transform = `translateX(${CLOSED_TX}px) scale(var(--tools-scale))`;
+      // CLOSE tween
       ui.dock.style.opacity = '0';
+      ui.dock.style.transform = `translateX(${CLOSED_TX}px) scale(var(--tools-scale))`;
       ui.dock.style.pointerEvents = 'none';
       ui.toggleBtn.textContent = 'Open Tools';
     }
   }
 
-  // start closed
-  setDock(false);
+  // Wrappers
+  function openDock() { set(true); }
+  function closeDock() { set(false); }
 
-  ui.toggleBtn.addEventListener('click', () => setDock(!dockOpen));
+  // ------------------ EVENT ------------------
+  ui.toggleBtn.addEventListener('click', () => set(!isOpen));
 
-  // Hotkeys: t / c
-  const onKeyDown = (e) => {
-    const tag = ((e.target && e.target.tagName) || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+  // Snapshot (header only) — offscreen render target fallback (no preserveDrawingBuffer needed)
+  ui.fitBtn.addEventListener('click', () => {
+    const { renderer, scene, camera, composer } = app;
 
-    if (e.key === 't' || e.key === 'T' || e.key === 'c' || e.key === 'C') {
-      e.preventDefault();
-      setDock(!dockOpen);
-    }
-  };
-  document.addEventListener('keydown', onKeyDown, true);
-
-  // Snapshot
-  snapBtn.addEventListener('click', () => {
-    try {
-      // ensure latest frame
-      try {
-        renderer.render(scene, camera);
-      } catch (_) {}
-      const url = renderer.domElement.toDataURL('image/png');
+    const downloadURL = (url, isObjURL = false) => {
       const a = document.createElement('a');
       a.href = url;
       a.download = 'snapshot.png';
+      document.body.appendChild(a);
       a.click();
-    } catch (e) {}
+      if (isObjURL) URL.revokeObjectURL(url);
+      a.remove();
+    };
+
+    // fast path
+    try {
+      renderer.setRenderTarget(null);
+      if (composer) composer.render(); else renderer.render(scene, camera);
+      const url = renderer.domElement.toDataURL('image/png');
+      downloadURL(url);
+      return;
+    } catch (e) {
+      console.warn('[Snapshot] fast path failed, trying offscreen RT.', e);
+    }
+
+    // robust path
+    try {
+      const size = renderer.getSize(new THREE.Vector2());
+      const dpr = renderer.getPixelRatio();
+      const w = Math.max(1, Math.floor(size.x * dpr));
+      const h = Math.max(1, Math.floor(size.y * dpr));
+
+      const oldTarget = renderer.getRenderTarget();
+      const rt = new THREE.WebGLRenderTarget(w, h, { samples: 0 });
+      renderer.setRenderTarget(rt);
+      if (composer) composer.render(); else renderer.render(scene, camera);
+
+      const buffer = new Uint8Array(w * h * 4);
+      renderer.readRenderTargetPixels(rt, 0, 0, w, h, buffer);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      const imgData = ctx.createImageData(w, h);
+
+      for (let y = 0; y < h; y++) {
+        const src = (h - 1 - y) * w * 4;
+        const dst = y * w * 4;
+        imgData.data.set(buffer.subarray(src, src + w * 4), dst);
+      }
+      ctx.putImageData(imgData, 0, 0);
+
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          alert('Snapshot failed. Check CORS headers on textures/assets.');
+          return;
+        }
+        downloadURL(URL.createObjectURL(blob), true);
+      }, 'image/png');
+
+      renderer.setRenderTarget(oldTarget);
+      rt.dispose();
+    } catch (e) {
+      console.error('[Snapshot] offscreen capture failed:', e);
+      alert('Snapshot error. Likely CORS-blocked textures. Ensure servers send Access-Control-Allow-Origin and loaders use crossOrigin="anonymous".');
+    }
   });
 
-  // -------- Scene helpers (Grid/Ground/Axes) ----------
-  const grid = app.gridHelper || (() => {
-    const g = new THREE.GridHelper(10, 20, 0x0ea5a6, 0x0ea5a6);
-    g.visible = false;
-    scene.add(g);
-    app.gridHelper = g;
-    return g;
-  })();
-
-  const axesHelper = app.axesHelper || (() => {
-    const a = new THREE.AxesHelper(1);
-    a.visible = false;
-    scene.add(a);
-    app.axesHelper = a;
-    return a;
-  })();
-
-  const dirLight = app.dirLight || (() => {
-    let dl = null;
-    scene.traverse((n) => {
-      if (!dl && n && n.isDirectionalLight) dl = n;
-    });
-    if (!dl) {
-      dl = new THREE.DirectionalLight(0xffffff, 1.05);
-      dl.position.set(3, 4, 2);
-      scene.add(dl);
-    }
-    app.dirLight = dl;
-    return dl;
-  })();
-
-  const ground = app.groundPlane || (() => {
-    const mat = new THREE.ShadowMaterial({ opacity: 0.22 });
-    mat.transparent = true;
-    mat.depthWrite = false;
-    const g = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), mat);
-    g.rotation.x = -Math.PI / 2;
-    g.position.y = -0.0001;
-    g.receiveShadow = true;
-    g.visible = false;
-    scene.add(g);
-    app.groundPlane = g;
-    return g;
-  })();
-
-  // Shadows default OFF
-  if (renderer.shadowMap) {
-    renderer.shadowMap.enabled = !!renderer.shadowMap.enabled;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  }
-  dirLight.castShadow = !!dirLight.castShadow;
-
-  // Model access
-  const getModelRoot = () => app.robot || app.model || app.sceneModel || null;
-
-  // Render modes
+  // Render mode
+  renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
   function setRenderMode(mode) {
-    const root = getModelRoot();
+    const root = app.robot || app.scene;
     if (!root) return;
-    root.traverse((obj) => {
-      if (!obj.isMesh) return;
-      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-      mats.forEach((m) => {
-        if (!m) return;
-        m.wireframe = false;
-        m.transparent = false;
-        m.opacity = 1.0;
-        m.depthWrite = true;
-        m.depthTest = true;
-
-        if (mode === 'Wireframe') {
-          m.wireframe = true;
-        } else if (mode === 'X-Ray') {
-          m.transparent = true;
-          m.opacity = 0.25;
-          m.depthWrite = false;
-        } else if (mode === 'Ghost') {
-          m.transparent = true;
-          m.opacity = 0.6;
-          m.depthWrite = false;
+    root.traverse(o => {
+      if (o.isMesh && o.material) {
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) {
+          m.wireframe = (mode === 'Wireframe');
+          if (mode === 'X-Ray') {
+            m.transparent = true; m.opacity = 0.35; m.depthWrite = false; m.depthTest = true;
+          } else if (mode === 'Ghost') {
+            m.transparent = true; m.opacity = 0.70; m.depthWrite = false; m.depthTest = true;
+          } else {
+            m.transparent = false; m.opacity = 1.0; m.depthWrite = true; m.depthTest = true;
+          }
+          m.needsUpdate = true;
         }
-        m.needsUpdate = true;
-      });
+      }
     });
   }
 
-  // Section clipping
-  let secEnabled = false;
-  let secAxis = 'X';
-  let secPlaneVisible = false;
-  let secVisual = null;
+  // ============================================================
+  // SECTION PLANE — ROBOT ONLY (FIX)
+  // ============================================================
+  let secEnabled = false, secPlaneVisible = false, secAxis = 'X';
+  let sectionPlane = null, secVisual = null;
 
-  function clearSectionClipping() {
-    const root = getModelRoot();
-    if (!root) return;
-    root.traverse((obj) => {
-      if (!obj.isMesh) return;
-      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-      mats.forEach((m) => {
-        if (!m) return;
-        m.clippingPlanes = null;
-        m.needsUpdate = true;
-      });
+  // --- Helpers to apply clipping ONLY to robot meshes, without touching grid/ground/axes ---
+  function traverseRobotMeshes(fn) {
+    if (!app.robot) return;
+    app.robot.traverse((o) => {
+      if (!o || !o.isMesh || !o.geometry) return;
+      if (o.userData && o.userData.__isHoverOverlay) return;
+      fn(o);
     });
   }
 
-  function applySectionPlaneToModel(plane) {
-    const root = getModelRoot();
-    if (!root) return;
-    root.traverse((obj) => {
-      if (!obj.isMesh) return;
-      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-      mats.forEach((m) => {
-        if (!m) return;
-        m.clippingPlanes = [plane];
-        m.needsUpdate = true;
-      });
+  function setMaterialClipping(mat, plane) {
+    if (!mat) return;
+    mat.clippingPlanes = plane ? [plane] : null;
+    // keep defaults sane
+    mat.clipIntersection = false;
+    mat.clipShadows = true;
+    mat.needsUpdate = true;
+  }
+
+  // We avoid affecting shared materials by cloning robot materials once per mesh
+  function ensureClippableMaterials(mesh) {
+    if (!mesh || !mesh.material) return;
+    if (mesh.userData && mesh.userData.__clipOriginalMaterial) return;
+
+    const orig = mesh.material;
+    mesh.userData ??= {};
+    mesh.userData.__clipOriginalMaterial = orig;
+
+    if (Array.isArray(orig)) {
+      const clones = orig.map(m => (m && m.clone) ? m.clone() : m);
+      mesh.userData.__clipClonedMaterial = clones;
+    } else {
+      mesh.userData.__clipClonedMaterial = (orig && orig.clone) ? orig.clone() : orig;
+    }
+  }
+
+  function applyRobotOnlyClipping(plane) {
+    // localClippingEnabled must be true for per-material clipping to work
+    app.renderer.localClippingEnabled = true;
+
+    // IMPORTANT: keep GLOBAL clipping planes empty so helpers are never clipped
+    app.renderer.clippingPlanes = [];
+
+    traverseRobotMeshes((mesh) => {
+      ensureClippableMaterials(mesh);
+
+      // switch robot mesh to its cloned materials (so shared materials won't affect helpers)
+      if (mesh.userData && mesh.userData.__clipClonedMaterial) {
+        mesh.material = mesh.userData.__clipClonedMaterial;
+      }
+
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) setMaterialClipping(m, plane);
     });
+  }
+
+  function clearRobotOnlyClipping() {
+    // restore original materials back to the robot meshes
+    traverseRobotMeshes((mesh) => {
+      if (mesh.userData && mesh.userData.__clipOriginalMaterial) {
+        // clear clipping on cloned mats (optional, keeps state clean)
+        const cm = mesh.userData.__clipClonedMaterial;
+        const mats = Array.isArray(cm) ? cm : [cm];
+        for (const m of mats) setMaterialClipping(m, null);
+
+        mesh.material = mesh.userData.__clipOriginalMaterial;
+      } else if (mesh.material) {
+        // fallback: just clear clipping
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const m of mats) setMaterialClipping(m, null);
+      }
+    });
+
+    // disable clipping system
+    app.renderer.clippingPlanes = [];
+    app.renderer.localClippingEnabled = false;
   }
 
   function ensureSectionVisual() {
-    if (!secVisual) {
-      const geom = new THREE.BoxGeometry(1, 1, 1);
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0x0ea5a6,
-        transparent: true,
-        opacity: 0.16,
-        depthWrite: false,
-        depthTest: false,
-        toneMapped: false,
-        side: THREE.DoubleSide,
-      });
-      secVisual = new THREE.Mesh(geom, mat);
-      secVisual.visible = false;
-      secVisual.renderOrder = 9999;
-      scene.add(secVisual);
-    }
+    if (secVisual) return secVisual;
+
+    const THICK = 0.001;
+    const geom = new THREE.BoxGeometry(1, 1, THICK);
+
+    const makeMat = (side) => new THREE.MeshBasicMaterial({
+      color: theme.teal,
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+      depthTest: true,
+      toneMapped: false,
+      premultipliedAlpha: true,
+      side
+    });
+
+    const back = new THREE.Mesh(geom.clone(), makeMat(THREE.BackSide));
+    const front = new THREE.Mesh(geom.clone(), makeMat(THREE.FrontSide));
+
+    back.renderOrder = 9999;
+    front.renderOrder = 10000;
+
+    secVisual = new THREE.Group();
+    secVisual.add(back, front);
+
+    secVisual.visible = false;
+    secVisual.renderOrder = 10000;
+    secVisual.frustumCulled = false;
+
+    app.scene.add(secVisual);
     return secVisual;
   }
 
-  function updateSectionPlane(distNorm) {
-    const root = getModelRoot();
-    if (!secEnabled || !root) {
-      renderer.localClippingEnabled = false;
-      clearSectionClipping();
+  function refreshSectionVisual(maxDim, center) {
+    if (!secVisual) return;
+    const size = Math.max(1e-6, maxDim || 1);
+    secVisual.scale.set(size * 1.2, size * 1.2, 1);
+    if (center) secVisual.position.copy(center);
+  }
+
+  function updateSectionPlane() {
+    // ALWAYS keep global clipping planes empty so grid/helpers are never clipped
+    app.renderer.clippingPlanes = [];
+
+    if (!secEnabled || !app.robot) {
+      sectionPlane = null;
+      clearRobotOnlyClipping();
       if (secVisual) secVisual.visible = false;
       return;
     }
@@ -534,265 +545,389 @@ export function createToolsDock(app, theme) {
     const n = new THREE.Vector3(
       secAxis === 'X' ? 1 : 0,
       secAxis === 'Y' ? 1 : 0,
-      secAxis === 'Z' ? 1 : 0,
+      secAxis === 'Z' ? 1 : 0
     );
 
-    const box = new THREE.Box3().setFromObject(root);
+    const box = new THREE.Box3().setFromObject(app.robot);
     if (box.isEmpty()) {
-      renderer.localClippingEnabled = false;
-      clearSectionClipping();
+      sectionPlane = null;
+      clearRobotOnlyClipping();
       if (secVisual) secVisual.visible = false;
       return;
     }
 
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = distNorm * maxDim * 0.5;
-    const plane = new THREE.Plane(n, -dist);
+    const center = box.getCenter(new THREE.Vector3());
 
-    renderer.localClippingEnabled = true;
-    clearSectionClipping();
-    applySectionPlaneToModel(plane);
+    const dist = (Number(secDist.value) || 0) * maxDim * 0.5;
+    const plane = new THREE.Plane(n, -center.dot(n) - dist);
 
+    sectionPlane = plane;
+
+    // ✅ APPLY CLIPPING TO ROBOT ONLY
+    applyRobotOnlyClipping(plane);
+
+    // Visual plane (never clipped because we do NOT use global clipping)
     ensureSectionVisual();
+    refreshSectionVisual(maxDim, center);
+    secVisual.visible = !!secPlaneVisible;
 
-    const thickness = maxDim * 0.004;
-    const dim = maxDim * 1.2;
-
-    const look = n.clone();
-    const up =
-      Math.abs(look.dot(new THREE.Vector3(0, 1, 0))) > 0.999
-        ? new THREE.Vector3(1, 0, 0)
-        : new THREE.Vector3(0, 1, 0);
-
+    // Orient the teal plane to match clipping plane normal
+    const look = new THREE.Vector3().copy(n);
+    const up = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(look.dot(up)) > 0.999) up.set(1, 0, 0);
     const m = new THREE.Matrix4().lookAt(new THREE.Vector3(0, 0, 0), look, up);
     const q = new THREE.Quaternion().setFromRotationMatrix(m);
     secVisual.setRotationFromQuaternion(q);
-
-    secVisual.scale.set(dim, dim, thickness);
     const p0 = n.clone().multiplyScalar(-plane.constant);
     secVisual.position.copy(p0);
-    secVisual.visible = !!secPlaneVisible;
   }
 
-  // Bounds for view tween
-  let boundsInfo = null;
+  axisSel.addEventListener('change', () => { secAxis = axisSel.value; updateSectionPlane(); });
+  secDist.addEventListener('input', () => updateSectionPlane());
+  secEnable.cb.addEventListener('change', () => { secEnabled = !!secEnable.cb.checked; updateSectionPlane(); });
+  secShowPlane.cb.addEventListener('change', () => { secPlaneVisible = !!secShowPlane.cb.checked; updateSectionPlane(); });
 
-  function computeBounds() {
-    const root = getModelRoot();
+  // ---------- Views (animated) ----------
+  const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  const dirFromAzEl = (az, el) => new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
+
+  function currentAzEl(cam, target) {
+    const v = cam.position.clone().sub(target);
+    const len = Math.max(1e-9, v.length());
+    return { el: Math.asin(v.y / len), az: Math.atan2(v.z, v.x), r: len };
+  }
+
+  function tweenOrbits(cam, ctrl, toPos, toTarget = null, ms = 700) {
+    const p0 = cam.position.clone(), t0 = ctrl.target.clone(), tStart = performance.now();
+    ctrl.enabled = false; cam.up.set(0, 1, 0);
+    const moveTarget = (toTarget !== null);
+    function step(t) {
+      const u = Math.min(1, (t - tStart) / ms), e = easeInOutCubic(u);
+      cam.position.set(
+        p0.x + (toPos.x - p0.x) * e,
+        p0.y + (toPos.y - p0.y) * e,
+        p0.z + (toPos.z - p0.z) * e
+      );
+      if (moveTarget) ctrl.target.set(
+        t0.x + (toTarget.x - t0.x) * e,
+        t0.y + (toTarget.y - t0.y) * e,
+        t0.z + (toTarget.z - t0.z) * e
+      );
+      ctrl.update(); app.renderer.render(app.scene, cam);
+      if (u < 1) requestAnimationFrame(step); else ctrl.enabled = true;
+    }
+    requestAnimationFrame(step);
+  }
+
+  // Store default distance once (at init)
+  let DEFAULT_RADIUS = null;
+
+  function initDefaultRadius(app_) {
+    const cam = app_.camera, ctrl = app_.controls, t = ctrl.target.clone();
+    const cur = currentAzEl(cam, t);
+    DEFAULT_RADIUS = cur.r;
+  }
+
+  function getRobotFitSphere(app_) {
+    const root = app_.robot || app_.scene;
     if (!root) return null;
     const box = new THREE.Box3().setFromObject(root);
     if (box.isEmpty()) return null;
     const center = box.getCenter(new THREE.Vector3());
-    const sphere = new THREE.Sphere();
-    box.getBoundingSphere(sphere);
-    return { center, radius: Math.max(1e-8, sphere.radius), box };
+    const size = box.getSize(new THREE.Vector3());
+    const radius = size.length() * 0.5 * (1 / Math.sqrt(3));
+    return { center, size, radius };
   }
 
-  function viewEndPose(kind) {
-    if (!boundsInfo) boundsInfo = computeBounds();
-    if (!boundsInfo) return null;
+  function distanceToFitSphere(cam, radius, pad = 3) {
+    const r = Math.max(1e-6, radius) * pad;
 
-    const target = boundsInfo.center.clone();
-    const pad = 1.18;
-    const effectiveRadius = boundsInfo.radius * pad;
-
-    const w = app.container?.clientWidth || renderer.domElement.clientWidth || 800;
-    const h = app.container?.clientHeight || renderer.domElement.clientHeight || 600;
-    const aspect = w / h;
-
-    let r;
-    if (camera.isPerspectiveCamera) {
-      const vFOV = THREE.MathUtils.degToRad(camera.fov);
-      const hFOV = 2 * Math.atan(Math.tan(vFOV / 2) * aspect);
-      const distV = effectiveRadius / Math.sin(Math.max(1e-6, vFOV / 2));
-      const distH = effectiveRadius / Math.sin(Math.max(1e-6, hFOV / 2));
-      r = Math.max(distV, distH);
-    } else {
-      r = effectiveRadius * 2.6;
+    if (cam.isOrthographicCamera) {
+      return THREE.MathUtils.clamp(r * 2.0, 0.25, 1e6);
     }
 
-    let dir = new THREE.Vector3(1, 1, 1);
-    if (kind === 'front') dir.set(0, 0, 1);
-    if (kind === 'right') dir.set(1, 0, 0);
-    if (kind === 'top') dir.set(0.001, 1, 0).normalize();
+    const vFov = THREE.MathUtils.degToRad(cam.fov);
+    const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * (cam.aspect || 1));
+    const dV = r / Math.tan(vFov * 0.5);
+    const dH = r / Math.tan(hFov * 0.5);
+    return Math.max(dV, dH);
+  }
 
-    dir.normalize();
-    const pos = target.clone().add(dir.multiplyScalar(r));
+  const AUTO_RADIUS_MIN = 0.35;
+  const AUTO_RADIUS_MAX = 1e4;
+
+  function viewEndPose(kind) {
+    const cam = app.camera, ctrl = app.controls;
+    const s = getRobotFitSphere(app);
+    const target = s ? s.center.clone() : ctrl.target.clone();
+
+    const curVec = cam.position.clone().sub(target);
+    const len = Math.max(1e-9, curVec.length());
+    const cur = { el: Math.asin(curVec.y / len), az: Math.atan2(curVec.z, curVec.x) };
+
+    let az = cur.az, el = cur.el;
+    const topEps = 1e-3;
+    if (kind === 'iso') { az = Math.PI * 0.25; el = Math.PI * 0.20; }
+    if (kind === 'top') { az = Math.round(cur.az / (Math.PI / 2)) * (Math.PI / 2); el = Math.PI / 2 - topEps; }
+    if (kind === 'front') { az = Math.PI / 2; el = 0; }
+    if (kind === 'right') { az = 0; el = 0; }
+
+    let fitR = 4;
+    if (s) {
+      fitR = distanceToFitSphere(cam, s.radius, 3);
+      fitR = THREE.MathUtils.clamp(fitR, AUTO_RADIUS_MIN, AUTO_RADIUS_MAX);
+    }
+
+    const dir = new THREE.Vector3(
+      Math.cos(el) * Math.cos(az),
+      Math.sin(el),
+      Math.cos(el) * Math.sin(az)
+    ).normalize();
+
+    const pos = target.clone().add(dir.multiplyScalar(fitR));
     return { pos, target };
   }
 
-  function tweenCameraToPose(endPos, endTarget, duration = 750) {
-    const startPos = camera.position.clone();
-    const startTarget = controls.target.clone();
-    const t0 = performance.now();
+  const bIsoEl = rowCam.children[0], bTopEl = rowCam.children[1], bFrontEl = rowCam.children[2], bRightEl = rowCam.children[3];
+  const to = (kind) => viewEndPose(kind);
 
-    camera.up.set(0, 1, 0);
+  bIsoEl.addEventListener('click', () => { const v = to('iso'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+  bTopEl.addEventListener('click', () => { const v = to('top'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+  bFrontEl.addEventListener('click', () => { const v = to('front'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
+  bRightEl.addEventListener('click', () => { const v = to('right'); tweenOrbits(app.camera, app.controls, v.pos, v.target, 750); });
 
-    function anim() {
-      const now = performance.now();
-      const t = clamp01((now - t0) / duration);
-      const k = easeInOutCubic(t);
-
-      camera.position.lerpVectors(startPos, endPos, k);
-      controls.target.lerpVectors(startTarget, endTarget, k);
-      camera.lookAt(controls.target);
-      controls.update();
-
-      if (t < 1) requestAnimationFrame(anim);
-    }
-    requestAnimationFrame(anim);
-  }
-
-  function viewIso() {
-    const v = viewEndPose('iso');
-    if (v) tweenCameraToPose(v.pos, v.target, 750);
-  }
-  function viewFront() {
-    const v = viewEndPose('front');
-    if (v) tweenCameraToPose(v.pos, v.target, 750);
-  }
-  function viewRight() {
-    const v = viewEndPose('right');
-    if (v) tweenCameraToPose(v.pos, v.target, 750);
-  }
-  function viewTop() {
-    const v = viewEndPose('top');
-    if (v) tweenCameraToPose(v.pos, v.target, 900);
-  }
-
-  // Wire UI actions
-  renderModeSel.addEventListener('change', () => setRenderMode(renderModeSel.value));
-
-  axisSel.addEventListener('change', () => {
-    secAxis = axisSel.value;
-    updateSectionPlane(parseFloat(secDist.value) || 0);
-  });
-
-  secDist.addEventListener('input', () => {
-    updateSectionPlane(parseFloat(secDist.value) || 0);
-  });
-
-  secToggle.cb.addEventListener('change', () => {
-    secEnabled = !!secToggle.cb.checked;
-    updateSectionPlane(parseFloat(secDist.value) || 0);
-  });
-
-  secPlaneToggle.cb.addEventListener('change', () => {
-    secPlaneVisible = !!secPlaneToggle.cb.checked;
-    updateSectionPlane(parseFloat(secDist.value) || 0);
-  });
-
-  bIso.addEventListener('click', viewIso);
-  bTop.addEventListener('click', viewTop);
-  bFront.addEventListener('click', viewFront);
-  bRight.addEventListener('click', viewRight);
-
+  // ---------- Projection ----------
   projSel.addEventListener('change', () => {
-    const wantOrtho = projSel.value === 'Orthographic';
-
-    if (!ortho) {
-      projSel.value = 'Perspective';
-      return;
-    }
-
-    const wasSectionEnabled = secEnabled;
-    if (secEnabled) {
-      secEnabled = false;
-      secToggle.cb.checked = false;
-      updateSectionPlane(parseFloat(secDist.value) || 0);
-    }
-
-    boundsInfo = computeBounds();
-    const b = boundsInfo;
-    const target = b ? b.center.clone() : controls.target.clone();
-
-    const w = app.container?.clientWidth || renderer.domElement.clientWidth || 800;
-    const h = app.container?.clientHeight || renderer.domElement.clientHeight || 600;
-    const aspect = w / h;
-
-    if (wantOrtho && camera.isPerspectiveCamera) {
-      const dir = camera.position.clone().sub(target).normalize();
-      const size = b ? b.box.getSize(new THREE.Vector3()) : new THREE.Vector3(1, 1, 1);
-      const span = Math.max(size.x, size.y, size.z, 1);
-
-      ortho.left = -span * aspect;
-      ortho.right = span * aspect;
-      ortho.top = span;
-      ortho.bottom = -span;
-
-      ortho.position.copy(target).add(dir.multiplyScalar(span * 2));
-      ortho.up.copy(camera.up);
-      ortho.lookAt(target);
-      ortho.updateProjectionMatrix();
-
-      camera = ortho;
-      app.camera = ortho;
-      controls.object = ortho;
-    } else if (!wantOrtho && camera.isOrthographicCamera) {
-      const dir = camera.position.clone().sub(target).normalize();
-      persp.position.copy(target).add(dir.multiplyScalar(5));
-      persp.up.copy(camera.up);
-      persp.lookAt(target);
-      persp.updateProjectionMatrix();
-
-      camera = persp;
-      app.camera = persp;
-      controls.object = persp;
-    }
-
-    controls.target.copy(target);
-    controls.update();
-
-    if (wasSectionEnabled) {
-      setTimeout(() => {
-        secEnabled = true;
-        secToggle.cb.checked = true;
-        updateSectionPlane(parseFloat(secDist.value) || 0);
-      }, 100);
-    }
+    const mode = projSel.value === 'Orthographic' ? 'Orthographic' : 'Perspective';
+    try { app.setProjection?.(mode); } catch (_) {}
   });
 
-  togGrid.cb.addEventListener('change', () => {
-    grid.visible = !!togGrid.cb.checked;
-  });
+  // ---------- Scene toggles ----------
+  togGrid.cb.addEventListener('change', () => app.setSceneToggles?.({ grid: !!togGrid.cb.checked }));
+  togGround.cb.addEventListener('change', () => app.setSceneToggles?.({ ground: !!togGround.cb.checked, shadows: !!togGround.cb.checked }));
+  togAxes.cb.addEventListener('change', () => app.setSceneToggles?.({ axes: !!togAxes.cb.checked }));
 
-  togGround.cb.addEventListener('change', () => {
-    const on = !!togGround.cb.checked;
+  // ============================================================
+  // EXPLODE MANAGER (kept as-is except a tiny bugfix: amount() must be inside manager)
+  // ============================================================
+  function makeExplodeManager() {
+    const registry = [];
+    const marker = new WeakSet();
+    let maxDim = 1;
+    let prepared = false;
 
-    ground.visible = on;
-    if (renderer.shadowMap) renderer.shadowMap.enabled = on;
-    dirLight.castShadow = on;
+    let current = 0;
+    let target = 0;
+    let vel = 0;
+    let raf = null;
+    let lastT = 0;
+    const stiffness = 18;
+    const damping = 2 * Math.sqrt(stiffness);
 
-    const root = getModelRoot();
-    if (root) {
-      root.traverse((n) => {
-        if (n.isMesh) {
-          n.castShadow = on;
-          n.receiveShadow = on;
+    let zeroSince = null;
+
+    function amount() {
+      return current;
+    }
+
+    function worldDirToParentLocal(parent, dirWorld) {
+      const m = new THREE.Matrix4().copy(parent.matrixWorld).invert();
+      const n = new THREE.Matrix3().setFromMatrix4(m);
+      return dirWorld.clone().applyMatrix3(n).normalize();
+    }
+
+    function chooseTopPartFor(mesh) {
+      let n = mesh;
+      while (n && n !== app.robot) {
+        if (marker.has(n)) return n;
+        if (n.parent === app.robot) return n;
+        n = n.parent;
+      }
+      return mesh.parent || mesh;
+    }
+
+    function computeBounds() {
+      const box = new THREE.Box3().setFromObject(app.robot);
+      if (box.isEmpty()) return null;
+      return { center: box.getCenter(new THREE.Vector3()), size: box.getSize(new THREE.Vector3()) };
+    }
+
+    function prepare() {
+      registry.length = 0;
+      if (!app.robot) { prepared = false; return; }
+
+      const R = computeBounds();
+      if (!R) { prepared = false; return; }
+      maxDim = Math.max(R.size.x, R.size.y, R.size.z) || 1;
+
+      const parts = new Set();
+      const seen = new WeakSet();
+      app.robot.traverse((o) => {
+        if (o.isMesh && o.geometry && o.visible && !o.userData.__isHoverOverlay) {
+          const top = chooseTopPartFor(o);
+          if (!seen.has(top)) { parts.add(top); seen.add(top); marker.add(top); }
         }
       });
+
+      parts.forEach((node) => {
+        const parent = node.parent || app.robot;
+        const baseLocal = node.position.clone();
+
+        const box = new THREE.Box3().setFromObject(node);
+        if (box.isEmpty()) return;
+        const cWorld = box.getCenter(new THREE.Vector3());
+        const dirWorld = cWorld.sub(R.center).normalize();
+        if (!isFinite(dirWorld.x + dirWorld.y + dirWorld.z)) return;
+
+        const dirLocal = worldDirToParentLocal(parent, dirWorld);
+        if (!isFinite(dirLocal.x + dirLocal.y + dirLocal.z) || dirLocal.lengthSq() < 1e-12) {
+          dirLocal.set((Math.random() * 2 - 1), (Math.random() * 2 - 1), (Math.random() * 2 - 1)).normalize();
+        }
+
+        registry.push({ node, parent, baseLocal, dirLocal });
+      });
+
+      prepared = true;
+      zeroSince = performance.now();
     }
 
-    renderer.render(scene, camera);
+    function applyAmount(a01) {
+      if (!prepared) prepare();
+      const f = Math.max(0, Math.min(1, a01 || 0));
+      const maxOffset = maxDim * 0.6;
+
+      for (const rec of registry) {
+        const { node, baseLocal, dirLocal } = rec;
+        node.position.copy(baseLocal).addScaledVector(dirLocal, f * maxOffset);
+      }
+
+      updateSectionPlane?.();
+      try { app.controls?.update?.(); app.renderer?.render?.(app.scene, app.camera); } catch (_) {}
+    }
+
+    function tickSpring(now) {
+      if (!lastT) lastT = now;
+      const dt = Math.min(0.05, (now - lastT) / 1000);
+      lastT = now;
+
+      const x = current, v = vel, xT = target;
+      const a = stiffness * (xT - x) - damping * v;
+      vel = v + a * dt;
+      current = x + vel * dt;
+
+      if (Math.abs(current - target) < 0.0005 && Math.abs(vel) < 0.0005) {
+        current = target; vel = 0;
+      }
+
+      applyAmount(current);
+
+      if (current === 0) {
+        zeroSince ??= now;
+        if (now - zeroSince > 300) {
+          const keepTarget = target;
+          prepare();
+          applyAmount(current);
+          target = keepTarget;
+          zeroSince = now;
+        }
+      } else {
+        zeroSince = null;
+      }
+
+      if (current !== target || vel !== 0) {
+        raf = requestAnimationFrame(tickSpring);
+      } else {
+        raf = null;
+      }
+    }
+
+    function setTarget(a01) {
+      target = Math.max(0, Math.min(1, Number(a01) || 0));
+      if (!prepared) prepare();
+      if (!raf) { lastT = 0; raf = requestAnimationFrame(tickSpring); }
+    }
+
+    function immediate(a01) {
+      target = current = Math.max(0, Math.min(1, Number(a01) || 0));
+      vel = 0;
+      if (!prepared) prepare();
+      applyAmount(current);
+    }
+
+    function recalibrate() {
+      prepare();
+      applyAmount(current);
+    }
+
+    function destroy() {
+      if (raf) cancelAnimationFrame(raf);
+      raf = null;
+    }
+
+    return { prepare, setTarget, immediate, recalibrate, destroy, amount };
+  }
+
+  const explode = makeExplodeManager();
+  try { app.explodeRecalibrate = () => explode.recalibrate(); } catch (_) {}
+
+  explodeSlider.addEventListener('input', () => {
+    explode.setTarget(Number(explodeSlider.value) || 0);
   });
 
-  togAxes.cb.addEventListener('change', () => {
-    axesHelper.visible = !!togAxes.cb.checked;
-  });
+  function syncExplodeUI() {
+    try {
+      const a = explode.amount();
+      if (!Number.isNaN(a)) explodeSlider.value = String(Math.max(0, Math.min(1, a)));
+    } catch { }
+  }
+
+  // ---------- Utilities ----------
+  function styleDockLeft(dockEl) {
+    dockEl.classList.add('viewer-dock-fix');
+    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
+
+    // ✅ keep transform origin consistent when moved to left (ONLY ADDITION)
+    dockEl.style.transformOrigin = 'top left';
+  }
+
+  // Defaults
+  togGrid.cb.checked = false;
+  togGround.cb.checked = false;
+  togAxes.cb.checked = false;
+
+  // Start closed
+  try { styleDockLeft(ui.dock); } catch (_) {}
+  set(false);
+
+  function onHotkeyH(e) {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+
+    if (e.key === 't' || e.key === 'T' || e.code === 'KeyT') {
+      e.preventDefault();
+      try { console.log('pressed t'); } catch { }
+      set(!isOpen);
+    }
+  }
+  document.addEventListener('keydown', onHotkeyH, true);
 
   // Public API
-  return {
-    setOpen: setDock,
-    isOpen: () => dockOpen,
-    root: ui.root,
-    dock: ui.dock,
-    toggleBtn: ui.toggleBtn,
-    dispose: () => {
-      document.removeEventListener('keydown', onKeyDown, true);
-      try {
-        ui.root.remove();
-      } catch (_) {}
-    },
-  };
+  function destroy() {
+    try { ui.toggleBtn.remove(); } catch (_) { }
+    try { ui.dock.remove(); } catch (_) { }
+    try { ui.root.remove(); } catch (_) { }
+
+    try {
+      // ensure we restore robot materials and disable clipping
+      clearRobotOnlyClipping();
+      if (secVisual) app.scene.remove(secVisual);
+    } catch (_) { }
+
+    explode.destroy();
+    document.removeEventListener('keydown', onHotkeyH, true);
+  }
+
+  return { open: openDock, close: closeDock, set, destroy };
 }
