@@ -30,10 +30,15 @@ export function createToolsDock(app, theme) {
   const HDR_BG = theme.colors.hdrBg ?? TEAL;
   const HDR_TEXT = theme.colors.hdrText ?? '#ffffff';
 
-  // ✅ UI 50% smaller
-  const UI_SCALE = 0.5;
+  // ✅ CSS variable equivalent to:
+  // :root { --tools-scale: 0.5; }
+  try {
+    document.documentElement.style.setProperty('--tools-scale', '0.5');
+  } catch (_) {
+    // ignore
+  }
 
-  // ✅ Single source of truth for "closed" X
+  // ✅ Single source of truth for CLOSED translateX
   const CLOSED_TX = -520;
 
   const renderer = app.renderer;
@@ -83,10 +88,9 @@ export function createToolsDock(app, theme) {
 
     willChange: 'transform, opacity',
     transformOrigin: 'top left',
-
-    // ✅ IMPORTANT: scale is inside the SAME transform as open/close
-    transform: `translateX(${CLOSED_TX}px) scale(${UI_SCALE})`,
-    transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 180ms ease',
+    transform: `translateX(${CLOSED_TX}px) scale(var(--tools-scale))`,
+    transition:
+      'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 180ms ease',
   });
 
   // Toggle button (top-right floating)
@@ -106,20 +110,22 @@ export function createToolsDock(app, theme) {
     zIndex: '10000',
     transition:
       'transform 120ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease',
+    userSelect: 'none',
   });
 
-  // ✅ Apply scale to floating toggle button (keeps hover animations)
+  // Apply scale to floating toggle button (keeps hover animations)
   ui.toggleBtn.style.transformOrigin = 'top right';
-  ui.toggleBtn.style.transform = `scale(${UI_SCALE})`;
+  ui.toggleBtn.style.transform = `scale(var(--tools-scale))`;
 
   ui.toggleBtn.addEventListener('mouseenter', () => {
-    ui.toggleBtn.style.transform = `translateY(-1px) scale(${UI_SCALE * 1.02})`;
+    ui.toggleBtn.style.transform =
+      `translateY(-1px) scale(calc(var(--tools-scale) * 1.02))`;
     ui.toggleBtn.style.background = '#ecfeff';
     ui.toggleBtn.style.borderColor = TEAL;
     ui.toggleBtn.style.boxShadow = '0 16px 40px rgba(0,0,0,.18)';
   });
   ui.toggleBtn.addEventListener('mouseleave', () => {
-    ui.toggleBtn.style.transform = `scale(${UI_SCALE})`;
+    ui.toggleBtn.style.transform = `scale(var(--tools-scale))`;
     ui.toggleBtn.style.background = '#ffffff';
     ui.toggleBtn.style.borderColor = BORDER;
     ui.toggleBtn.style.boxShadow = `0 12px 36px ${SHADOW}`;
@@ -219,6 +225,7 @@ export function createToolsDock(app, theme) {
       border: `1px solid ${BORDER}`,
       borderRadius: '10px',
       accentColor: TEAL,
+      width: '100%',
     });
     opts.forEach((o) => {
       const op = document.createElement('option');
@@ -248,6 +255,7 @@ export function createToolsDock(app, theme) {
       gap: '8px',
       alignItems: 'center',
       cursor: 'pointer',
+      userSelect: 'none',
     });
     const cb = document.createElement('input');
     cb.type = 'checkbox';
@@ -311,10 +319,15 @@ export function createToolsDock(app, theme) {
 
   // Mount
   const container =
-    app.container || app.domElement?.parentElement || renderer.domElement?.parentElement || document.body;
+    app.container ||
+    app.domElement?.parentElement ||
+    renderer.domElement?.parentElement ||
+    document.body;
+
   if (container && container.style) {
     container.style.position = container.style.position || 'relative';
   }
+
   container.appendChild(ui.root);
   ui.root.appendChild(ui.dock);
   ui.root.appendChild(ui.toggleBtn);
@@ -322,15 +335,19 @@ export function createToolsDock(app, theme) {
   // State
   let dockOpen = false;
 
-  // ✅ IMPORTANT: scale ALWAYS inside the same transform string (open/close)
   function setDock(open) {
     dockOpen = !!open;
-    const tx = dockOpen ? 0 : CLOSED_TX;
-
-    ui.dock.style.transform = `translateX(${tx}px) scale(${UI_SCALE})`;
-    ui.dock.style.opacity = dockOpen ? '1' : '0';
-    ui.dock.style.pointerEvents = dockOpen ? 'auto' : 'none';
-    ui.toggleBtn.textContent = dockOpen ? 'Close Tools' : 'Open Tools';
+    if (dockOpen) {
+      ui.dock.style.transform = `translateX(0px) scale(var(--tools-scale))`;
+      ui.dock.style.opacity = '1';
+      ui.dock.style.pointerEvents = 'auto';
+      ui.toggleBtn.textContent = 'Close Tools';
+    } else {
+      ui.dock.style.transform = `translateX(${CLOSED_TX}px) scale(var(--tools-scale))`;
+      ui.dock.style.opacity = '0';
+      ui.dock.style.pointerEvents = 'none';
+      ui.toggleBtn.textContent = 'Open Tools';
+    }
   }
 
   // start closed
@@ -354,7 +371,9 @@ export function createToolsDock(app, theme) {
   snapBtn.addEventListener('click', () => {
     try {
       // ensure latest frame
-      try { renderer.render(scene, camera); } catch (_) {}
+      try {
+        renderer.render(scene, camera);
+      } catch (_) {}
       const url = renderer.domElement.toDataURL('image/png');
       const a = document.createElement('a');
       a.href = url;
@@ -771,7 +790,9 @@ export function createToolsDock(app, theme) {
     toggleBtn: ui.toggleBtn,
     dispose: () => {
       document.removeEventListener('keydown', onKeyDown, true);
-      try { ui.root.remove(); } catch (_) {}
+      try {
+        ui.root.remove();
+      } catch (_) {}
     },
   };
 }
