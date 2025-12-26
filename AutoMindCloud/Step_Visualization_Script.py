@@ -14,7 +14,17 @@ def Download_Step(Drive_Link, Output_Name):
     output_step = os.path.join(root_dir, Output_Name + ".step")
     gdown.download(url, output_step, quiet=True)
 
-def Step_Visualization(Step_Name, height_px=390):
+def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
+    """
+    STEP viewer (same size system as the simple script):
+      - width: 100% of output cell
+      - height: fixed height_px
+      - renderer uses container.clientWidth/Height
+    Plus:
+      - Viewer Tools panel
+      - Hotkey: press 't' (or 'c') to toggle panel
+      - Tools panel scaled smaller (tools_panel_scale, default 0.5 => 50% smaller)
+    """
     STEP_PATH = f"{Step_Name}.step"
     bg_js = "0xffffff"
     click_js = "null"  # e.g. '"https://.../click.mp3"' or "null"
@@ -26,6 +36,7 @@ def Step_Visualization(Step_Name, height_px=390):
         step_b64 = base64.b64encode(f.read()).decode("ascii")
 
     H = int(height_px)
+    panel_scale = float(tools_panel_scale)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -121,15 +132,25 @@ def Step_Visualization(Step_Name, height_px=390):
     box-shadow:0 16px 40px rgba(0,0,0,.18);
   }}
 
+  :root {{
+    --tools-scale: {panel_scale};
+  }}
+
+  /* ✅ Viewer Tools panel (50% smaller by default via scale) */
   .panel.dock {{
     position:absolute; right:14px; top:54px; width:440px;
-    transform:translateX(520px);
+
+    transform-origin: top right;
+    transform: translateX(560px) scale(var(--tools-scale));
+
     opacity:0;
     pointer-events:none;
-    transition:transform 260ms cubic-bezier(.2,.7,.2,1), opacity 180ms ease;
+    transition:
+      transform 260ms cubic-bezier(.2,.7,.2,1),
+      opacity 180ms ease;
   }}
   .panel.dock.open {{
-    transform:translateX(0);
+    transform: translateX(0) scale(var(--tools-scale));
     opacity:1;
     pointer-events:auto;
   }}
@@ -202,13 +223,13 @@ def Step_Visualization(Step_Name, height_px=390):
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") audioCtx.resume();
     if (!clickBuf) {{
-      ensureClickBuffer().then(() => playClick()).catch(() => {{ }});
+      ensureClickBuffer().then(() => playClick()).catch(() => {{}});
       return;
     }}
     const src = audioCtx.createBufferSource();
     src.buffer = clickBuf;
     src.connect(audioCtx.destination);
-    try {{ src.start(); }} catch (e) {{ }}
+    try {{ src.start(); }} catch (e) {{}}
   }}
 
   function getSize(container) {{
@@ -225,13 +246,12 @@ def Step_Visualization(Step_Name, height_px=390):
       return;
     }}
 
-    const {{ w: BASE_W, h: BASE_H }} = getSize(container);
+    let {{ w, h }} = getSize(container);
 
     const renderer = new THREE.WebGLRenderer({{ antialias: true, preserveDrawingBuffer: true }});
     renderer.setPixelRatio(window.devicePixelRatio || 1);
     renderer.shadowMap.enabled = false;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    renderer.setSize(BASE_W, BASE_H, false);
+    renderer.setSize(w, h, false);
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     renderer.domElement.style.position = "absolute";
@@ -241,22 +261,20 @@ def Step_Visualization(Step_Name, height_px=390):
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    if (THEME.bgCanvas !== null) {{
-      scene.background = new THREE.Color(THEME.bgCanvas);
-    }}
+    if (THEME.bgCanvas !== null) scene.background = new THREE.Color(THEME.bgCanvas);
 
-    const persp = new THREE.PerspectiveCamera(60, BASE_W / BASE_H, 0.01, 10000);
+    const persp = new THREE.PerspectiveCamera(60, w / h, 0.01, 10000);
     persp.up.set(0,1,0);
+
     const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 10000);
     ortho.up.set(0,1,0);
+
     let camera = persp;
 
     const controls = new TrackballControls(camera, renderer.domElement);
     controls.rotateSpeed          = 4.0;
     controls.zoomSpeed            = 1.4;
     controls.panSpeed             = 0.8;
-    controls.noZoom               = false;
-    controls.noPan                = false;
     controls.staticMoving         = false;
     controls.dynamicDampingFactor = 0.15;
     controls.mouseButtons = {{
@@ -274,24 +292,10 @@ def Step_Visualization(Step_Name, height_px=390):
     scene.add(hemi);
     scene.add(dirLight);
 
-    const groundGroup = new THREE.Group();
-    scene.add(groundGroup);
-
     const GRID_SIZE = 10;
     const grid = new THREE.GridHelper(GRID_SIZE, 20, 0x0ea5a6, 0x0ea5a6);
-    grid.position.y = 0;
     grid.visible = false;
-    groundGroup.add(grid);
-
-    const groundMat = new THREE.ShadowMaterial({{ opacity: 0.22 }});
-    groundMat.transparent = true;
-    groundMat.depthWrite = false
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.0001;
-    ground.receiveShadow = false;
-    ground.visible = false;
-    groundGroup.add(ground);
+    scene.add(grid);
 
     const axesHelper = new THREE.AxesHelper(1);
     axesHelper.visible = false;
@@ -300,30 +304,30 @@ def Step_Visualization(Step_Name, height_px=390):
     let _lastMaxDim = 1;
     let boundsInfo = null;
     let model = null;
-    let modelScale = 1.0;
-    let currentRenderMode = 'Solid';
-    let DEFAULT_VIEW_RADIUS = null;
 
-    function applyFixedSize() {{
-      const {{ w, h }} = getSize(container);
+    function applySizeToCamera() {{
+      const s = getSize(container);
+      w = s.w; h = s.h;
+
       if (camera.isPerspectiveCamera) {{
         camera.aspect = w / h;
       }} else {{
         const span = Math.max(_lastMaxDim, GRID_SIZE * 0.5);
-        camera.left   = -span * (w / h);
-        camera.right  =  span * (w / h);
+        const aspect = w / h;
+        camera.left   = -span * aspect;
+        camera.right  =  span * aspect;
         camera.top    =  span;
         camera.bottom = -span;
       }}
       camera.updateProjectionMatrix();
     }}
 
-    function sizeAxesHelper(maxDim, center) {{
+    function sizeAxesHelper(maxDim) {{
       axesHelper.scale.setScalar(maxDim * 0.75);
-      axesHelper.position.copy(center || new THREE.Vector3());
+      axesHelper.position.set(0,0,0);
     }}
 
-    // --- Sección ---
+    // --- Section clipping (same logic) ---
     let secEnabled = false;
     let secAxis = 'X';
     let secPlaneVisible = false;
@@ -428,9 +432,9 @@ def Step_Visualization(Step_Name, height_px=390):
       secVisual.visible = !!secPlaneVisible;
     }}
 
+    // --- Render modes ---
     function setRenderMode(mode) {{
       if (!model) return;
-      currentRenderMode = mode;
       model.traverse(obj => {{
         if (!obj.isMesh) return;
         const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
@@ -470,10 +474,11 @@ def Step_Visualization(Step_Name, height_px=390):
       const sphere = new THREE.Sphere();
       box.getBoundingSphere(sphere);
       const radius = Math.max(1e-8, sphere.radius) * pad;
+
       _lastMaxDim = Math.max(size.x, size.y, size.z) * pad;
 
-      const {{ w, h }} = getSize(container);
-      const aspect = w / h;
+      const s = getSize(container);
+      const aspect = s.w / s.h;
 
       if (camera.isPerspectiveCamera) {{
         const vFOV = THREE.MathUtils.degToRad(camera.fov);
@@ -494,8 +499,6 @@ def Step_Visualization(Step_Name, height_px=390):
         camera.right  =  span * aspect;
         camera.top    =  span;
         camera.bottom = -span;
-        camera.near = Math.max(span / 1000, 0.001);
-        camera.far  = Math.max(span * 1500, 1500);
         camera.updateProjectionMatrix();
         camera.position.set(span, span, span);
       }}
@@ -503,12 +506,7 @@ def Step_Visualization(Step_Name, height_px=390):
       controls.target.set(0, 0, 0);
       controls.update();
 
-      const camDist = camera.position.length();
-      if (DEFAULT_VIEW_RADIUS === null && isFinite(camDist)) {{
-        DEFAULT_VIEW_RADIUS = camDist;
-      }}
-
-      sizeAxesHelper(_lastMaxDim, new THREE.Vector3(0,0,0));
+      sizeAxesHelper(_lastMaxDim);
       boundsInfo = {{ center: new THREE.Vector3(0,0,0), radius, maxDim: _lastMaxDim }};
     }}
 
@@ -521,12 +519,11 @@ def Step_Visualization(Step_Name, height_px=390):
       const target = GRID_SIZE * 0.1;
       const scale = target / maxDim;
       if (scale > 0 && isFinite(scale)) {{
-        modelScale = scale;
-        model.scale.setScalar(modelScale);
+        model.scale.setScalar(scale);
       }}
     }}
 
-    // --- Views (same as before) ---
+    // --- Views + tween ---
     const easeInOutCubic = (t) => t < 0.5
       ? 4 * t * t * t
       : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -536,8 +533,10 @@ def Step_Visualization(Step_Name, height_px=390):
 
       const target = boundsInfo.center.clone();
       const pad = 1.18;
-      const {{ w, h }} = getSize(container);
-      const aspect = w / h;
+
+      const s = getSize(container);
+      const aspect = s.w / s.h;
+
       const effectiveRadius = boundsInfo.radius * pad;
 
       let r;
@@ -557,7 +556,7 @@ def Step_Visualization(Step_Name, height_px=390):
         r = span * 2.6;
       }}
 
-      let dir = new THREE.Vector3(1, 1, 1);
+      let dir = new THREE.Vector3(1, 1, 1); // Iso
       if (kind === 'front') dir.set(0, 0, 1);
       if (kind === 'right') dir.set(1, 0, 0);
       if (kind === 'top') dir.set(0.001, 1, 0).normalize();
@@ -627,8 +626,7 @@ def Step_Visualization(Step_Name, height_px=390):
         }});
       }}
 
-      const mesh = new THREE.Mesh(geom, mat);
-      model.add(mesh);
+      model.add(new THREE.Mesh(geom, mat));
     }}
 
     if (!model.children.length) {{
@@ -638,12 +636,12 @@ def Step_Visualization(Step_Name, height_px=390):
 
     scene.add(model);
 
-    applyFixedSize();
+    applySizeToCamera();
     setModelScaleToFitGrid();
     centerAndFrame(1.12);
     setRenderMode('Solid');
 
-    // ---------- UI (same as before) ----------
+    // ---------- UI ----------
     const ui = document.createElement('div');
     ui.className = 'ui-root';
 
@@ -760,9 +758,8 @@ def Step_Visualization(Step_Name, height_px=390):
     bRight.textContent='Right';
 
     const projSel = mkSelect(['Perspective','Orthographic'],'Perspective');
-    const togGrid   = mkToggle('Grid', false);
-    const togGround = mkToggle('Ground & shadows', false);
-    const togAxes   = mkToggle('XYZ axes', false);
+    const togGrid = mkToggle('Grid', false);
+    const togAxes = mkToggle('XYZ axes', false);
 
     body.appendChild(row('Render mode', renderModeSel));
     body.appendChild(row('Section axis', axisSel));
@@ -772,7 +769,6 @@ def Step_Visualization(Step_Name, height_px=390):
     body.appendChild(row('Views', viewsRow));
     body.appendChild(row('Projection', projSel));
     body.appendChild(row('', togGrid.wrap));
-    body.appendChild(row('', togGround.wrap));
     body.appendChild(row('', togAxes.wrap));
 
     dock.appendChild(dockHeader);
@@ -794,7 +790,23 @@ def Step_Visualization(Step_Name, height_px=390):
     }}
     setDock(false);
 
-    toolsToggle.addEventListener('click', () => {{ playClick(); setDock(!dockOpen); }});
+    toolsToggle.addEventListener('click', () => {{
+      playClick();
+      setDock(!dockOpen);
+    }});
+
+    // ✅ Hotkey: press "t" (or "c") to toggle tools panel
+    function onHotkeyToggle(e) {{
+      const tag = ((e.target && e.target.tagName) || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
+
+      if (e.key === 't' || e.key === 'T' || e.key === 'c' || e.key === 'C') {{
+        e.preventDefault();
+        playClick();
+        setDock(!dockOpen);
+      }}
+    }}
+    document.addEventListener('keydown', onHotkeyToggle, true);
 
     snapBtn.addEventListener('click', () => {{
       playClick();
@@ -805,14 +817,35 @@ def Step_Visualization(Step_Name, height_px=390):
         const name = '{Step_Name}'.replace(/[^a-z0-9_-]/gi,'_') || 'snapshot';
         a.download = name + '_snapshot.png';
         a.click();
-      }} catch(e) {{ }}
+      }} catch(e) {{}}
     }});
 
-    renderModeSel.addEventListener('change', () => {{ playClick(); setRenderMode(renderModeSel.value); }});
-    axisSel.addEventListener('change', () => {{ playClick(); secAxis = axisSel.value; updateSectionPlane(parseFloat(secDist.value)||0); }});
-    secDist.addEventListener('input', () => {{ updateSectionPlane(parseFloat(secDist.value)||0); }});
-    secToggle.cb.addEventListener('change', () => {{ playClick(); secEnabled = !!secToggle.cb.checked; updateSectionPlane(parseFloat(secDist.value)||0); }});
-    secPlaneToggle.cb.addEventListener('change', () => {{ playClick(); secPlaneVisible = !!secPlaneToggle.cb.checked; updateSectionPlane(parseFloat(secDist.value)||0); }});
+    renderModeSel.addEventListener('change', () => {{
+      playClick();
+      setRenderMode(renderModeSel.value);
+    }});
+
+    axisSel.addEventListener('change', () => {{
+      playClick();
+      secAxis = axisSel.value;
+      updateSectionPlane(parseFloat(secDist.value)||0);
+    }});
+
+    secDist.addEventListener('input', () => {{
+      updateSectionPlane(parseFloat(secDist.value)||0);
+    }});
+
+    secToggle.cb.addEventListener('change', () => {{
+      playClick();
+      secEnabled = !!secToggle.cb.checked;
+      updateSectionPlane(parseFloat(secDist.value)||0);
+    }});
+
+    secPlaneToggle.cb.addEventListener('change', () => {{
+      playClick();
+      secPlaneVisible = !!secPlaneToggle.cb.checked;
+      updateSectionPlane(parseFloat(secDist.value)||0);
+    }});
 
     bIso.addEventListener('click',   () => {{ playClick(); viewIso(); }});
     bTop.addEventListener('click',   () => {{ playClick(); viewTop(); }});
@@ -828,19 +861,17 @@ def Step_Visualization(Step_Name, height_px=390):
         updateSectionPlane(parseFloat(secDist.value)||0);
       }}
 
-      const {{ w, h }} = getSize(container);
-      const aspect = w / h;
-
       if (!boundsInfo) {{
         camera = (projSel.value === 'Perspective') ? persp : ortho;
         controls.object = camera;
         controls.update();
-        applyFixedSize();
+        applySizeToCamera();
         return;
       }}
 
-      const {{ maxDim }} = boundsInfo;
-      const span = Math.max(maxDim, GRID_SIZE * 0.5);
+      const s = getSize(container);
+      const aspect = s.w / s.h;
+      const span = Math.max(boundsInfo.maxDim, GRID_SIZE * 0.5);
       const target = boundsInfo.center.clone();
 
       if (projSel.value === 'Orthographic' && camera.isPerspectiveCamera) {{
@@ -851,8 +882,6 @@ def Step_Visualization(Step_Name, height_px=390):
         ortho.right  =  span * aspect;
         ortho.top    =  span;
         ortho.bottom = -span;
-        ortho.near   = Math.max(span / 1000, 0.001);
-        ortho.far    = Math.max(span * 100, 1000);
 
         ortho.position.copy(target).add(dir.multiplyScalar(distance));
         ortho.up.copy(camera.up);
@@ -882,7 +911,7 @@ def Step_Visualization(Step_Name, height_px=390):
 
       controls.target.copy(target);
       controls.update();
-      applyFixedSize();
+      applySizeToCamera();
 
       if (wasSectionEnabled) {{
         setTimeout(() => {{
@@ -893,29 +922,22 @@ def Step_Visualization(Step_Name, height_px=390):
       }}
     }});
 
-    togGrid.cb.addEventListener('change', () => {{ playClick(); grid.visible = !!togGrid.cb.checked; }});
-    togGround.cb.addEventListener('change', () => {{
+    togGrid.cb.addEventListener('change', () => {{
       playClick();
-      const on = !!togGround.cb.checked;
-      ground.visible = on;
-      dirLight.castShadow = on;
-      renderer.shadowMap.enabled = on;
-      if (model) {{
-        model.traverse(n => {{
-          if (n.isMesh) {{
-            n.castShadow = on;
-            n.receiveShadow = on;
-          }}
-        }});
-      }}
+      grid.visible = !!togGrid.cb.checked;
     }});
-    togAxes.cb.addEventListener('change', () => {{ playClick(); axesHelper.visible = !!togAxes.cb.checked; }});
 
-    // ✅ EXACT resize system like simple script: use container sizes
+    togAxes.cb.addEventListener('change', () => {{
+      playClick();
+      axesHelper.visible = !!togAxes.cb.checked;
+      if (axesHelper.visible) sizeAxesHelper(_lastMaxDim);
+    }});
+
+    // ✅ Resize exactly like the simple script: use container sizes
     window.addEventListener("resize", () => {{
-      const {{ w, h }} = getSize(container);
-      renderer.setSize(w, h, false);
-      applyFixedSize();
+      const s = getSize(container);
+      renderer.setSize(s.w, s.h, false);
+      applySizeToCamera();
       renderer.render(scene, camera);
     }});
 
