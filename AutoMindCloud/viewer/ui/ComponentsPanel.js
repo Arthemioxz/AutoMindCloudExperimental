@@ -1,4 +1,4 @@
-// ComponentsPanel.js
+// /viewer/ui/ComponentsPanel.js
 // Lista de componentes + frame de descripción al hacer click.
 // Integra IA:
 //  - Usa app.getComponentDescription(assetKey, index) / app.componentDescriptions.
@@ -24,6 +24,15 @@ export function createComponentsPanel(app, theme) {
     list: document.createElement("div"),
   };
 
+  // ============================================================
+  // ✅ POSICIONES (igual que antes el UI de "Open Tools")
+  // - Botón arriba a la derecha (right:14px, top:14px)
+  // - Panel arriba a la derecha bajo el botón (right:14px, top:54px)
+  // - Cerrado: translateX(CLOSED_TX) hacia la derecha (offscreen)
+  // - Abierto: translateX(0)
+  // ============================================================
+  const CLOSED_TX = 560; // px (off-screen to the right)
+
   const css = {
     root: {
       position: "absolute",
@@ -36,10 +45,12 @@ export function createComponentsPanel(app, theme) {
       fontFamily:
         "Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
     },
+
+    // Button (Components) — same spot as "Open Tools"
     btn: {
       position: "absolute",
-      left: "14px",
-      bottom: "14px",
+      right: "14px",
+      top: "14px",
       padding: "8px 12px",
       borderRadius: "12px",
       border: `1px solid ${theme.stroke}`,
@@ -50,11 +61,14 @@ export function createComponentsPanel(app, theme) {
       boxShadow: theme.shadow,
       pointerEvents: "auto",
       transition: "all .12s ease",
+      zIndex: "10000",
     },
+
+    // Panel — same spot as the ToolsDock panel (below the button)
     panel: {
       position: "absolute",
       right: "14px",
-      bottom: "14px",
+      top: "54px",
       width: "440px",
       maxHeight: "72%",
       background: theme.bgPanel,
@@ -67,9 +81,10 @@ export function createComponentsPanel(app, theme) {
       willChange: "transform, opacity",
       transition:
         "transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease",
-      transform: "translateX(520px)",
+      transform: `translateX(${CLOSED_TX}px)`,
       opacity: "0",
     },
+
     header: {
       display: "flex",
       alignItems: "center",
@@ -77,9 +92,11 @@ export function createComponentsPanel(app, theme) {
       gap: "8px",
       padding: "10px 12px",
       borderBottom: `1px solid ${theme.stroke}`,
-      background: '#0ea5a6'
+      background: "#0ea5a6",
     },
+
     title: { fontWeight: "800", color: "#ffffff", fontSize: "14px" },
+
     showAllBtn: {
       padding: "6px 10px",
       borderRadius: "10px",
@@ -90,24 +107,28 @@ export function createComponentsPanel(app, theme) {
       fontSize: "11px",
       transition: "all .12s ease",
     },
+
     details: {
       display: "none",
       padding: "10px 12px",
       borderBottom: `1px solid ${theme.stroke}`,
       background: "#ffffff",
     },
+
     detailsTitle: {
       fontWeight: "800",
       fontSize: "13px",
       marginBottom: "4px",
       color: theme.text,
     },
+
     detailsBody: {
       fontSize: "12px",
       lineHeight: "1.5",
       color: theme.textMuted,
       whiteSpace: "pre-wrap",
     },
+
     list: {
       overflowY: "auto",
       maxHeight: "calc(72vh - 52px)",
@@ -126,17 +147,14 @@ export function createComponentsPanel(app, theme) {
   applyStyles(ui.detailsBody, css.detailsBody);
   applyStyles(ui.list, css.list);
 
-
   // UI scale (50% más chico) — NO toca open/close transforms ni hover
   const UI_SCALE = 0.5;
 
-  ui.btn.style.transformOrigin = 'bottom left';
+  ui.btn.style.transformOrigin = "top right";
   ui.btn.style.scale = String(UI_SCALE);
 
-  ui.panel.style.transformOrigin = 'bottom right';
+  ui.panel.style.transformOrigin = "top right";
   ui.panel.style.scale = String(UI_SCALE);
-
-  
 
   ui.btn.textContent = "Components";
   ui.title.textContent = "Components";
@@ -161,7 +179,6 @@ export function createComponentsPanel(app, theme) {
   let open = false;
   let building = false;
   let disposed = false;
-  const CLOSED_TX = 520;
 
   let currentEnt = null;
   let currentIndex = null;
@@ -189,7 +206,9 @@ export function createComponentsPanel(app, theme) {
   });
 
   ui.showAllBtn.addEventListener("click", () => {
-    try { app.showAll(); } catch (_) {}
+    try {
+      app.showAll();
+    } catch (_) {}
     hideDetails();
   });
 
@@ -297,7 +316,9 @@ export function createComponentsPanel(app, theme) {
 
       row.addEventListener("click", () => {
         console.debug("[ComponentsPanel] Click en", ent.assetKey);
-        try { app.isolate.asset(ent.assetKey); } catch (_) {}
+        try {
+          app.isolate.asset(ent.assetKey);
+        } catch (_) {}
         currentEnt = ent;
         currentIndex = index;
         showDetails(ent, index);
@@ -347,7 +368,10 @@ export function createComponentsPanel(app, theme) {
 
     if (!text) {
       text = "Sin descripción generada para esta pieza.";
-      console.debug("[ComponentsPanel] No se encontró descripción para", ent.assetKey);
+      console.debug(
+        "[ComponentsPanel] No se encontró descripción para",
+        ent.assetKey
+      );
     }
 
     ui.detailsTitle.textContent = ent.base;
@@ -378,10 +402,7 @@ export function createComponentsPanel(app, theme) {
   }
 
   function onIAReady(ev) {
-    console.debug(
-      "[ComponentsPanel][IA] ia_descriptions_ready",
-      ev && ev.detail
-    );
+    console.debug("[ComponentsPanel][IA] ia_descriptions_ready", ev && ev.detail);
     refreshCurrentDetailsFromIA();
   }
 
@@ -414,12 +435,22 @@ export function createComponentsPanel(app, theme) {
 
   function destroy() {
     disposed = true;
-    try { document.removeEventListener("keydown", onHotkeyC, true); } catch (_) {}
-    try { window.removeEventListener("ia_descriptions_ready", onIAReady); } catch (_) {}
+    try {
+      document.removeEventListener("keydown", onHotkeyC, true);
+    } catch (_) {}
+    try {
+      window.removeEventListener("ia_descriptions_ready", onIAReady);
+    } catch (_) {}
     clearInterval(pollTimer);
-    try { ui.btn.remove(); } catch (_) {}
-    try { ui.panel.remove(); } catch (_) {}
-    try { ui.root.remove(); } catch (_) {}
+    try {
+      ui.btn.remove();
+    } catch (_) {}
+    try {
+      ui.panel.remove();
+    } catch (_) {}
+    try {
+      ui.root.remove();
+    } catch (_) {}
   }
 
   function onHotkeyC(e) {
