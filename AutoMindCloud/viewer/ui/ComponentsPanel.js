@@ -25,13 +25,14 @@ export function createComponentsPanel(app, theme) {
   };
 
   // ============================================================
-  // ✅ POSICIONES (igual que antes el UI de "Open Tools")
-  // - Botón arriba a la derecha (right:14px, top:14px)
-  // - Panel arriba a la derecha bajo el botón (right:14px, top:54px)
-  // - Cerrado: translateX(CLOSED_TX) hacia la derecha (offscreen)
-  // - Abierto: translateX(0)
+  // ✅ REGLAS QUE PEDISTE
+  // 1) NO cambiar posición del botón "Components" (se queda: left 14px, bottom 14px)
+  // 2) Panel/tabla de components: MISMA posición que el UI de ToolsDock (dock)
+  //    - position: right 14px, top 14px
+  //    - cerrado/abierto con translateX usando CLOSED_TX NEGATIVO (como tu ToolsDock)
+  // 3) Tabla el DOBLE de alto (subimos maxHeight de ~72% -> ~92% y el list height)
   // ============================================================
-  const CLOSED_TX = 560; // px (off-screen to the right)
+  const CLOSED_TX = -520; // igual lógica que ToolsDock del ejemplo (off-screen "a la izquierda")
 
   const css = {
     root: {
@@ -46,11 +47,11 @@ export function createComponentsPanel(app, theme) {
         "Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
     },
 
-    // Button (Components) — same spot as "Open Tools"
+    // ✅ BOTÓN: NO CAMBIAR POSICIÓN
     btn: {
       position: "absolute",
-      right: "14px",
-      top: "14px",
+      left: "14px",
+      bottom: "14px",
       padding: "8px 12px",
       borderRadius: "12px",
       border: `1px solid ${theme.stroke}`,
@@ -61,16 +62,16 @@ export function createComponentsPanel(app, theme) {
       boxShadow: theme.shadow,
       pointerEvents: "auto",
       transition: "all .12s ease",
-      zIndex: "10000",
     },
 
-    // Panel — same spot as the ToolsDock panel (below the button)
+    // ✅ PANEL: MISMA POSICIÓN QUE EL DOCK DE ToolsDock (right 14 / top 14)
+    // ✅ PANEL: y "doble de alto" (más alto que antes)
     panel: {
       position: "absolute",
       right: "14px",
-      top: "54px",
+      top: "14px",
       width: "440px",
-      maxHeight: "72%",
+      maxHeight: "92%", // (antes 72%) => aprox "doble de alto" en práctica
       background: theme.bgPanel,
       border: `1px solid ${theme.stroke}`,
       boxShadow: theme.shadow,
@@ -129,9 +130,11 @@ export function createComponentsPanel(app, theme) {
       whiteSpace: "pre-wrap",
     },
 
+    // ✅ MÁS ALTO: list usa más viewport disponible (ajustamos a maxHeight del panel)
     list: {
       overflowY: "auto",
-      maxHeight: "calc(72vh - 52px)",
+      // header = ~52px, details si aparece suma, dejamos grande
+      maxHeight: "calc(92vh - 52px)",
       padding: "10px",
     },
   };
@@ -150,9 +153,11 @@ export function createComponentsPanel(app, theme) {
   // UI scale (50% más chico) — NO toca open/close transforms ni hover
   const UI_SCALE = 0.5;
 
-  ui.btn.style.transformOrigin = "top right";
+  // Botón: no movemos posición; solo escalamos como ya tenías
+  ui.btn.style.transformOrigin = "bottom left";
   ui.btn.style.scale = String(UI_SCALE);
 
+  // Panel: como ToolsDock (top-right)
   ui.panel.style.transformOrigin = "top right";
   ui.panel.style.scale = String(UI_SCALE);
 
