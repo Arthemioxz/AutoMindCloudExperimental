@@ -16,14 +16,13 @@ def Download_Step(Drive_Link, Output_Name):
 
 def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
     """
-    STEP viewer (same size system as the simple script):
-      - width: 100% of output cell
-      - height: fixed height_px
-      - renderer uses container.clientWidth/Height
-    Plus:
-      - Viewer Tools panel
-      - Hotkey: press 't' (or 'c') to toggle panel
-      - Tools panel scaled smaller (tools_panel_scale, default 0.5 => 50% smaller)
+    STEP viewer with:
+      - EXACT same size system as the simple script:
+          width: 100% (output cell)
+          height: fixed height_px
+      - Viewer Tools panel (50% smaller by default)
+      - Hotkey: press 't' (or 'c') to toggle tools panel
+      - Restored: Ground & shadows toggle (real shadows)
     """
     STEP_PATH = f"{Step_Name}.step"
     bg_js = "0xffffff"
@@ -54,7 +53,7 @@ def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
     font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial;
   }}
 
-  /* ✅ EXACT same sizing system as your simple script */
+  /* ✅ SAME sizing system: width 100% + fixed height */
   #app {{
     width:100%;
     height:{H}px;
@@ -136,7 +135,7 @@ def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
     --tools-scale: {panel_scale};
   }}
 
-  /* ✅ Viewer Tools panel (50% smaller by default via scale) */
+  /* ✅ Panel scaled smaller (0.5 => 50% smaller) */
   .panel.dock {{
     position:absolute; right:14px; top:54px; width:440px;
 
@@ -248,10 +247,17 @@ def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
 
     let {{ w, h }} = getSize(container);
 
-    const renderer = new THREE.WebGLRenderer({{ antialias: true, preserveDrawingBuffer: true }});
+    const renderer = new THREE.WebGLRenderer({{
+      antialias: true,
+      preserveDrawingBuffer: true
+    }});
     renderer.setPixelRatio(window.devicePixelRatio || 1);
-    renderer.shadowMap.enabled = false;
     renderer.setSize(w, h, false);
+
+    // ✅ shadows system (starts OFF, toggled by UI)
+    renderer.shadowMap.enabled = false;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     renderer.domElement.style.position = "absolute";
@@ -285,17 +291,40 @@ def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
     controls.target.set(0, 0, 0);
     controls.update();
 
+    // Lights
     const hemi = new THREE.HemisphereLight(0xffffff, 0xeeeeee, 0.7);
+    scene.add(hemi);
+
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.05);
     dirLight.position.set(3, 4, 2);
-    dirLight.castShadow = false;
-    scene.add(hemi);
+    dirLight.castShadow = false; // starts OFF
+    dirLight.shadow.mapSize.width = 2048;
+    dirLight.shadow.mapSize.height = 2048;
+    dirLight.shadow.camera.near = 0.01;
+    dirLight.shadow.camera.far = 10000;
+    dirLight.shadow.bias = -0.0002;
     scene.add(dirLight);
 
     const GRID_SIZE = 10;
+
+    // Ground + Grid group (start hidden)
+    const groundGroup = new THREE.Group();
+    scene.add(groundGroup);
+
     const grid = new THREE.GridHelper(GRID_SIZE, 20, 0x0ea5a6, 0x0ea5a6);
     grid.visible = false;
-    scene.add(grid);
+    groundGroup.add(grid);
+
+    const groundMat = new THREE.ShadowMaterial({{ opacity: 0.22 }});
+    groundMat.transparent = true;
+    groundMat.depthWrite = false;
+
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.0001;
+    ground.receiveShadow = true;
+    ground.visible = false; // starts OFF
+    groundGroup.add(ground);
 
     const axesHelper = new THREE.AxesHelper(1);
     axesHelper.visible = false;
@@ -480,6 +509,13 @@ def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
       const s = getSize(container);
       const aspect = s.w / s.h;
 
+      // Update shadow camera bounds to cover model when shadows enabled later
+      dirLight.shadow.camera.left   = -_lastMaxDim * 2;
+      dirLight.shadow.camera.right  =  _lastMaxDim * 2;
+      dirLight.shadow.camera.top    =  _lastMaxDim * 2;
+      dirLight.shadow.camera.bottom = -_lastMaxDim * 2;
+      dirLight.shadow.camera.updateProjectionMatrix();
+
       if (camera.isPerspectiveCamera) {{
         const vFOV = THREE.MathUtils.degToRad(camera.fov);
         const hFOV = 2 * Math.atan(Math.tan(vFOV / 2) * aspect);
@@ -626,7 +662,10 @@ def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
         }});
       }}
 
-      model.add(new THREE.Mesh(geom, mat));
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.castShadow = false;    // will be toggled
+      mesh.receiveShadow = false; // will be toggled
+      model.add(mesh);
     }}
 
     if (!model.children.length) {{
@@ -758,8 +797,10 @@ def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
     bRight.textContent='Right';
 
     const projSel = mkSelect(['Perspective','Orthographic'],'Perspective');
-    const togGrid = mkToggle('Grid', false);
-    const togAxes = mkToggle('XYZ axes', false);
+
+    const togGrid   = mkToggle('Grid', false);
+    const togGround = mkToggle('Ground & shadows', false);  // ✅ RESTORED
+    const togAxes   = mkToggle('XYZ axes', false);
 
     body.appendChild(row('Render mode', renderModeSel));
     body.appendChild(row('Section axis', axisSel));
@@ -769,6 +810,7 @@ def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
     body.appendChild(row('Views', viewsRow));
     body.appendChild(row('Projection', projSel));
     body.appendChild(row('', togGrid.wrap));
+    body.appendChild(row('', togGround.wrap)); // ✅ RESTORED
     body.appendChild(row('', togAxes.wrap));
 
     dock.appendChild(dockHeader);
@@ -852,6 +894,7 @@ def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
     bFront.addEventListener('click', () => {{ playClick(); viewFront(); }});
     bRight.addEventListener('click', () => {{ playClick(); viewRight(); }});
 
+    // Projection switch
     projSel.addEventListener('change', () => {{
       playClick();
 
@@ -927,13 +970,35 @@ def Step_Visualization(Step_Name, height_px=390, tools_panel_scale=0.5):
       grid.visible = !!togGrid.cb.checked;
     }});
 
+    // ✅ RESTORED: Ground & shadows toggle
+    togGround.cb.addEventListener('change', () => {{
+      playClick();
+      const on = !!togGround.cb.checked;
+
+      ground.visible = on;
+      renderer.shadowMap.enabled = on;
+      dirLight.castShadow = on;
+
+      if (model) {{
+        model.traverse(n => {{
+          if (n.isMesh) {{
+            n.castShadow = on;
+            n.receiveShadow = on;
+          }}
+        }});
+      }}
+
+      // Small re-render immediately
+      renderer.render(scene, camera);
+    }});
+
     togAxes.cb.addEventListener('change', () => {{
       playClick();
       axesHelper.visible = !!togAxes.cb.checked;
       if (axesHelper.visible) sizeAxesHelper(_lastMaxDim);
     }});
 
-    // ✅ Resize exactly like the simple script: use container sizes
+    // Resize: EXACT like simple script (container-based)
     window.addEventListener("resize", () => {{
       const s = getSize(container);
       renderer.setSize(s.w, s.h, false);
