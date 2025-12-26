@@ -1,6 +1,6 @@
 // /viewer/ui/ToolsDock.js / checkpoint
 // Floating tools dock: render modes, explode (smoothed & robust), section plane (ROBOT ONLY), views, projection, scene toggles, snapshot.
-/* global THREE */
+/* global THREE */ 
 
 export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer)
