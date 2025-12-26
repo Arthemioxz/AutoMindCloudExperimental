@@ -227,7 +227,17 @@ from IPython.display import display, Markdown
 
 
 
-import requests, base64, mimetypes, re, html, urllib.parse, json
+
+
+# =========================================================
+# IA_CalculusSummary (FULL) + Copy Summary Button
+# - Robust /infer client
+# - Cleans headings/boilerplate
+# - Keeps MathJax rendering but prevents "full sentences in LaTeX"
+# - Adds a button to copy the SUMMARY text to clipboard
+# =========================================================
+
+import requests, base64, mimetypes, re, html, urllib.parse, json, uuid
 from pathlib import Path
 from IPython.display import display, HTML
 
@@ -422,18 +432,29 @@ def _split_summary_and_steps(text: str):
 
 
 # =====================================
-# 🔹 Render con fuentes + MathJax
+# 🔹 Render con fuentes + MathJax + COPY BUTTON
 # =====================================
 def _render_html(summary: str, steps: list, font_type: str, language: str):
     global Color  # Color definido por ti afuera
+
+    # Unique IDs so multiple renders do not collide
+    uid = uuid.uuid4().hex[:10]
+    textarea_id = f"summary_copy_src_{uid}"
+    msg_id = f"copy_msg_{uid}"
 
     lang = (language or "spanish").strip().lower()
     if lang.startswith("en"):
         title_resumen = "Summary"
         title_pasos = "Steps"
+        copy_label = "Copy summary"
+        copied_label = "Copied!"
+        copy_fail_label = "Copy failed"
     else:
         title_resumen = "Resumen"
         title_pasos = "Pasos"
+        copy_label = "Copiar resumen"
+        copied_label = "¡Copiado!"
+        copy_fail_label = "No se pudo copiar"
 
     css = f"""
 <link href="https://fonts.googleapis.com/css2?family=Anton:wght@400;700&display=swap" rel="stylesheet">
@@ -447,13 +468,46 @@ def _render_html(summary: str, steps: list, font_type: str, language: str):
     font-family:'{font_type}','Fira Sans',system-ui;
   }}
 
+  .title-row {{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    margin:8px 0 10px;
+  }}
+
   .title {{
     font-family:'Anton',sans-serif;
     color:{Color};
     font-size:22px;
     font-weight:700;
     letter-spacing:1.5px;
-    margin:8px 0 10px;
+    margin:0;
+  }}
+
+  .copy-wrap {{
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }}
+
+  .copy-btn {{
+    border:1px solid rgba(0,0,0,0.15);
+    border-radius:10px;
+    padding:7px 10px;
+    font-size:13px;
+    cursor:pointer;
+    background:rgba(255,255,255,0.9);
+  }}
+  .copy-btn:hover {{
+    filter:brightness(0.98);
+  }}
+
+  .copy-msg {{
+    font-size:12px;
+    opacity:0.85;
+    color:{Color};
+    min-width:90px;
   }}
 
   .p {{
@@ -475,21 +529,92 @@ def _render_html(summary: str, steps: list, font_type: str, language: str):
     margin-right:8px;
     font-weight:700;
   }}
+
+  /* Hidden textarea for robust copying */
+  .copy-src {{
+    position:absolute;
+    left:-9999px;
+    top:-9999px;
+    width:1px;
+    height:1px;
+    opacity:0;
+  }}
 </style>
+
 <script>
 window.MathJax={{tex:{{inlineMath:[['$','$'],['\\\\(','\\\\)']],
 displayMath:[['$$','$$'],['\\\\[','\\\\]']]}},
 options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}};
 </script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
+
+<script>
+(function() {{
+  function setMsg(text) {{
+    const el = document.getElementById("{msg_id}");
+    if (!el) return;
+    el.textContent = text || "";
+    if (text) {{
+      clearTimeout(el.__t);
+      el.__t = setTimeout(() => el.textContent = "", 1200);
+    }}
+  }}
+
+  async function copySummary() {{
+    const ta = document.getElementById("{textarea_id}");
+    if (!ta) return;
+
+    const text = ta.value || "";
+
+    // Prefer async clipboard API when available
+    try {{
+      if (navigator.clipboard && window.isSecureContext) {{
+        await navigator.clipboard.writeText(text);
+        setMsg("{copied_label}");
+        return;
+      }}
+    }} catch (e) {{
+      // fall through to execCommand
+    }}
+
+    // Fallback
+    try {{
+      ta.style.opacity = "1";
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      const ok = document.execCommand("copy");
+      ta.style.opacity = "0";
+      setMsg(ok ? "{copied_label}" : "{copy_fail_label}");
+    }} catch (e) {{
+      setMsg("{copy_fail_label}");
+    }}
+  }}
+
+  window["__copySummary_{uid}"] = copySummary;
+}})();
+</script>
+"""
+
+    # IMPORTANT: raw summary in textarea (NOT _escape_keep_math), so it copies plain text + LaTeX delimiters
+    textarea = f"""
+<textarea id="{textarea_id}" class="copy-src" readonly>{html.escape(summary)}</textarea>
 """
 
     body = f"""
 <div class="calc-wrap">
-  <div class="title">{title_resumen}</div>
+  <div class="title-row">
+    <div class="title">{title_resumen}</div>
+    <div class="copy-wrap">
+      <button class="copy-btn" onclick="window['__copySummary_{uid}']()">{copy_label}</button>
+      <span id="{msg_id}" class="copy-msg"></span>
+    </div>
+  </div>
+
+  {textarea}
+
   <p class="p summary">{_escape_keep_math(summary)}</p>
 
-  {"<div class='title'>" + title_pasos + "</div>" if steps else ""}
+  {"<div class='title' style='margin-top:14px;'>" + title_pasos + "</div>" if steps else ""}
   {''.join(
       f'<p class="p step"><span class="idx">{i}.</span>{_escape_keep_math(s)}</p>'
       for i, s in enumerate(steps, 1)
@@ -544,26 +669,17 @@ def IA_CalculusSummary(
         )
 
     if numero == 1:
-        detalle = (
-            " Redacta un resumen conciso (5-7 líneas) y 7 pasos generales sin fórmulas."
-        )
+        detalle = " Redacta un resumen conciso (5-7 líneas) y 7 pasos generales sin fórmulas."
     elif numero == 2:
-        detalle = (
-            " Redacta un resumen preciso (7-9 líneas) y 15 pasos con detalles clave."
-        )
+        detalle = " Redacta un resumen preciso (7-9 líneas) y 15 pasos con detalles clave."
     elif numero == 3:
-        detalle = (
-            " Redacta un resumen muy preciso (9-12 líneas) y 30 pasos con notación LaTeX."
-        )
+        detalle = " Redacta un resumen muy preciso (9-12 líneas) y 30 pasos con notación LaTeX."
     else:
         detalle = " Redacta un resumen breve y pasos razonables."
 
-    prompt = (
-        f"{base}{detalle}\n\nContenido a resumir / Content to summarize:\n\n{documento}"
-    )
+    prompt = f"{base}{detalle}\n\nContenido a resumir / Content to summarize:\n\n{documento}"
 
     raw = polli_text(prompt)
     summary, steps = _split_summary_and_steps(raw)
     html_out = _render_html(summary, steps, font_type, language)
     display(HTML(html_out))
-
