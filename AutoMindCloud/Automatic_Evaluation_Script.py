@@ -259,21 +259,45 @@ from IPython.display import display, Markdown
 
 
 
-
 # =========================================================
-# IA_CalculusSummary (FULL) + Copy API OUTPUT Button (with hover animation)
-# - Button copies EXACT raw text returned by the API (/infer)
-# - Hover animation like your ComponentsPanel.js (translate + scale + teal faint)
+# IA_CalculusSummary (FULL)
+# ✅ Converts API output:
+#    \( ... \)  ->  $ ... $
+#    \[ ... \]  ->  $$ ... $$
+# ✅ Copies EXACTLY the converted API output (not the parsed summary)
+# ✅ Copy button matches ComponentsPanel.js button (style + hover)
 # =========================================================
 
 import requests, re, html, json, uuid
 from IPython.display import display, HTML
 
-# Optional: if you don't define Color elsewhere, this fallback is used
+# Optional fallback if you don't define Color elsewhere
 try:
     Color
 except NameError:
     Color = "#0ea5a6"
+
+# =========================================================
+# 🔹 Convert TeX delimiters in API output to $ / $$
+# =========================================================
+def _convert_tex_delims_to_dollars(s: str) -> str:
+    """
+    Convert:
+      \( ... \) -> $ ... $
+      \[ ... \] -> $$ ... $$
+    Also fixes '\ (' -> '\(' and '\ )' -> '\)' first.
+    """
+    if not s:
+        return ""
+
+    s = s.replace("\\ (", "\\(").replace("\\ )", "\\)")
+
+    # display first
+    s = re.sub(r"\\\[(.*?)\\\]", r"$$\1$$", s, flags=re.S)
+    # inline
+    s = re.sub(r"\\\((.*?)\\\)", r"$\1$", s, flags=re.S)
+
+    return s
 
 
 # =========================================================
@@ -284,31 +308,31 @@ def polli_text(
     url: str = "https://gpt-proxy-github-619255898589.us-central1.run.app/infer",
     timeout: int = 60,
 ) -> str:
-    # IMPORTANTE: tu backend /infer debe aceptar {"text": "..."}
     r = requests.post(url, json={"text": prompt}, timeout=timeout)
     r.raise_for_status()
+
     try:
         data = r.json()
     except Exception:
-        return r.text.strip()
+        return _convert_tex_delims_to_dollars(r.text.strip())
 
     if isinstance(data, str):
-        return data.strip()
+        return _convert_tex_delims_to_dollars(data.strip())
 
     if isinstance(data, dict):
         if "text" in data and isinstance(data["text"], str):
-            return data["text"].strip()
+            return _convert_tex_delims_to_dollars(data["text"].strip())
         if "output" in data and isinstance(data["output"], str):
-            return data["output"].strip()
+            return _convert_tex_delims_to_dollars(data["output"].strip())
         if "choices" in data and isinstance(data["choices"], list) and data["choices"]:
             ch = data["choices"][0]
             if isinstance(ch, dict):
                 for k in ("text", "message", "content"):
                     if k in ch and isinstance(ch[k], str):
-                        return ch[k].strip()
-        return json.dumps(data, ensure_ascii=False)
+                        return _convert_tex_delims_to_dollars(ch[k].strip())
+        return _convert_tex_delims_to_dollars(json.dumps(data, ensure_ascii=False))
 
-    return str(data).strip()
+    return _convert_tex_delims_to_dollars(str(data).strip())
 
 
 # =====================================
@@ -333,23 +357,24 @@ def _looks_like_heading(line: str) -> bool:
     return any(rx.match(line.strip()) for rx in _heading_regexes)
 
 
-# ========= FUNCIÓN CLAVE: evita texto pegado y corrige "\ (" =========
 def _escape_keep_math(s: str) -> str:
-    s = s.replace("\\ (", "\\(").replace("\\ )", "\\)")
-
+    # Keep $...$ and $$...$$ segments unescaped, escape the rest
     math_pattern = re.compile(r"(\$\$.*?\$\$|\$.*?\$|\\\[.*?\\\]|\\\(.*?\\\))", re.S)
     math_ops_re = re.compile(r"(\\[a-zA-Z]+|[_^=+\-*/=])")
 
     def _maybe_unmath(seg: str) -> str:
+        # Keep $$...$$ always
         if seg.startswith("$$") and seg.endswith("$$"):
             return seg
 
-        if seg.startswith("\\(") and seg.endswith("\\)"):
+        # Inline $...$
+        if seg.startswith("$") and seg.endswith("$"):
+            inner = seg[1:-1]
+        # Legacy delimiters (shouldn't happen often after conversion, but safe)
+        elif seg.startswith("\\(") and seg.endswith("\\)"):
             inner = seg[2:-2]
         elif seg.startswith("\\[") and seg.endswith("\\]"):
             inner = seg[2:-2]
-        elif seg.startswith("$") and seg.endswith("$"):
-            inner = seg[1:-1]
         else:
             return seg
 
@@ -360,6 +385,7 @@ def _escape_keep_math(s: str) -> str:
         tokens = inner_stripped.replace("\n", " ").split()
         has_math_ops = bool(math_ops_re.search(inner_stripped))
 
+        # If it's basically a sentence, escape it (avoid math delimiters around text)
         if len(tokens) >= 6 and not has_math_ops:
             return html.escape(inner_stripped)
 
@@ -373,6 +399,8 @@ def _escape_keep_math(s: str) -> str:
         if len(tokens) >= 4 and not has_math_ops and letters_ratio > 0.6:
             return html.escape(inner_stripped)
 
+        # Otherwise keep as math
+        # Preserve original seg (so delimiters remain)
         return seg
 
     parts = math_pattern.split(s)
@@ -444,17 +472,14 @@ def _split_summary_and_steps(text: str):
 
 
 def _safe_textarea_payload(s: str) -> str:
-    # Prevent rare edge case where the model outputs "</textarea>"
     s = (s or "").replace("</textarea>", "</text_area>")
     return html.escape(s)
 
 
 # =====================================
-# 🔹 Render con fuentes + MathJax + COPY API OUTPUT BUTTON
+# 🔹 Render + MathJax + Copy API output (Components button)
 # =====================================
-def _render_html(summary: str, steps: list, font_type: str, language: str, raw_api_output: str):
-    global Color
-
+def _render_html(summary: str, steps: list, font_type: str, language: str, api_output_text_converted: str):
     uid = uuid.uuid4().hex[:10]
     copy_src_id = f"copy_src_{uid}"
     btn_id = f"copy_btn_{uid}"
@@ -464,21 +489,22 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, raw_a
     if lang.startswith("en"):
         title_resumen = "Summary"
         title_pasos = "Steps"
-        copy_label = "Copy API output"
+        copy_label = "Copy output"
         copied_label = "Copied!"
         copy_fail_label = "Copy failed"
     else:
         title_resumen = "Resumen"
         title_pasos = "Pasos"
-        copy_label = "Copiar salida (API)"
+        copy_label = "Copiar output"
         copied_label = "¡Copiado!"
         copy_fail_label = "No se pudo copiar"
 
-    # Colors inspired by your viewer theme feel
-    TEAL = Color or "#0ea5a6"
-    TEAL_FAINT = "rgba(14,165,166,0.12)"
-    STROKE = "rgba(0,0,0,0.15)"
-    BG_PANEL = "rgba(255,255,255,0.90)"
+    # Match ComponentsPanel.js button look/feel
+    teal = Color or "#0ea5a6"
+    tealFaint = "rgba(14,165,166,0.12)"
+    stroke = "rgba(0,0,0,0.15)"
+    bgPanel = "rgba(255,255,255,0.92)"
+    shadow = "0 10px 25px rgba(0,0,0,0.12)"
 
     css = f"""
 <link href="https://fonts.googleapis.com/css2?family=Anton:wght@400;700&display=swap" rel="stylesheet">
@@ -503,38 +529,34 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, raw_a
 
   .title {{
     font-family:'Anton',sans-serif;
-    color:{TEAL};
+    color:{teal};
     font-size:22px;
     font-weight:700;
     letter-spacing:1.5px;
     margin:0;
   }}
 
-  .copy-wrap {{
-    display:flex;
-    align-items:center;
-    gap:10px;
-  }}
-
-  /* Base styling like your viewer buttons */
+  /* EXACT ComponentsPanel.js-like button base style */
   .copy-btn {{
     padding:8px 12px;
     border-radius:12px;
-    border:1px solid {STROKE};
-    background:{BG_PANEL};
+    border:1px solid {stroke};
+    background:{bgPanel};
     color:#111;
-    font-weight:800;
+    font-weight:700;
     cursor:pointer;
+    box-shadow:{shadow};
     transition:all .12s ease;
+    pointer-events:auto;
     user-select:none;
-    -webkit-tap-highlight-color: transparent;
   }}
 
   .copy-msg {{
     font-size:12px;
     opacity:0.85;
-    color:{TEAL};
+    color:{teal};
     min-width:110px;
+    margin-left:10px;
   }}
 
   .p {{
@@ -542,22 +564,18 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, raw_a
     line-height:1.6;
     margin:8px 0;
   }}
-
   .summary {{
-    color:{TEAL};
+    color:{teal};
   }}
-
   .step {{
     margin:10px 0;
-    color:{TEAL};
+    color:{teal};
   }}
-
   .idx {{
     margin-right:8px;
     font-weight:900;
   }}
 
-  /* Hidden textarea for robust copying */
   .copy-src {{
     position:absolute;
     left:-9999px;
@@ -569,18 +587,22 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, raw_a
 </style>
 
 <script>
-window.MathJax={{tex:{{inlineMath:[['$','$'],['\\\\(','\\\\)']],
-displayMath:[['$$','$$'],['\\\\[','\\\\]']]}},
-options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}};
+window.MathJax={{
+  tex:{
+    inlineMath:[['$','$'],['\\\\(','\\\\)']],
+    displayMath:[['$$','$$'],['\\\\[','\\\\]']]
+  },
+  options:{skipHtmlTags:['script','noscript','style','textarea','pre','code']}
+}};
 </script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
 
 <script>
 (function() {{
-  const TEAL_FAINT = "{TEAL_FAINT}";
-  const TEAL = "{TEAL}";
-  const STROKE = "{STROKE}";
-  const BG_PANEL = "{BG_PANEL}";
+  const TEAL = "{teal}";
+  const TEAL_FAINT = "{tealFaint}";
+  const STROKE = "{stroke}";
+  const BG_PANEL = "{bgPanel}";
 
   function setMsg(text) {{
     const el = document.getElementById("{msg_id}");
@@ -592,7 +614,7 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
     }}
   }}
 
-  async function copyApiOutput() {{
+  async function copyConvertedApiOutput() {{
     const ta = document.getElementById("{copy_src_id}");
     if (!ta) return;
     const text = ta.value || "";
@@ -603,9 +625,7 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
         setMsg("{copied_label}");
         return;
       }}
-    }} catch (e) {{
-      // fallback below
-    }}
+    }} catch (e) {{}}
 
     try {{
       ta.style.opacity = "1";
@@ -619,11 +639,11 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
     }}
   }}
 
-  // Hover animation like your ComponentsPanel.js
-  function wireHover() {{
+  function wireButton() {{
     const btn = document.getElementById("{btn_id}");
     if (!btn) return;
 
+    // Hover behavior EXACTLY like ComponentsPanel.js
     btn.addEventListener("mouseenter", () => {{
       btn.style.transform = "translateY(-1px) scale(1.02)";
       btn.style.background = TEAL_FAINT;
@@ -634,25 +654,23 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
       btn.style.background = BG_PANEL;
       btn.style.borderColor = STROKE;
     }});
-
-    btn.addEventListener("click", () => copyApiOutput());
+    btn.addEventListener("click", () => copyConvertedApiOutput());
   }}
 
-  // Wait a tick to ensure DOM exists
-  setTimeout(wireHover, 0);
+  setTimeout(wireButton, 0);
 }})();
 </script>
 """
 
     textarea = f"""
-<textarea id="{copy_src_id}" class="copy-src" readonly>{_safe_textarea_payload(raw_api_output)}</textarea>
+<textarea id="{copy_src_id}" class="copy-src" readonly>{_safe_textarea_payload(api_output_text_converted)}</textarea>
 """
 
     body = f"""
 <div class="calc-wrap">
   <div class="title-row">
     <div class="title">{title_resumen}</div>
-    <div class="copy-wrap">
+    <div>
       <button id="{btn_id}" class="copy-btn">{copy_label}</button>
       <span id="{msg_id}" class="copy-msg"></span>
     </div>
@@ -673,7 +691,7 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
 
 
 # =====================================
-# 🔹 Función principal con idioma
+# 🔹 Función principal
 # =====================================
 def IA_CalculusSummary(
     numero: int,
@@ -681,13 +699,15 @@ def IA_CalculusSummary(
     font_type: str = "Latin Modern Roman",
 ):
     """
-    IA_CalculusSummary(numero, language="spanish"/"english", font_type=...)
     Usa la variable global 'documento' como entrada.
+    Render: Summary + Steps (MathJax)
+    Copy button: copies the converted API output ($/$$ delimiters)
     """
     global documento
 
     lang = (language or "spanish").strip().lower()
 
+    # IMPORTANT: ask the model for dollars too (but we ALSO convert anyway)
     if lang.startswith("en"):
         base = (
             "Write in English, academic tone, formal and impersonal (third person). "
@@ -696,9 +716,9 @@ def IA_CalculusSummary(
             "(1) one summary paragraph; "
             "(2) then a numbered list of steps 1., 2., 3., etc. "
             "IMPORTANT: All mathematical notation MUST be correctly delimited: "
-            "use \\( ... \\) for inline formulas and \\[ ... \\] for display equations. "
+            "use $ ... $ for inline formulas and $$ ... $$ for display equations. "
             "Use LaTeX ONLY for short mathematical expressions, never for whole sentences. "
-            "If the model tries to wrap an entire sentence with \\( ... \\) or $ ... $, rewrite it so that "
+            "If the model tries to wrap an entire sentence with $ ... $, rewrite it so that "
             "only the specific mathematical expressions are in LaTeX."
         )
     else:
@@ -709,9 +729,9 @@ def IA_CalculusSummary(
             "(1) un párrafo de resumen; "
             "(2) luego una enumeración con pasos numerados 1., 2., 3., etc. "
             "IMPORTANTE: Toda notación matemática DEBE ir delimitada correctamente: "
-            "usa \\( ... \\) para fórmulas en línea y \\[ ... \\] para ecuaciones en bloque. "
+            "usa $ ... $ para fórmulas en línea y $$ ... $$ para ecuaciones en bloque. "
             "Usa LaTeX SOLO para expresiones matemáticas cortas, nunca para oraciones completas. "
-            "Si el modelo intenta rodear una oración completa con \\( ... \\) o $ ... $, "
+            "Si el modelo intenta rodear una oración completa con $ ... $, "
             "reformula la oración para que únicamente las expresiones matemáticas específicas "
             "aparezcan en LaTeX."
         )
@@ -727,12 +747,12 @@ def IA_CalculusSummary(
 
     prompt = f"{base}{detalle}\n\nContenido a resumir / Content to summarize:\n\n{documento}"
 
-    # RAW output from API (this is what the button will copy)
-    raw = polli_text(prompt)
+    # 1) Get API output (already converted to $/$$ by polli_text)
+    api_out_converted = polli_text(prompt)
 
-    # Parsed output for display
-    summary, steps = _split_summary_and_steps(raw)
+    # 2) Parse for display
+    summary, steps = _split_summary_and_steps(api_out_converted)
 
-    html_out = _render_html(summary, steps, font_type, language, raw_api_output=raw)
+    # 3) Render HTML; copy button copies api_out_converted exactly
+    html_out = _render_html(summary, steps, font_type, language, api_output_text_converted=api_out_converted)
     display(HTML(html_out))
-
