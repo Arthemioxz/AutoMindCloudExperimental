@@ -256,8 +256,13 @@ from IPython.display import display, Markdown
 
 
 
+
+
+
+
+
 # =========================================================
-# IA_CalculusSummary (FULL) — FIXED
+# IA_CalculusSummary (FULL) — FINAL FIX
 # ✅ Converts API output delimiters:
 #       \( ... \)  ->  $ ... $
 #       \[ ... \]  ->  $$ ... $$
@@ -266,7 +271,12 @@ from IPython.display import display, Markdown
 # ✅ Titles:
 #    - Spanish: "Pasos"
 #    - English: "Step"
-# ✅ "Copied!" feedback appears INSIDE the button (temporary), not on the right
+# ✅ Button feedback appears INSIDE the button ("Copied!")
+# ✅ Button label:
+#    - Spanish: "Copiar"
+#    - English: "Copy"
+# ✅ Button text color = summary color (Color)
+# ✅ Button font uses same font_type as the page
 # =========================================================
 
 import requests, re, html, json, uuid
@@ -474,16 +484,17 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, api_o
 
     lang = (language or "spanish").strip().lower()
 
+    # Titles
     if lang.startswith("en"):
         title_summary = "Summary"
-        title_steps = "Step"     # requested
-        copy_label = "Copy output"
+        title_steps = "Step"
+        copy_label = "Copy"            # requested
         copied_label = "Copied!"
         copy_fail_label = "Copy failed"
     else:
         title_summary = "Resumen"
-        title_steps = "Pasos"    # requested
-        copy_label = "Copiar output"
+        title_steps = "Pasos"
+        copy_label = "Copiar"          # requested
         copied_label = "¡Copiado!"
         copy_fail_label = "No se pudo copiar"
 
@@ -503,6 +514,7 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, api_o
             "<div class='title title2'>" + html.escape(title_steps) + "</div>" + steps_items
         )
 
+    # NOTE: no f-strings in template to avoid JS brace issues
     template = """
 <link href="https://fonts.googleapis.com/css2?family=Anton:wght@400;700&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;600&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -536,19 +548,20 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, api_o
 
   .title2 { margin-top:14px; }
 
-  /* ComponentsPanel.js-like button base style */
+  /* ComponentsPanel.js-like button base style (but with text color = summary color, and same font) */
   .copy-btn {
     padding: 8px 12px;
     border-radius: 12px;
     border: 1px solid __STROKE__;
     background: __BGPANEL__;
-    color: #111;
+    color: __TEAL__;                 /* requested: same as summary */
     font-weight: 700;
     cursor: pointer;
     box-shadow: __SHADOW__;
     pointer-events: auto;
     transition: all .12s ease;
     user-select: none;
+    font-family: '__FONT__','Fira Sans',system-ui;  /* requested: same font type */
   }
 
   .p { font-size:18px; line-height:1.6; margin:8px 0; }
@@ -735,4 +748,3 @@ def IA_CalculusSummary(
 
     html_out = _render_html(summary, steps, font_type, language, api_out)
     display(HTML(html_out))
-
