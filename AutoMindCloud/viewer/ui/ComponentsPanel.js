@@ -68,7 +68,7 @@ export function createComponentsPanel(app, theme) {
     // ✅ PANEL: y "doble de alto" (más alto que antes)
     panel: {
       position: "absolute",
-      right: "50px",
+      right: "500px",
       top: "14px",
       width: "440px",
       maxHeight: "92%", // (antes 72%) => aprox "doble de alto" en práctica
