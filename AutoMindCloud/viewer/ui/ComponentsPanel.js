@@ -30,9 +30,14 @@ export function createComponentsPanel(app, theme) {
   // 2) Panel/tabla de components: MISMA posición que el UI de ToolsDock (dock)
   //    - position: right 14px, top 14px
   //    - cerrado/abierto con translateX usando CLOSED_TX NEGATIVO (como tu ToolsDock)
-  // 3) Tabla el DOBLE de alto (subimos maxHeight de ~72% -> ~92% y el list height)
+  // 3) Tabla el DOBLE de alto (y AHORA además compensamos el UI_SCALE=0.5 para que entren ~4 filas visibles)
   // ============================================================
+
   const CLOSED_TX = -520; // igual lógica que ToolsDock del ejemplo (off-screen "a la izquierda")
+
+  // UI scale (50% más chico) — NO toca open/close transforms ni hover
+  const UI_SCALE = 0.5;
+  const UI_SCALE_INV = 1 / UI_SCALE; // ✅ compensación para alturas
 
   const css = {
     root: {
@@ -65,13 +70,14 @@ export function createComponentsPanel(app, theme) {
     },
 
     // ✅ PANEL: MISMA POSICIÓN QUE EL DOCK DE ToolsDock (right 14 / top 14)
-    // ✅ PANEL: y "doble de alto" (más alto que antes)
+    // ✅ PANEL: y "doble de alto"
+    // ✅ FIX: como el panel se escala a 0.5, compensamos maxHeight * (1/UI_SCALE)
     panel: {
       position: "absolute",
       right: "610px",
       top: "14px",
       width: "440px",
-      maxHeight: "92%", // (antes 72%) => aprox "doble de alto" en práctica
+      maxHeight: `calc(92vh * ${UI_SCALE_INV})`, // ✅ antes "92%" pero al escalar a 0.5 se veía la mitad
       background: theme.bgPanel,
       border: `1px solid ${theme.stroke}`,
       boxShadow: theme.shadow,
@@ -130,11 +136,12 @@ export function createComponentsPanel(app, theme) {
       whiteSpace: "pre-wrap",
     },
 
-    // ✅ MÁS ALTO: list usa más viewport disponible (ajustamos a maxHeight del panel)
+    // ✅ MÁS ALTO: list usa más viewport disponible
+    // ✅ FIX: compensamos maxHeight por escala para que entren ~4 filas visibles
     list: {
       overflowY: "auto",
       // header = ~52px, details si aparece suma, dejamos grande
-      maxHeight: "calc(92vh - 52px)",
+      maxHeight: `calc((92vh - 52px) * ${UI_SCALE_INV})`,
       padding: "10px",
     },
   };
@@ -149,9 +156,6 @@ export function createComponentsPanel(app, theme) {
   applyStyles(ui.detailsTitle, css.detailsTitle);
   applyStyles(ui.detailsBody, css.detailsBody);
   applyStyles(ui.list, css.list);
-
-  // UI scale (50% más chico) — NO toca open/close transforms ni hover
-  const UI_SCALE = 0.5;
 
   // Botón: no movemos posición; solo escalamos como ya tenías
   ui.btn.style.transformOrigin = "bottom left";
