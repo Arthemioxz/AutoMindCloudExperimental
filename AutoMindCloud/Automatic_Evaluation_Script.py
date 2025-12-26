@@ -250,14 +250,6 @@ from IPython.display import display, Markdown
 
 
 
-
-
-
-
-
-
-
-
 # =========================================================
 # IA_CalculusSummary (FULL) — FIXED (no f-string curly-brace bugs)
 # ✅ Converts API output delimiters:
