@@ -1,6 +1,6 @@
 // /viewer/ui/ComponentsPanel.js
 // Lista de componentes + frame de descripción al hacer click.
-// Integra IA:
+// Integra IA: 
 //  - Usa app.getComponentDescription(assetKey, index) / app.componentDescriptions.
 //  - Actualiza descripción al hacer click.
 //  - Si la IA llega después, refresca automáticamente el detalle actual
