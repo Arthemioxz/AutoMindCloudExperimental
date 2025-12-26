@@ -2,14 +2,14 @@
 # Puente Colab <-> JS para descripciones de piezas del URDF. 
 #
 # Uso típico en Colab: 
-#   from URDF_Render_Script import URDF_Render
-#   URDF_Render("URDFModel")                      # solo viewer
-#   URDF_Render("URDFModel", IA_Widgets=True)     # viewer + IA opt-in
+#   from URDF_Render_Script import URDF_Visualization
+#   URDF_Visualization("URDFModel")                      # solo viewer
+#   URDF_Visualization("URDFModel", IA_Widgets=True)     # viewer + IA opt-in
 #
 # Este script:
 #   - Busca /urdf y /meshes dentro de folder_path.
 #   - Construye un meshDB embebido (base64) para el viewer JS.
-#   - Renderiza un viewer HTML fullscreen para Colab.
+#   - Renderiza un viewer HTML en un iframe de Colab.
 #   - (Opcional) registra el callback "describe_component_images"
 #     para que el JS pueda pedir descripciones vía API externa.
 #
@@ -183,9 +183,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
               # Construir lista de imágenes: primero ISO (si existe), luego componente
               images = []
               if iso_b64:
-                  images.append(
-                      {"image_b64": iso_b64, "mime": "image/png"}
-                  )
+                  images.append({"image_b64": iso_b64, "mime": "image/png"})
               images.append({"image_b64": img_b64, "mime": "image/png"})
 
               # Prompt con contexto fuerte
@@ -204,10 +202,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   "responde con un máximo de 2 frases."
               )
 
-              payload = {
-                  "text": prompt,
-                  "images": images,
-              }
+              payload = {"text": prompt, "images": images}
 
               try:
                   r = requests.post(infer_url, json=payload, timeout=timeout)
@@ -217,9 +212,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   continue
 
               if r.status_code != 200:
-                  print(
-                      f"[Colab] API {r.status_code} para {key}: {r.text[:200]}"
-                  )
+                  print(f"[Colab] API {r.status_code} para {key}: {r.text[:200]}")
                   results[key] = ""
                   continue
 
@@ -230,12 +223,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                   if txt.startswith("{") and txt.endswith("}"):
                       j = json.loads(txt)
                       if isinstance(j, dict):
-                          txt = (
-                              j.get("text")
-                              or j.get("message")
-                              or j.get("content")
-                              or txt
-                          )
+                          txt = (j.get("text") or j.get("message") or j.get("content") or txt)
               except Exception:
                   pass
 
@@ -248,27 +236,19 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
 
               results[key] = txt or ""
 
-          print(
-              f"[Colab] describe_component_images: descripciones devueltas "
-              f"para {len(results)} componentes."
-          )
+          print(f"[Colab] describe_component_images: descripciones devueltas para {len(results)} componentes.")
 
           # Guardado automático del notebook (best-effort)
           try:
               from google.colab import _message  # type: ignore
-
               _message.blocking_request("notebook.save", {})
               print("[Colab] 💾 Notebook guardado tras recibir descripciones IA.")
           except Exception as e:
-              print(
-                  f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}"
-              )
+              print(f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}")
 
           return results
 
-      output.register_callback(
-          "describe_component_images", _describe_component_images
-      )
+      output.register_callback("describe_component_images", _describe_component_images)
       _COLAB_CALLBACK_REGISTERED = True
       print(
           "[Colab] ✅ Callback 'describe_component_images' registrado "
@@ -276,9 +256,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
       )
 
   except Exception as e:
-      print(
-          f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}"
-      )
+      print(f"[Colab] (Opcional) No se pudo registrar callback describe_component_images: {e}")
 
 
 def URDF_Visualization(
@@ -374,9 +352,7 @@ def URDF_Visualization(
       try:
           with open(upath, "r", encoding="utf-8", errors="ignore") as f:
               txt = f.read().lstrip("\ufeff")
-          refs = re.findall(
-              r'filename="([^"]+\.(?:stl|dae|STL|DAE))"', txt, re.IGNORECASE
-          )
+          refs = re.findall(r'filename="([^"]+\.(?:stl|dae|STL|DAE))"', txt, re.IGNORECASE)
           if refs:
               urdf_raw = txt
               mesh_refs = list(dict.fromkeys(refs))
@@ -399,11 +375,7 @@ def URDF_Visualization(
   meshes_root_abs = os.path.abspath(meshes_dir)
   by_rel, by_base = {}, {}
   for path in disk_files:
-      rel = (
-          os.path.relpath(os.path.abspath(path), meshes_root_abs)
-          .replace("\\", "/")
-          .lower()
-      )
+      rel = (os.path.relpath(os.path.abspath(path), meshes_root_abs).replace("\\", "/").lower())
       by_rel[rel] = path
       by_base[os.path.basename(path).lower()] = path
 
@@ -470,12 +442,9 @@ def URDF_Visualization(
       margin:0;
       padding:0;
       width:100%;
-      height:100dvh;
+      height:100%;
       overflow:hidden;
       background:#{int(background or 0xFFFFFF):06x};
-    }}
-    @supports not (height: 100dvh) {{
-      html, body {{ height: calc(var(--vh) * 100); }}
     }}
     body {{
       padding-top: env(safe-area-inset-top);
@@ -486,12 +455,9 @@ def URDF_Visualization(
     #app {{
       position:fixed;
       inset:0;
-      width:100vw;
-      height:100dvh;
+      width:100%;
+      height:100%;
       touch-action:none;
-    }}
-    @supports not (height: 100dvh) {{
-      #app {{ height: calc(var(--vh) * 100); }}
     }}
     .badge {{
       position:fixed;
@@ -515,9 +481,6 @@ def URDF_Visualization(
     </div>
   </div>
 
-
-
-
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
@@ -525,6 +488,13 @@ def URDF_Visualization(
   <script defer src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
 
   <script type="module">
+    // ==========================================================
+    // ✅ SISTEMA: reducir SOLO ALTURA del output (35% menos)
+    // ==========================================================
+    const HEIGHT_SCALE = 0.65;      // 35% menos
+    const BASE_HEIGHT  = 600;       // tu “original” típico en Colab
+    const MIN_HEIGHT   = Math.round(BASE_HEIGHT * HEIGHT_SCALE); // 390
+
     function applyVHVar() {{
       const viewport = window.visualViewport?.height || window.innerHeight || 600;
       const vh = viewport * 0.01;
@@ -533,6 +503,9 @@ def URDF_Visualization(
     applyVHVar();
 
     function computeDesiredHeight() {{
+      // OJO: en Colab, si escalamos usando window.innerHeight (del iframe),
+      // podemos generar “feedback”. Para estabilizar, mantenemos BASE_HEIGHT
+      // como referencia mínima y escalamos el máximo de (scroll/viewport/base).
       const viewportH =
         window.visualViewport?.height ||
         window.innerHeight ||
@@ -544,7 +517,9 @@ def URDF_Visualization(
         document.body?.scrollHeight || 0
       );
 
-      return Math.max(viewportH, docScrollH, 600);
+      const base = Math.max(viewportH, docScrollH, BASE_HEIGHT);
+      const scaled = Math.round(base * HEIGHT_SCALE);
+      return Math.max(MIN_HEIGHT, scaled);
     }}
 
     function setColabFrameHeight() {{
@@ -635,7 +610,10 @@ def URDF_Visualization(
             document.documentElement.clientWidth ||
             document.body.clientWidth ||
             800;
+
+          // ✅ altura reducida 35%
           const h = computeDesiredHeight();
+
           app.resize(w, h, Math.min(window.devicePixelRatio || 1, 2));
         }} catch (_e) {{}}
       }}
