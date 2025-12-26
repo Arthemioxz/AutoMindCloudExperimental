@@ -347,7 +347,7 @@ function showAll(core) {
   core.robot.traverse((o) => {
     if (o.isMesh && o.geometry) o.visible = true;
   });
-  if (core.fitAndCenter) core.fitAndCenter(core.robot, 1.06);
+  //if (core.fitAndCenter) core.fitAndCenter(core.robot, 1.06);
 }
 
 function frameMeshes(core, meshes) {
