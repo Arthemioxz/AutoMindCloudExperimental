@@ -215,6 +215,16 @@ export function createToolsDock(app, theme) {
   const host = (app?.renderer?.domElement?.parentElement) || document.body;
   host.appendChild(ui.root);
 
+  // UI scale (50% más chico) — NO toca transforms/animaciones/hotkeys
+  const UI_SCALE = 0.5;
+
+  ui.dock.style.transformOrigin = 'top left';
+  ui.dock.style.scale = String(UI_SCALE);
+
+  ui.toggleBtn.style.transformOrigin = 'top right';
+  ui.toggleBtn.style.scale = String(UI_SCALE);
+
+  
   // ---------- Controls ----------
   const renderModeSel = mkSelect(['Solid', 'Wireframe', 'X-Ray', 'Ghost'], 'Solid');
 
