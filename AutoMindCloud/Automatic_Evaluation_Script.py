@@ -220,46 +220,19 @@ from IPython.display import display, Markdown
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # =========================================================
-# IA_CalculusSummary (FULL) — FIXED (no f-string curly-brace bugs)
+# IA_CalculusSummary (FULL) — FIXED
 # ✅ Converts API output delimiters:
 #       \( ... \)  ->  $ ... $
 #       \[ ... \]  ->  $$ ... $$
-# ✅ Copies EXACTLY the (converted) API output text
-# ✅ Copy button matches ComponentsPanel.js button:
-#    - padding, radius, border, background, fontWeight, cursor
-#    - boxShadow, pointerEvents, transition
-#    - hover: translateY(-1px) scale(1.02), teal faint bg, teal border
+# ✅ Copy button copies EXACTLY the (converted) API output text
+# ✅ Button matches ComponentsPanel.js "Components" button:
+#    - padding, radius, border, bg, fontWeight, cursor, boxShadow,
+#      pointerEvents, transition
+#    - hover animation: translateY(-1px) scale(1.02), teal faint bg, teal border
+# ✅ Section title:
+#    - Spanish: "Pasos"
+#    - English: "Step"
 # =========================================================
 
 import requests, re, html, json, uuid
@@ -284,10 +257,8 @@ def _convert_tex_delims_to_dollars(s: str) -> str:
     if not s:
         return ""
     s = s.replace("\\ (", "\\(").replace("\\ )", "\\)")
-    # display first
-    s = re.sub(r"\\\[(.*?)\\\]", r"$$\1$$", s, flags=re.S)
-    # inline
-    s = re.sub(r"\\\((.*?)\\\)", r"$\1$", s, flags=re.S)
+    s = re.sub(r"\\\[(.*?)\\\]", r"$$\1$$", s, flags=re.S)  # display first
+    s = re.sub(r"\\\((.*?)\\\)", r"$\1$", s, flags=re.S)    # inline
     return s
 
 
@@ -364,13 +335,11 @@ def _strip_boilerplate(s: str) -> str:
 # ========= escapes HTML but keeps math blocks ($...$, $$...$$) =========
 def _escape_keep_math(s: str) -> str:
     s = s or ""
-
-    # detect math segments
     math_pattern = re.compile(r"(\$\$.*?\$\$|\$.*?\$)", re.S)
     math_ops_re = re.compile(r"(\\[a-zA-Z]+|[_^=+\-*/=])")
 
     def _maybe_unmath(seg: str) -> str:
-        # Always keep display math
+        # Keep display math always
         if seg.startswith("$$") and seg.endswith("$$"):
             return seg
 
@@ -387,7 +356,7 @@ def _escape_keep_math(s: str) -> str:
         tokens = inner_stripped.replace("\n", " ").split()
         has_math_ops = bool(math_ops_re.search(inner_stripped))
 
-        # Heuristic: if it's basically a sentence, don't treat as math
+        # If it's basically a sentence, treat as text (avoid entire sentences in $...$)
         if len(tokens) >= 6 and not has_math_ops:
             return html.escape(inner_stripped)
 
@@ -466,7 +435,7 @@ def _safe_textarea_payload(s: str) -> str:
 
 # =====================================
 # 🔹 Render HTML + MathJax + Copy converted API output
-# (NO f-strings here to avoid NameError with JS braces)
+# (NO f-strings inside JS/CSS to avoid NameError from braces)
 # =====================================
 def _render_html(summary: str, steps: list, font_type: str, language: str, api_output_text_converted: str):
     uid = uuid.uuid4().hex[:10]
@@ -475,19 +444,22 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, api_o
     msg_id = f"copy_msg_{uid}"
 
     lang = (language or "spanish").strip().lower()
+
+    # Titles (requested)
     if lang.startswith("en"):
-        title_resumen = "Summary"
-        title_pasos = "Steps"
+        title_summary = "Summary"
+        title_steps = "Step"   # <-- requested exactly
         copy_label = "Copy output"
         copied_label = "Copied!"
         copy_fail_label = "Copy failed"
     else:
-        title_resumen = "Resumen"
-        title_pasos = "Pasos"
+        title_summary = "Resumen"
+        title_steps = "Pasos"  # <-- requested exactly
         copy_label = "Copiar output"
         copied_label = "¡Copiado!"
         copy_fail_label = "No se pudo copiar"
 
+    # ComponentsPanel-like style tokens
     teal = Color or "#0ea5a6"
     tealFaint = "rgba(14,165,166,0.12)"
     stroke = "rgba(0,0,0,0.15)"
@@ -496,9 +468,12 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, api_o
 
     steps_html = ""
     if steps:
-        steps_html = "<div class='title title2'>__TITLE_STEPS__</div>" + "".join(
+        steps_items = "".join(
             f'<p class="p step"><span class="idx">{i}.</span>{_escape_keep_math(s)}</p>'
             for i, s in enumerate(steps, 1)
+        )
+        steps_html = (
+            "<div class='title title2'>" + html.escape(title_steps) + "</div>" + steps_items
         )
 
     template = """
@@ -567,7 +542,6 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, api_o
   .step { margin:10px 0; color: __TEAL__; }
   .idx { margin-right:8px; font-weight:900; }
 
-  /* hidden textarea for robust copying */
   .copy-src {
     position:absolute;
     left:-9999px;
@@ -651,7 +625,7 @@ window.MathJax = {
     const btn = document.getElementById("__BTN_ID__");
     if (!btn) return;
 
-    // Hover like ComponentsPanel.js
+    // Hover EXACTLY like ComponentsPanel.js
     btn.addEventListener("mouseenter", () => {
       btn.style.transform = "translateY(-1px) scale(1.02)";
       btn.style.background = TEAL_FAINT;
@@ -679,8 +653,7 @@ window.MathJax = {
     out = out.replace("__BGPANEL__", str(bgPanel))
     out = out.replace("__SHADOW__", str(shadow))
 
-    out = out.replace("__TITLE_SUMMARY__", title_resumen)
-    out = out.replace("__TITLE_STEPS__", title_pasos)
+    out = out.replace("__TITLE_SUMMARY__", title_summary)
     out = out.replace("__COPY_LABEL__", copy_label)
 
     out = out.replace("__BTN_ID__", btn_id)
@@ -714,7 +687,7 @@ def IA_CalculusSummary(
 
     lang = (language or "spanish").strip().lower()
 
-    # We ASK for $/$$, but we ALSO convert whatever comes back, to guarantee $/$$
+    # Ask for $/$$ (and we ALSO convert whatever comes back, so it's guaranteed)
     if lang.startswith("en"):
         base = (
             "Write in English, academic tone, formal and impersonal (third person). "
@@ -722,9 +695,8 @@ def IA_CalculusSummary(
             "Structure the output in two parts: "
             "(1) one summary paragraph; "
             "(2) then a numbered list of steps 1., 2., 3., etc. "
-            "IMPORTANT: All mathematical notation MUST be correctly delimited: "
-            "use $ ... $ for inline formulas and $$ ... $$ for display equations. "
-            "Use LaTeX ONLY for short mathematical expressions, never for whole sentences."
+            "IMPORTANT: All mathematical notation MUST be delimited with $ ... $ (inline) "
+            "and $$ ... $$ (display). Use LaTeX ONLY for short expressions."
         )
     else:
         base = (
@@ -733,13 +705,12 @@ def IA_CalculusSummary(
             "Estructura la salida en dos partes: "
             "(1) un párrafo de resumen; "
             "(2) luego una enumeración con pasos numerados 1., 2., 3., etc. "
-            "IMPORTANTE: Toda notación matemática DEBE ir delimitada correctamente: "
-            "usa $ ... $ para fórmulas en línea y $$ ... $$ para ecuaciones en bloque. "
-            "Usa LaTeX SOLO para expresiones matemáticas cortas, nunca para oraciones completas."
+            "IMPORTANTE: Toda notación matemática DEBE ir con $ ... $ (en línea) "
+            "y $$ ... $$ (en bloque). Usa LaTeX SOLO para expresiones cortas."
         )
 
     if numero == 1:
-        detalle = " Redacta un resumen conciso (5-7 líneas) y 7 pasos generales sin fórmulas."
+        detalle = " Redacta un resumen conciso (5-7 líneas) y 7 pasos generales."
     elif numero == 2:
         detalle = " Redacta un resumen preciso (7-9 líneas) y 15 pasos con detalles clave."
     elif numero == 3:
