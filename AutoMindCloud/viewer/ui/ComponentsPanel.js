@@ -462,8 +462,6 @@ export function createComponentsPanel(app, theme) {
     } catch (_) {}
   }
 
-
-
   function onHotkeyC(e) {
     const tag = (e.target && e.target.tagName) || "";
     const t = tag.toLowerCase();
@@ -471,22 +469,10 @@ export function createComponentsPanel(app, theme) {
       return;
     if (e.key === "c" || e.key === "C" || e.code === "KeyC") {
       e.preventDefault();
-      // Set the panel state without triggering the zoom effect
-      open = !open;
-      if (open) {
-        // Directly show the panel without animation
-        ui.panel.style.opacity = "1";
-        ui.panel.style.transform = "translateX(0)";
-        ui.panel.style.pointerEvents = "auto";
-      } else {
-        // Directly hide the panel without animation
-        ui.panel.style.opacity = "0";
-        ui.panel.style.transform = `translateX(${CLOSED_TX}px)`;
-        ui.panel.style.pointerEvents = "none";
-      }
+      set(!open);
+      if (open) maybeBuild();
     }
   }
-
 
   document.addEventListener("keydown", onHotkeyC, true);
 
