@@ -154,7 +154,7 @@ export function createToolsDock(app, theme) {
   Object.assign(ui.dock.style, {
     position: 'absolute',
     right: '14px',
-    top: '14px',
+    top: '54px',
     width: '440px',
     background: theme.bgPanel,
     border: `1px solid ${theme.stroke}`,
