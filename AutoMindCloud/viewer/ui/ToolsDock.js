@@ -1,7 +1,7 @@
 // /viewer/ui/ToolsDock.js / checkpoint
 // Floating tools dock: render modes, explode (smoothed & robust), section plane (ROBOT ONLY), views, projection, scene toggles, snapshot.
 /* global THREE */
- 
+
 export function createToolsDock(app, theme) {
   if (!app || !app.camera || !app.controls || !app.renderer)
     throw new Error('[ToolsDock] Missing app.camera/controls/renderer');
@@ -150,7 +150,7 @@ export function createToolsDock(app, theme) {
     fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial'
   });
 
-  // Dock
+  // Dock (✅ STEP-like placement: right:14px, top:54px)
   Object.assign(ui.dock.style, {
     position: 'absolute',
     right: '14px',
@@ -164,7 +164,7 @@ export function createToolsDock(app, theme) {
     overflow: 'hidden',
     display: 'none',
 
-    // ✅ scale system (ONLY ADDITION)
+    // ✅ scale system
     transformOrigin: 'top right',
     transform: 'scale(var(--tools-scale))'
   });
@@ -183,7 +183,7 @@ export function createToolsDock(app, theme) {
 
   Object.assign(ui.body.style, { padding: '10px 12px' });
 
-  // Floating toggle button (with hover)
+  // Floating toggle button (✅ STEP-like placement: right:14px, top:14px)
   ui.toggleBtn.textContent = 'Open Tools';
   Object.assign(ui.toggleBtn.style, {
     position: 'absolute',
@@ -200,18 +200,18 @@ export function createToolsDock(app, theme) {
     zIndex: '10000',
     transition: 'transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease',
 
-    // ✅ scale system (ONLY ADDITION)
+    // ✅ scale system
     transformOrigin: 'top right',
     transform: 'scale(var(--tools-scale))'
   });
+
   ui.toggleBtn.addEventListener('mouseenter', () => {
-    // ✅ keep hover animation but preserve scale
+    // keep hover animation but preserve scale
     ui.toggleBtn.style.transform = 'translateY(-1px) scale(calc(var(--tools-scale) * 1.02))';
     ui.toggleBtn.style.background = theme.tealFaint;
     ui.toggleBtn.style.borderColor = theme.tealSoft ?? theme.teal;
   });
   ui.toggleBtn.addEventListener('mouseleave', () => {
-    // ✅ restore scaled base
     ui.toggleBtn.style.transform = 'scale(var(--tools-scale))';
     ui.toggleBtn.style.background = theme.bgPanel;
     ui.toggleBtn.style.borderColor = theme.stroke;
@@ -273,7 +273,8 @@ export function createToolsDock(app, theme) {
   // ---------- Logic ----------
 
   // ------------------ CONFIG ------------------
-  const CLOSED_TX = 560; // px, off-screen to the left
+  // ✅ STEP behavior: hidden by translating to the right, then slide back to 0
+  const CLOSED_TX = 560; // px, off-screen to the right
   let isOpen = false;
 
   // Prepare dock styles once
@@ -281,7 +282,7 @@ export function createToolsDock(app, theme) {
     display: 'block',
     willChange: 'transform, opacity',
     transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease',
-    // ✅ keep translateX + scale together (ONLY CHANGE)
+    // ✅ keep translateX + scale together
     transform: `translateX(${CLOSED_TX}px) scale(var(--tools-scale))`,
     opacity: '0',
     pointerEvents: 'none'
@@ -297,7 +298,6 @@ export function createToolsDock(app, theme) {
       ui.dock.style.transform = `translateX(0) scale(var(--tools-scale))`;
       ui.dock.style.pointerEvents = 'auto';
       ui.toggleBtn.textContent = 'Close Tools';
-      try { styleDockLeft(ui.dock); } catch (_) {}
       syncExplodeUI();
     } else {
       // CLOSE tween
@@ -883,22 +883,12 @@ export function createToolsDock(app, theme) {
     } catch { }
   }
 
-  // ---------- Utilities ----------
-  function styleDockLeft(dockEl) {
-    dockEl.classList.add('viewer-dock-fix');
-    Object.assign(dockEl.style, { right: 'auto', left: '16px', top: '16px' });
-
-    // ✅ keep transform origin consistent when moved to left (ONLY ADDITION)
-    dockEl.style.transformOrigin = 'top left';
-  }
-
   // Defaults
   togGrid.cb.checked = false;
   togGround.cb.checked = false;
   togAxes.cb.checked = false;
 
   // Start closed
-  try { styleDockLeft(ui.dock); } catch (_) {}
   set(false);
 
   function onHotkeyH(e) {
