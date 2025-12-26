@@ -376,16 +376,16 @@ export function createComponentsPanel(app, theme) {
     let text = resolveDescription(ent, index);
 
     if (!text) {
-      text = "Sin descripción generada para esta pieza.";
+      //text = "Sin descripción generada para esta pieza.";
       console.debug(
         "[ComponentsPanel] No se encontró descripción para",
         ent.assetKey
       );
     }
 
-    ui.detailsTitle.textContent = ent.base;
-    ui.detailsBody.textContent = text;
-    ui.details.style.display = "block";
+    //ui.detailsTitle.textContent = ent.base;
+    //ui.detailsBody.textContent = text;
+    //ui.details.style.display = "block";
 
     console.debug("[ComponentsPanel] showDetails:", ent.assetKey, "=>", text);
   }
