@@ -33,7 +33,7 @@ export function createToolsDock(app, theme) {
   // ✅ UI 50% smaller
   const UI_SCALE = 0.5;
 
-  // ✅ Single source of truth
+  // ✅ Single source of truth for "closed" X
   const CLOSED_TX = -520;
 
   const renderer = app.renderer;
@@ -83,9 +83,10 @@ export function createToolsDock(app, theme) {
 
     willChange: 'transform, opacity',
     transformOrigin: 'top left',
+
+    // ✅ IMPORTANT: scale is inside the SAME transform as open/close
     transform: `translateX(${CLOSED_TX}px) scale(${UI_SCALE})`,
-    transition:
-      'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 180ms ease',
+    transition: 'transform 260ms cubic-bezier(.2,.7,.2,1), opacity 180ms ease',
   });
 
   // Toggle button (top-right floating)
@@ -107,7 +108,7 @@ export function createToolsDock(app, theme) {
       'transform 120ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease',
   });
 
-  // Apply scale to floating toggle button (keeps hover animations)
+  // ✅ Apply scale to floating toggle button (keeps hover animations)
   ui.toggleBtn.style.transformOrigin = 'top right';
   ui.toggleBtn.style.transform = `scale(${UI_SCALE})`;
 
@@ -321,19 +322,15 @@ export function createToolsDock(app, theme) {
   // State
   let dockOpen = false;
 
+  // ✅ IMPORTANT: scale ALWAYS inside the same transform string (open/close)
   function setDock(open) {
     dockOpen = !!open;
-    if (dockOpen) {
-      ui.dock.style.transform = `translateX(0px) scale(${UI_SCALE})`;
-      ui.dock.style.opacity = '1';
-      ui.dock.style.pointerEvents = 'auto';
-      ui.toggleBtn.textContent = 'Close Tools';
-    } else {
-      ui.dock.style.transform = `translateX(${CLOSED_TX}px) scale(${UI_SCALE})`;
-      ui.dock.style.opacity = '0';
-      ui.dock.style.pointerEvents = 'none';
-      ui.toggleBtn.textContent = 'Open Tools';
-    }
+    const tx = dockOpen ? 0 : CLOSED_TX;
+
+    ui.dock.style.transform = `translateX(${tx}px) scale(${UI_SCALE})`;
+    ui.dock.style.opacity = dockOpen ? '1' : '0';
+    ui.dock.style.pointerEvents = dockOpen ? 'auto' : 'none';
+    ui.toggleBtn.textContent = dockOpen ? 'Close Tools' : 'Open Tools';
   }
 
   // start closed
