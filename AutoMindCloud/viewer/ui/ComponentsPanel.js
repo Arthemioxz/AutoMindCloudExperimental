@@ -126,6 +126,18 @@ export function createComponentsPanel(app, theme) {
   applyStyles(ui.detailsBody, css.detailsBody);
   applyStyles(ui.list, css.list);
 
+
+  // UI scale (50% más chico) — NO toca open/close transforms ni hover
+  const UI_SCALE = 0.5;
+
+  ui.btn.style.transformOrigin = 'bottom left';
+  ui.btn.style.scale = String(UI_SCALE);
+
+  ui.panel.style.transformOrigin = 'bottom right';
+  ui.panel.style.scale = String(UI_SCALE);
+
+  
+
   ui.btn.textContent = "Components";
   ui.title.textContent = "Components";
   ui.showAllBtn.textContent = "Show all";
