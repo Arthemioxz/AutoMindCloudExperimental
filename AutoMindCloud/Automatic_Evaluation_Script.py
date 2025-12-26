@@ -229,17 +229,52 @@ from IPython.display import display, Markdown
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # =========================================================
-# IA_CalculusSummary (FULL) + Copy Summary Button
-# - Robust /infer client
-# - Cleans headings/boilerplate
-# - Keeps MathJax rendering but prevents "full sentences in LaTeX"
-# - Adds a button to copy the SUMMARY text to clipboard
+# IA_CalculusSummary (FULL) + Copy API OUTPUT Button (with hover animation)
+# - Button copies EXACT raw text returned by the API (/infer)
+# - Hover animation like your ComponentsPanel.js (translate + scale + teal faint)
 # =========================================================
 
-import requests, base64, mimetypes, re, html, urllib.parse, json, uuid
-from pathlib import Path
+import requests, re, html, json, uuid
 from IPython.display import display, HTML
+
+# Optional: if you don't define Color elsewhere, this fallback is used
+try:
+    Color
+except NameError:
+    Color = "#0ea5a6"
+
 
 # =========================================================
 # 🔹 POLLI_TEXT: cliente robusto
@@ -279,43 +314,34 @@ def polli_text(
 # =====================================
 # 🔹 Utilidades de limpieza y parsing
 # =====================================
-_num_pat = re.compile(r'^\s*(\d+)[\.\)]\s+(.*)')
+_num_pat = re.compile(r"^\s*(\d+)[\.\)]\s+(.*)")
 
 _heading_patterns = [
-    r'^\s*\(?\s*1\s*\)?\s*\.?\s*Resumen\s*:?\s*$',
-    r'^\s*Resumen\s*:?\s*$',
-    r'^\s*RESUMEN\s*:?\s*$',
-    r'^\s*\(?\s*2\s*\)?\s*\.?\s*Pasos\s*:?\s*$',
-    r'^\s*Pasos\s*:?\s*$',
-    r'^\s*PASOS\s*:?\s*$',
+    r"^\s*\(?\s*1\s*\)?\s*\.?\s*Resumen\s*:?\s*$",
+    r"^\s*Resumen\s*:?\s*$",
+    r"^\s*RESUMEN\s*:?\s*$",
+    r"^\s*\(?\s*2\s*\)?\s*\.?\s*Pasos\s*:?\s*$",
+    r"^\s*Pasos\s*:?\s*$",
+    r"^\s*PASOS\s*:?\s*$",
 ]
 _heading_regexes = [re.compile(p, re.IGNORECASE) for p in _heading_patterns]
 
 
 def _looks_like_heading(line: str) -> bool:
-    line = re.sub(r'[*_`~]+', '', line)
-    line = re.sub(r'<[^>]+>', '', line)
+    line = re.sub(r"[*_`~]+", "", line)
+    line = re.sub(r"<[^>]+>", "", line)
     return any(rx.match(line.strip()) for rx in _heading_regexes)
 
 
 # ========= FUNCIÓN CLAVE: evita texto pegado y corrige "\ (" =========
 def _escape_keep_math(s: str) -> str:
-    # Corrige intentos de \( ... \) escritos con espacio: "\ (" -> "\(" y "\ )" -> "\)"
     s = s.replace("\\ (", "\\(").replace("\\ )", "\\)")
 
-    # Detecta TODOS los bloques "matemáticos"
-    math_pattern = re.compile(
-        r'(\$\$.*?\$\$|\$.*?\$|\\\[.*?\\\]|\\\(.*?\\\))',
-        re.S
-    )
-
-    # símbolos / macros típicamente matemáticos (operadores, \lambda, \frac, etc.)
-    math_ops_re = re.compile(r'(\\[a-zA-Z]+|[_^=+\-*/=])')
+    math_pattern = re.compile(r"(\$\$.*?\$\$|\$.*?\$|\\\[.*?\\\]|\\\(.*?\\\))", re.S)
+    math_ops_re = re.compile(r"(\\[a-zA-Z]+|[_^=+\-*/=])")
 
     def _maybe_unmath(seg: str) -> str:
-        # Detecta tipo de delimitador y extrae el interior
         if seg.startswith("$$") and seg.endswith("$$"):
-            # $$...$$ suele ser fórmula de verdad → lo respetamos
             return seg
 
         if seg.startswith("\\(") and seg.endswith("\\)"):
@@ -323,29 +349,21 @@ def _escape_keep_math(s: str) -> str:
         elif seg.startswith("\\[") and seg.endswith("\\]"):
             inner = seg[2:-2]
         elif seg.startswith("$") and seg.endswith("$"):
-            inner = seg[1:-1]  # $...$
+            inner = seg[1:-1]
         else:
-            return seg  # algo raro → lo dejamos como está
+            return seg
 
         inner_stripped = inner.strip()
         if not inner_stripped:
             return ""
 
-        # Palabras aproximadas (separando por espacios)
         tokens = inner_stripped.replace("\n", " ").split()
-
-        # ¿Tiene símbolos / macros claramente matemáticos?
         has_math_ops = bool(math_ops_re.search(inner_stripped))
 
-        # Heurística 1:
-        #   - muchas palabras (>= 6)
-        #   - y NO hay símbolos matemáticos claros
-        #   => probablemente es TEXTO que el modelo metió entre delimitadores
         if len(tokens) >= 6 and not has_math_ops:
             return html.escape(inner_stripped)
 
-        # Heurística 2: bastantes palabras y casi todo letras/números
-        letters_digits = re.sub(r'[^A-Za-z0-9]+', '', inner_stripped)
+        letters_digits = re.sub(r"[^A-Za-z0-9]+", "", inner_stripped)
         if letters_digits:
             letters_count = sum(c.isalpha() for c in letters_digits)
             letters_ratio = letters_count / len(letters_digits)
@@ -355,7 +373,6 @@ def _escape_keep_math(s: str) -> str:
         if len(tokens) >= 4 and not has_math_ops and letters_ratio > 0.6:
             return html.escape(inner_stripped)
 
-        # En los demás casos (fórmulas cortas de verdad), lo dejamos como math
         return seg
 
     parts = math_pattern.split(s)
@@ -364,14 +381,10 @@ def _escape_keep_math(s: str) -> str:
         if not p:
             continue
         if math_pattern.fullmatch(p):
-            # Segmento marcado como "math" → aplicamos heurística
             out.append(_maybe_unmath(p))
         else:
-            # Texto normal → solo escapamos HTML
             out.append(html.escape(p))
-
     return "".join(out)
-# ================= FIN _escape_keep_math =========================
 
 
 def _strip_boilerplate(s: str) -> str:
@@ -391,7 +404,6 @@ def _split_summary_and_steps(text: str):
     text = _strip_boilerplate(text)
     lines = [re.sub(r"\s+", " ", l).strip() for l in text.splitlines() if l.strip()]
 
-    # Quita encabezados tipo "1. Resumen" / "2. Pasos"
     lines = [
         re.sub(r"^\s*\(?\s*1\s*\)?\s*\.?\s*Resumen\s*:?\s*", "", l, flags=re.IGNORECASE)
         for l in lines
@@ -431,30 +443,42 @@ def _split_summary_and_steps(text: str):
     return summary, steps
 
 
-# =====================================
-# 🔹 Render con fuentes + MathJax + COPY BUTTON
-# =====================================
-def _render_html(summary: str, steps: list, font_type: str, language: str):
-    global Color  # Color definido por ti afuera
+def _safe_textarea_payload(s: str) -> str:
+    # Prevent rare edge case where the model outputs "</textarea>"
+    s = (s or "").replace("</textarea>", "</text_area>")
+    return html.escape(s)
 
-    # Unique IDs so multiple renders do not collide
+
+# =====================================
+# 🔹 Render con fuentes + MathJax + COPY API OUTPUT BUTTON
+# =====================================
+def _render_html(summary: str, steps: list, font_type: str, language: str, raw_api_output: str):
+    global Color
+
     uid = uuid.uuid4().hex[:10]
-    textarea_id = f"summary_copy_src_{uid}"
+    copy_src_id = f"copy_src_{uid}"
+    btn_id = f"copy_btn_{uid}"
     msg_id = f"copy_msg_{uid}"
 
     lang = (language or "spanish").strip().lower()
     if lang.startswith("en"):
         title_resumen = "Summary"
         title_pasos = "Steps"
-        copy_label = "Copy summary"
+        copy_label = "Copy API output"
         copied_label = "Copied!"
         copy_fail_label = "Copy failed"
     else:
         title_resumen = "Resumen"
         title_pasos = "Pasos"
-        copy_label = "Copiar resumen"
+        copy_label = "Copiar salida (API)"
         copied_label = "¡Copiado!"
         copy_fail_label = "No se pudo copiar"
+
+    # Colors inspired by your viewer theme feel
+    TEAL = Color or "#0ea5a6"
+    TEAL_FAINT = "rgba(14,165,166,0.12)"
+    STROKE = "rgba(0,0,0,0.15)"
+    BG_PANEL = "rgba(255,255,255,0.90)"
 
     css = f"""
 <link href="https://fonts.googleapis.com/css2?family=Anton:wght@400;700&display=swap" rel="stylesheet">
@@ -466,6 +490,7 @@ def _render_html(summary: str, steps: list, font_type: str, language: str):
     margin:8px auto;
     padding:8px 4px;
     font-family:'{font_type}','Fira Sans',system-ui;
+    position:relative;
   }}
 
   .title-row {{
@@ -478,7 +503,7 @@ def _render_html(summary: str, steps: list, font_type: str, language: str):
 
   .title {{
     font-family:'Anton',sans-serif;
-    color:{Color};
+    color:{TEAL};
     font-size:22px;
     font-weight:700;
     letter-spacing:1.5px;
@@ -491,23 +516,25 @@ def _render_html(summary: str, steps: list, font_type: str, language: str):
     gap:10px;
   }}
 
+  /* Base styling like your viewer buttons */
   .copy-btn {{
-    border:1px solid rgba(0,0,0,0.15);
-    border-radius:10px;
-    padding:7px 10px;
-    font-size:13px;
+    padding:8px 12px;
+    border-radius:12px;
+    border:1px solid {STROKE};
+    background:{BG_PANEL};
+    color:#111;
+    font-weight:800;
     cursor:pointer;
-    background:rgba(255,255,255,0.9);
-  }}
-  .copy-btn:hover {{
-    filter:brightness(0.98);
+    transition:all .12s ease;
+    user-select:none;
+    -webkit-tap-highlight-color: transparent;
   }}
 
   .copy-msg {{
     font-size:12px;
     opacity:0.85;
-    color:{Color};
-    min-width:90px;
+    color:{TEAL};
+    min-width:110px;
   }}
 
   .p {{
@@ -517,17 +544,17 @@ def _render_html(summary: str, steps: list, font_type: str, language: str):
   }}
 
   .summary {{
-    color:{Color};
+    color:{TEAL};
   }}
 
   .step {{
     margin:10px 0;
-    color:{Color};
+    color:{TEAL};
   }}
 
   .idx {{
     margin-right:8px;
-    font-weight:700;
+    font-weight:900;
   }}
 
   /* Hidden textarea for robust copying */
@@ -550,6 +577,11 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
 
 <script>
 (function() {{
+  const TEAL_FAINT = "{TEAL_FAINT}";
+  const TEAL = "{TEAL}";
+  const STROKE = "{STROKE}";
+  const BG_PANEL = "{BG_PANEL}";
+
   function setMsg(text) {{
     const el = document.getElementById("{msg_id}");
     if (!el) return;
@@ -560,13 +592,11 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
     }}
   }}
 
-  async function copySummary() {{
-    const ta = document.getElementById("{textarea_id}");
+  async function copyApiOutput() {{
+    const ta = document.getElementById("{copy_src_id}");
     if (!ta) return;
-
     const text = ta.value || "";
 
-    // Prefer async clipboard API when available
     try {{
       if (navigator.clipboard && window.isSecureContext) {{
         await navigator.clipboard.writeText(text);
@@ -574,10 +604,9 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
         return;
       }}
     }} catch (e) {{
-      // fall through to execCommand
+      // fallback below
     }}
 
-    // Fallback
     try {{
       ta.style.opacity = "1";
       ta.select();
@@ -590,14 +619,33 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
     }}
   }}
 
-  window["__copySummary_{uid}"] = copySummary;
+  // Hover animation like your ComponentsPanel.js
+  function wireHover() {{
+    const btn = document.getElementById("{btn_id}");
+    if (!btn) return;
+
+    btn.addEventListener("mouseenter", () => {{
+      btn.style.transform = "translateY(-1px) scale(1.02)";
+      btn.style.background = TEAL_FAINT;
+      btn.style.borderColor = TEAL;
+    }});
+    btn.addEventListener("mouseleave", () => {{
+      btn.style.transform = "none";
+      btn.style.background = BG_PANEL;
+      btn.style.borderColor = STROKE;
+    }});
+
+    btn.addEventListener("click", () => copyApiOutput());
+  }}
+
+  // Wait a tick to ensure DOM exists
+  setTimeout(wireHover, 0);
 }})();
 </script>
 """
 
-    # IMPORTANT: raw summary in textarea (NOT _escape_keep_math), so it copies plain text + LaTeX delimiters
     textarea = f"""
-<textarea id="{textarea_id}" class="copy-src" readonly>{html.escape(summary)}</textarea>
+<textarea id="{copy_src_id}" class="copy-src" readonly>{_safe_textarea_payload(raw_api_output)}</textarea>
 """
 
     body = f"""
@@ -605,7 +653,7 @@ options:{{skipHtmlTags:['script','noscript','style','textarea','pre','code']}}}}
   <div class="title-row">
     <div class="title">{title_resumen}</div>
     <div class="copy-wrap">
-      <button class="copy-btn" onclick="window['__copySummary_{uid}']()">{copy_label}</button>
+      <button id="{btn_id}" class="copy-btn">{copy_label}</button>
       <span id="{msg_id}" class="copy-msg"></span>
     </div>
   </div>
@@ -640,7 +688,7 @@ def IA_CalculusSummary(
 
     lang = (language or "spanish").strip().lower()
 
-    if lang.startswith("en"):  # english
+    if lang.startswith("en"):
         base = (
             "Write in English, academic tone, formal and impersonal (third person). "
             "Start directly with the content. "
@@ -653,7 +701,7 @@ def IA_CalculusSummary(
             "If the model tries to wrap an entire sentence with \\( ... \\) or $ ... $, rewrite it so that "
             "only the specific mathematical expressions are in LaTeX."
         )
-    else:  # default: spanish
+    else:
         base = (
             "Escribe en español, tono académico, formal e impersonal (tercera persona). "
             "Empieza directamente con el contenido. "
@@ -679,7 +727,12 @@ def IA_CalculusSummary(
 
     prompt = f"{base}{detalle}\n\nContenido a resumir / Content to summarize:\n\n{documento}"
 
+    # RAW output from API (this is what the button will copy)
     raw = polli_text(prompt)
+
+    # Parsed output for display
     summary, steps = _split_summary_and_steps(raw)
-    html_out = _render_html(summary, steps, font_type, language)
+
+    html_out = _render_html(summary, steps, font_type, language, raw_api_output=raw)
     display(HTML(html_out))
+
