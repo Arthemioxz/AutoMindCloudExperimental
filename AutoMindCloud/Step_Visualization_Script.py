@@ -9,16 +9,15 @@ def Download_Step(Drive_Link, Output_Name):
     Saves it as Output_Name.step in /content.
     """
     root_dir = "/content"
-    file_id = Drive_Link.split('/d/')[1].split('/')[0]  # Extract ID from full link
+    file_id = Drive_Link.split('/d/')[1].split('/')[0]
     url = f"https://drive.google.com/uc?id={file_id}"
     output_step = os.path.join(root_dir, Output_Name + ".step")
     gdown.download(url, output_step, quiet=True)
 
-def Step_Visualization(Step_Name):
-    # Config internos
-    STEP_PATH = f"{Step_Name}.step"   # Usa el nombre pasado como base
-    bg_js = "0xffffff"               # Fondo canvas
-    click_js = "null"                # URL MP3 o null (ej: '"https://.../click.mp3"')
+def Step_Visualization(Step_Name, height_px=390):
+    STEP_PATH = f"{Step_Name}.step"
+    bg_js = "0xffffff"
+    click_js = "null"  # e.g. '"https://.../click.mp3"' or "null"
 
     if not os.path.exists(STEP_PATH):
         raise FileNotFoundError(f"No se encontró {STEP_PATH}. Súbelo a Colab o ajusta la ruta.")
@@ -26,42 +25,38 @@ def Step_Visualization(Step_Name):
     with open(STEP_PATH, "rb") as f:
         step_b64 = base64.b64encode(f.read()).decode("ascii")
 
+    H = int(height_px)
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <title>{Step_Name} 3D Viewer</title>
 <style>
-  :root {{
-    --vh: 1vh;
-  }}
-
   html, body {{
     margin:0;
     padding:0;
     width:100%;
-    height:96dvh;
+    height:auto;
+    overflow:hidden;
+    background:transparent;
+    font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial;
+  }}
+
+  /* ✅ EXACT same sizing system as your simple script */
+  #app {{
+    width:100%;
+    height:{H}px;
+    box-sizing:border-box;
+    position:relative;
     overflow:hidden;
     background:transparent;
   }}
-  @supports not (height: 100dvh) {{
-    html, body {{
-      height: calc(var(--vh) * 100);
-    }}
-  }}
 
-  #app {{
-    position:fixed;
-    inset:0;
-    width:100vw;
-    height:100dvh;
-    touch-action:none;
-    overflow:hidden;
-  }}
-  @supports not (height: 100dvh) {{
-    #app {{
-      height: calc(var(--vh) * 100);
-    }}
+  canvas {{
+    display:block;
+    width:100% !important;
+    height:100% !important;
   }}
 
   .ui-root {{
@@ -111,6 +106,7 @@ def Step_Visualization(Step_Name):
   select, input[type="range"] {{
     padding:8px; border:1px solid #e6e6e6; border-radius:10px; accent-color:#0ea5a6;
   }}
+
   .tools-toggle {{
     position:absolute; right:14px; top:14px; pointer-events:auto;
     padding:8px 12px; border-radius:999px; border:1px solid #e6e6e6;
@@ -124,6 +120,7 @@ def Step_Visualization(Step_Name):
     border-color:#0ea5a6;
     box-shadow:0 16px 40px rgba(0,0,0,.18);
   }}
+
   .panel.dock {{
     position:absolute; right:14px; top:54px; width:440px;
     transform:translateX(520px);
@@ -136,6 +133,7 @@ def Step_Visualization(Step_Name):
     opacity:1;
     pointer-events:auto;
   }}
+
   .badge {{
     position:absolute; bottom:12px; right:14px; z-index:10;
     user-select:none; pointer-events:none;
@@ -147,83 +145,12 @@ def Step_Visualization(Step_Name):
 </head>
 <body>
 
-  <div id="app"></div>
-  <div style="padding-left:20px; overflow:visible; position:fixed; right:0; bottom:0; z-index:999999;">
+  <div id="app">
     <div class="badge" style="display:inline-block; transform: scale(2.5) translateX(-15px); transform-origin: bottom right; margin:0; overflow:visible; pointer-events:none;">
-      <img src="https://raw.githubusercontent.com/artemioadaysolvers/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="AutoMind" style="display:block; height:40px; width:auto;"/>
+      <img src="https://raw.githubusercontent.com/artemioadaysolvers/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png"
+           alt="AutoMind" style="display:block; height:40px; width:auto;"/>
     </div>
   </div>
-
-  <!-- ✅ Sistema: captura inicial y bloquea, PERO con 35% menos altura -->
-  <script>
-  (function() {{
-    const HEIGHT_SCALE = 0.65; // 35% menos altura
-
-    const initialW = window.innerWidth  || document.documentElement.clientWidth  || 800;
-
-    // Captura altura "raw" y la escala a 65%
-    const initialH_raw = window.innerHeight || document.documentElement.clientHeight || 600;
-    const initialH = Math.max(200, Math.round(initialH_raw * HEIGHT_SCALE));
-
-    // vh basado en la altura ya escalada
-    const vh = initialH * 0.01;
-    document.documentElement.style.setProperty('--vh', vh + 'px');
-
-    window.__VIEWER_BASE_W__ = initialW;
-    window.__VIEWER_BASE_H__ = initialH;
-
-    try {{
-      if (window.google &&
-          window.google.colab &&
-          window.google.colab.output &&
-          window.google.colab.output.setIframeHeight) {{
-        window.google.colab.output.setIframeHeight(initialH, true);
-      }}
-    }} catch (e) {{ }}
-
-    let resizeBlocked = false;
-    window.addEventListener('resize', function(e) {{
-      if (resizeBlocked) return;
-
-      const currentW = window.innerWidth || initialW;
-
-      // Escalamos altura actual también (para no “crecer” por comparar raw vs scaled)
-      const currentH_raw = window.innerHeight || initialH_raw;
-      const currentH = Math.max(200, Math.round(currentH_raw * HEIGHT_SCALE));
-
-      // Si crece, permitimos crecer (pero siempre escalado)
-      if (currentW > window.__VIEWER_BASE_W__ || currentH > window.__VIEWER_BASE_H__) {{
-        window.__VIEWER_BASE_W__ = Math.max(window.__VIEWER_BASE_W__, currentW);
-        window.__VIEWER_BASE_H__ = Math.max(window.__VIEWER_BASE_H__, currentH);
-
-        // actualizar vh con nueva base
-        const vh2 = window.__VIEWER_BASE_H__ * 0.01;
-        document.documentElement.style.setProperty('--vh', vh2 + 'px');
-
-        try {{
-          if (window.google && window.google.colab && window.google.colab.output &&
-              window.google.colab.output.setIframeHeight) {{
-            window.google.colab.output.setIframeHeight(window.__VIEWER_BASE_H__, true);
-          }}
-        }} catch (e) {{ }}
-      }} else {{
-        // Si intentan achicar, re-imponemos la altura base (escalada)
-        const lockedH = window.__VIEWER_BASE_H__ || initialH;
-        setTimeout(() => {{
-          document.documentElement.style.width = '100%';
-          document.documentElement.style.height = lockedH + 'px';
-          document.body.style.width = '100%';
-          document.body.style.height = lockedH + 'px';
-          window.scrollTo(0, 0);
-        }}, 10);
-      }}
-    }});
-
-    setTimeout(() => {{
-      resizeBlocked = true;
-    }}, 1000);
-  }})();
-  </script>
 
   <script src="https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.js"></script>
 
@@ -284,6 +211,12 @@ def Step_Visualization(Step_Name):
     try {{ src.start(); }} catch (e) {{ }}
   }}
 
+  function getSize(container) {{
+    const w = container.clientWidth || 800;
+    const h = container.clientHeight || {H};
+    return {{ w, h }};
+  }}
+
   (async function init() {{
     const container = document.getElementById("app");
     if (!container) return;
@@ -292,21 +225,19 @@ def Step_Visualization(Step_Name):
       return;
     }}
 
-    // ✅ Tamaño fijo: ancho igual, altura ya escalada (65%)
-    const BASE_W = window.__VIEWER_BASE_W__ || 800;
-    const BASE_H = window.__VIEWER_BASE_H__ || 390;
+    const {{ w: BASE_W, h: BASE_H }} = getSize(container);
 
     const renderer = new THREE.WebGLRenderer({{ antialias: true, preserveDrawingBuffer: true }});
     renderer.setPixelRatio(window.devicePixelRatio || 1);
     renderer.shadowMap.enabled = false;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.setSize(BASE_W, BASE_H, false);
-    renderer.domElement.style.width = BASE_W + 'px';
-    renderer.domElement.style.height = BASE_H + 'px';
-    renderer.domElement.style.position = 'fixed';
-    renderer.domElement.style.left = '0';
-    renderer.domElement.style.top = '0';
-    renderer.domElement.style.zIndex = '1';
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
+    renderer.domElement.style.position = "absolute";
+    renderer.domElement.style.left = "0";
+    renderer.domElement.style.top = "0";
+    renderer.domElement.style.zIndex = "1";
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -320,7 +251,6 @@ def Step_Visualization(Step_Name):
     ortho.up.set(0,1,0);
     let camera = persp;
 
-    // =============== ROTACIÓN LIBRE TIPO AUTODESK ===============
     const controls = new TrackballControls(camera, renderer.domElement);
     controls.rotateSpeed          = 4.0;
     controls.zoomSpeed            = 1.4;
@@ -336,7 +266,6 @@ def Step_Visualization(Step_Name):
     }};
     controls.target.set(0, 0, 0);
     controls.update();
-    // ============================================================
 
     const hemi = new THREE.HemisphereLight(0xffffff, 0xeeeeee, 0.7);
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.05);
@@ -376,12 +305,13 @@ def Step_Visualization(Step_Name):
     let DEFAULT_VIEW_RADIUS = null;
 
     function applyFixedSize() {{
+      const {{ w, h }} = getSize(container);
       if (camera.isPerspectiveCamera) {{
-        camera.aspect = BASE_W / BASE_H;
+        camera.aspect = w / h;
       }} else {{
         const span = Math.max(_lastMaxDim, GRID_SIZE * 0.5);
-        camera.left   = -span * (BASE_W / BASE_H);
-        camera.right  =  span * (BASE_W / BASE_H);
+        camera.left   = -span * (w / h);
+        camera.right  =  span * (w / h);
         camera.top    =  span;
         camera.bottom = -span;
       }}
@@ -498,7 +428,6 @@ def Step_Visualization(Step_Name):
       secVisual.visible = !!secPlaneVisible;
     }}
 
-    // --- Render modes ---
     function setRenderMode(mode) {{
       if (!model) return;
       currentRenderMode = mode;
@@ -519,19 +448,16 @@ def Step_Visualization(Step_Name):
             m.transparent = true;
             m.opacity     = 0.25;
             m.depthWrite  = false;
-            m.depthTest   = true;
           }} else if (mode === 'Ghost') {{
             m.transparent = true;
             m.opacity     = 0.6;
             m.depthWrite  = false;
-            m.depthTest   = true;
           }}
           m.needsUpdate = true;
         }});
       }});
     }}
 
-    // --- Encadre ---
     function centerAndFrame(pad = 1.12) {{
       if (!model) return;
       const box = new THREE.Box3().setFromObject(model);
@@ -546,7 +472,8 @@ def Step_Visualization(Step_Name):
       const radius = Math.max(1e-8, sphere.radius) * pad;
       _lastMaxDim = Math.max(size.x, size.y, size.z) * pad;
 
-      const aspect = BASE_W / BASE_H;
+      const {{ w, h }} = getSize(container);
+      const aspect = w / h;
 
       if (camera.isPerspectiveCamera) {{
         const vFOV = THREE.MathUtils.degToRad(camera.fov);
@@ -599,7 +526,7 @@ def Step_Visualization(Step_Name):
       }}
     }}
 
-    // --- SISTEMA DE VISTAS (ABSOLUTAS + TWEEN) ---
+    // --- Views (same as before) ---
     const easeInOutCubic = (t) => t < 0.5
       ? 4 * t * t * t
       : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -609,7 +536,8 @@ def Step_Visualization(Step_Name):
 
       const target = boundsInfo.center.clone();
       const pad = 1.18;
-      const aspect = BASE_W / BASE_H;
+      const {{ w, h }} = getSize(container);
+      const aspect = w / h;
       const effectiveRadius = boundsInfo.radius * pad;
 
       let r;
@@ -625,8 +553,6 @@ def Step_Visualization(Step_Name):
         camera.right  =  span * aspect;
         camera.top    =  span;
         camera.bottom = -span;
-        camera.near   = Math.max(span / 1000, 0.001);
-        camera.far    = Math.max(span * 1500, 1500);
         camera.updateProjectionMatrix();
         r = span * 2.6;
       }}
@@ -634,9 +560,7 @@ def Step_Visualization(Step_Name):
       let dir = new THREE.Vector3(1, 1, 1);
       if (kind === 'front') dir.set(0, 0, 1);
       if (kind === 'right') dir.set(1, 0, 0);
-      if (kind === 'top') {{
-        dir.set(0.001, 1, 0).normalize();
-      }}
+      if (kind === 'top') dir.set(0.001, 1, 0).normalize();
 
       dir.normalize();
       const pos = target.clone().add(dir.multiplyScalar(r));
@@ -650,7 +574,7 @@ def Step_Visualization(Step_Name):
 
       camera.up.set(0, 1, 0);
 
-      function animate() {{
+      function anim() {{
         const now = performance.now();
         const t = Math.min(1, (now - t0) / duration);
         const k = easeInOutCubic(t);
@@ -660,40 +584,17 @@ def Step_Visualization(Step_Name):
         camera.lookAt(controls.target);
         controls.update();
 
-        if (t < 1) {{
-          requestAnimationFrame(animate);
-        }} else {{
-          if (camera.isOrthographicCamera) {{
-            applyFixedSize();
-          }}
-        }}
+        if (t < 1) requestAnimationFrame(anim);
       }}
-
-      requestAnimationFrame(animate);
+      requestAnimationFrame(anim);
     }}
 
-    function viewIso() {{
-      const v = viewEndPose('iso');
-      if (!v) return;
-      tweenCameraToPose(v.pos, v.target, 750);
-    }}
-    function viewFront() {{
-      const v = viewEndPose('front');
-      if (!v) return;
-      tweenCameraToPose(v.pos, v.target, 750);
-    }}
-    function viewRight() {{
-      const v = viewEndPose('right');
-      if (!v) return;
-      tweenCameraToPose(v.pos, v.target, 750);
-    }}
-    function viewTop() {{
-      const v = viewEndPose('top');
-      if (!v) return;
-      tweenCameraToPose(v.pos, v.target, 900);
-    }}
+    function viewIso()   {{ const v = viewEndPose('iso');   if (v) tweenCameraToPose(v.pos, v.target, 750); }}
+    function viewFront() {{ const v = viewEndPose('front'); if (v) tweenCameraToPose(v.pos, v.target, 750); }}
+    function viewRight() {{ const v = viewEndPose('right'); if (v) tweenCameraToPose(v.pos, v.target, 750); }}
+    function viewTop()   {{ const v = viewEndPose('top');   if (v) tweenCameraToPose(v.pos, v.target, 900); }}
 
-    // --- Cargar STEP ---
+    // --- Load STEP ---
     const stepBytes = base64ToUint8Array(STEP_B64);
     const occt = await occtimportjs();
     const result = occt.ReadStepFile(stepBytes, null);
@@ -727,8 +628,6 @@ def Step_Visualization(Step_Name):
       }}
 
       const mesh = new THREE.Mesh(geom, mat);
-      mesh.castShadow = false;
-      mesh.receiveShadow = false;
       model.add(mesh);
     }}
 
@@ -739,13 +638,12 @@ def Step_Visualization(Step_Name):
 
     scene.add(model);
 
-    // Inicialización
     applyFixedSize();
     setModelScaleToFitGrid();
     centerAndFrame(1.12);
     setRenderMode('Solid');
 
-    // ---------- UI ----------
+    // ---------- UI (same as before) ----------
     const ui = document.createElement('div');
     ui.className = 'ui-root';
 
@@ -881,7 +779,7 @@ def Step_Visualization(Step_Name):
     dock.appendChild(body);
     ui.appendChild(dock);
     ui.appendChild(toolsToggle);
-    document.body.appendChild(ui);
+    container.appendChild(ui);
 
     let dockOpen = false;
     function setDock(open) {{
@@ -898,18 +796,6 @@ def Step_Visualization(Step_Name):
 
     toolsToggle.addEventListener('click', () => {{ playClick(); setDock(!dockOpen); }});
 
-    function onHotkeyToggle(e) {{
-      const tag = (e.target && e.target.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.isComposing) return;
-
-      if (e.key === 't' || e.key === 'T' || e.key === 'c' || e.key === 'C') {{
-        e.preventDefault();
-        playClick();
-        setDock(!dockOpen);
-      }}
-    }}
-    document.addEventListener('keydown', onHotkeyToggle, true);
-
     snapBtn.addEventListener('click', () => {{
       playClick();
       try {{
@@ -922,39 +808,17 @@ def Step_Visualization(Step_Name):
       }} catch(e) {{ }}
     }});
 
-    renderModeSel.addEventListener('change', () => {{
-      playClick();
-      setRenderMode(renderModeSel.value);
-    }});
-
-    axisSel.addEventListener('change', () => {{
-      playClick();
-      secAxis = axisSel.value;
-      updateSectionPlane(parseFloat(secDist.value)||0);
-    }});
-
-    secDist.addEventListener('input', () => {{
-      updateSectionPlane(parseFloat(secDist.value)||0);
-    }});
-
-    secToggle.cb.addEventListener('change', () => {{
-      playClick();
-      secEnabled = !!secToggle.cb.checked;
-      updateSectionPlane(parseFloat(secDist.value)||0);
-    }});
-
-    secPlaneToggle.cb.addEventListener('change', () => {{
-      playClick();
-      secPlaneVisible = !!secPlaneToggle.cb.checked;
-      updateSectionPlane(parseFloat(secDist.value)||0);
-    }});
+    renderModeSel.addEventListener('change', () => {{ playClick(); setRenderMode(renderModeSel.value); }});
+    axisSel.addEventListener('change', () => {{ playClick(); secAxis = axisSel.value; updateSectionPlane(parseFloat(secDist.value)||0); }});
+    secDist.addEventListener('input', () => {{ updateSectionPlane(parseFloat(secDist.value)||0); }});
+    secToggle.cb.addEventListener('change', () => {{ playClick(); secEnabled = !!secToggle.cb.checked; updateSectionPlane(parseFloat(secDist.value)||0); }});
+    secPlaneToggle.cb.addEventListener('change', () => {{ playClick(); secPlaneVisible = !!secPlaneToggle.cb.checked; updateSectionPlane(parseFloat(secDist.value)||0); }});
 
     bIso.addEventListener('click',   () => {{ playClick(); viewIso(); }});
     bTop.addEventListener('click',   () => {{ playClick(); viewTop(); }});
     bFront.addEventListener('click', () => {{ playClick(); viewFront(); }});
     bRight.addEventListener('click', () => {{ playClick(); viewRight(); }});
 
-    // Proyección ortográfica
     projSel.addEventListener('change', () => {{
       playClick();
 
@@ -963,6 +827,9 @@ def Step_Visualization(Step_Name):
         secEnabled = false;
         updateSectionPlane(parseFloat(secDist.value)||0);
       }}
+
+      const {{ w, h }} = getSize(container);
+      const aspect = w / h;
 
       if (!boundsInfo) {{
         camera = (projSel.value === 'Perspective') ? persp : ortho;
@@ -974,7 +841,6 @@ def Step_Visualization(Step_Name):
 
       const {{ maxDim }} = boundsInfo;
       const span = Math.max(maxDim, GRID_SIZE * 0.5);
-      const aspect = BASE_W / BASE_H;
       const target = boundsInfo.center.clone();
 
       if (projSel.value === 'Orthographic' && camera.isPerspectiveCamera) {{
@@ -1027,11 +893,7 @@ def Step_Visualization(Step_Name):
       }}
     }});
 
-    togGrid.cb.addEventListener('change', () => {{
-      playClick();
-      grid.visible = !!togGrid.cb.checked;
-    }});
-
+    togGrid.cb.addEventListener('change', () => {{ playClick(); grid.visible = !!togGrid.cb.checked; }});
     togGround.cb.addEventListener('change', () => {{
       playClick();
       const on = !!togGround.cb.checked;
@@ -1047,18 +909,14 @@ def Step_Visualization(Step_Name):
         }});
       }}
     }});
+    togAxes.cb.addEventListener('change', () => {{ playClick(); axesHelper.visible = !!togAxes.cb.checked; }});
 
-    togAxes.cb.addEventListener('change', () => {{
-      playClick();
-      axesHelper.visible = !!togAxes.cb.checked;
-      if (axesHelper.visible && model) {{
-        const box = new THREE.Box3().setFromObject(model);
-        if (!box.isEmpty()) {{
-          const s = box.getSize(new THREE.Vector3());
-          const maxDim = Math.max(s.x,s.y,s.z) || 1;
-          sizeAxesHelper(maxDim, new THREE.Vector3(0,0,0));
-        }}
-      }}
+    // ✅ EXACT resize system like simple script: use container sizes
+    window.addEventListener("resize", () => {{
+      const {{ w, h }} = getSize(container);
+      renderer.setSize(w, h, false);
+      applyFixedSize();
+      renderer.render(scene, camera);
     }});
 
     (function animate() {{
