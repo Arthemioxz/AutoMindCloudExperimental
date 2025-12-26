@@ -154,17 +154,18 @@ def Step_Visualization(Step_Name):
     </div>
   </div>
 
-
-
-
-
-
-  <!-- Sistema de tamaño original: captura inicial y bloquea (solo puede crecer) -->
+  <!-- ✅ Sistema: captura inicial y bloquea, PERO con 35% menos altura -->
   <script>
   (function() {{
-    const initialW = window.innerWidth  || document.documentElement.clientWidth  || 800;
-    const initialH = window.innerHeight || document.documentElement.clientHeight || 600;
+    const HEIGHT_SCALE = 0.65; // 35% menos altura
 
+    const initialW = window.innerWidth  || document.documentElement.clientWidth  || 800;
+
+    // Captura altura "raw" y la escala a 65%
+    const initialH_raw = window.innerHeight || document.documentElement.clientHeight || 600;
+    const initialH = Math.max(200, Math.round(initialH_raw * HEIGHT_SCALE));
+
+    // vh basado en la altura ya escalada
     const vh = initialH * 0.01;
     document.documentElement.style.setProperty('--vh', vh + 'px');
 
@@ -184,12 +185,21 @@ def Step_Visualization(Step_Name):
     window.addEventListener('resize', function(e) {{
       if (resizeBlocked) return;
 
-      const currentW = window.innerWidth;
-      const currentH = window.innerHeight;
+      const currentW = window.innerWidth || initialW;
 
+      // Escalamos altura actual también (para no “crecer” por comparar raw vs scaled)
+      const currentH_raw = window.innerHeight || initialH_raw;
+      const currentH = Math.max(200, Math.round(currentH_raw * HEIGHT_SCALE));
+
+      // Si crece, permitimos crecer (pero siempre escalado)
       if (currentW > window.__VIEWER_BASE_W__ || currentH > window.__VIEWER_BASE_H__) {{
         window.__VIEWER_BASE_W__ = Math.max(window.__VIEWER_BASE_W__, currentW);
         window.__VIEWER_BASE_H__ = Math.max(window.__VIEWER_BASE_H__, currentH);
+
+        // actualizar vh con nueva base
+        const vh2 = window.__VIEWER_BASE_H__ * 0.01;
+        document.documentElement.style.setProperty('--vh', vh2 + 'px');
+
         try {{
           if (window.google && window.google.colab && window.google.colab.output &&
               window.google.colab.output.setIframeHeight) {{
@@ -197,11 +207,13 @@ def Step_Visualization(Step_Name):
           }}
         }} catch (e) {{ }}
       }} else {{
+        // Si intentan achicar, re-imponemos la altura base (escalada)
+        const lockedH = window.__VIEWER_BASE_H__ || initialH;
         setTimeout(() => {{
           document.documentElement.style.width = '100%';
-          document.documentElement.style.height = initialH + 'px';
+          document.documentElement.style.height = lockedH + 'px';
           document.body.style.width = '100%';
-          document.body.style.height = initialH + 'px';
+          document.body.style.height = lockedH + 'px';
           window.scrollTo(0, 0);
         }}, 10);
       }}
@@ -280,9 +292,9 @@ def Step_Visualization(Step_Name):
       return;
     }}
 
-    // Tamaño fijo (sistema original)
+    // ✅ Tamaño fijo: ancho igual, altura ya escalada (65%)
     const BASE_W = window.__VIEWER_BASE_W__ || 800;
-    const BASE_H = window.__VIEWER_BASE_H__ || 600;
+    const BASE_H = window.__VIEWER_BASE_H__ || 390;
 
     const renderer = new THREE.WebGLRenderer({{ antialias: true, preserveDrawingBuffer: true }});
     renderer.setPixelRatio(window.devicePixelRatio || 1);
@@ -595,7 +607,7 @@ def Step_Visualization(Step_Name):
     function viewEndPose(kind) {{
       if (!boundsInfo) return null;
 
-      const target = boundsInfo.center.clone(); // centro real (ya recentrado)
+      const target = boundsInfo.center.clone();
       const pad = 1.18;
       const aspect = BASE_W / BASE_H;
       const effectiveRadius = boundsInfo.radius * pad;
@@ -619,17 +631,14 @@ def Step_Visualization(Step_Name):
         r = span * 2.6;
       }}
 
-      // Direcciones absolutas tipo Autodesk
-      let dir = new THREE.Vector3(1, 1, 1); // Iso
+      let dir = new THREE.Vector3(1, 1, 1);
       if (kind === 'front') dir.set(0, 0, 1);
       if (kind === 'right') dir.set(1, 0, 0);
       if (kind === 'top') {{
-        // TOP ligeramente inclinado para evitar singularidad (no paralelo a up)
         dir.set(0.001, 1, 0).normalize();
       }}
 
       dir.normalize();
-
       const pos = target.clone().add(dir.multiplyScalar(r));
       return {{ pos, target }};
     }}
@@ -639,7 +648,6 @@ def Step_Visualization(Step_Name):
       const startTarget = controls.target.clone();
       const t0 = performance.now();
 
-      // Forzar up mundial estable desde el inicio del tween
       camera.up.set(0, 1, 0);
 
       function animate() {{
