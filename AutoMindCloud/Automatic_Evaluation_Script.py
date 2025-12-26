@@ -220,19 +220,53 @@ from IPython.display import display, Markdown
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # =========================================================
 # IA_CalculusSummary (FULL) — FIXED
 # ✅ Converts API output delimiters:
 #       \( ... \)  ->  $ ... $
 #       \[ ... \]  ->  $$ ... $$
 # ✅ Copy button copies EXACTLY the (converted) API output text
-# ✅ Button matches ComponentsPanel.js "Components" button:
-#    - padding, radius, border, bg, fontWeight, cursor, boxShadow,
-#      pointerEvents, transition
-#    - hover animation: translateY(-1px) scale(1.02), teal faint bg, teal border
-# ✅ Section title:
+# ✅ Button matches ComponentsPanel.js "Components" button (base + hover)
+# ✅ Titles:
 #    - Spanish: "Pasos"
 #    - English: "Step"
+# ✅ "Copied!" feedback appears INSIDE the button (temporary), not on the right
 # =========================================================
 
 import requests, re, html, json, uuid
@@ -243,6 +277,7 @@ try:
     Color
 except NameError:
     Color = "#0ea5a6"
+
 
 # =========================================================
 # 🔹 Convert TeX delimiters in API output to $ / $$
@@ -339,11 +374,9 @@ def _escape_keep_math(s: str) -> str:
     math_ops_re = re.compile(r"(\\[a-zA-Z]+|[_^=+\-*/=])")
 
     def _maybe_unmath(seg: str) -> str:
-        # Keep display math always
         if seg.startswith("$$") and seg.endswith("$$"):
             return seg
 
-        # Inline math $...$
         if seg.startswith("$") and seg.endswith("$"):
             inner = seg[1:-1]
         else:
@@ -356,7 +389,6 @@ def _escape_keep_math(s: str) -> str:
         tokens = inner_stripped.replace("\n", " ").split()
         has_math_ops = bool(math_ops_re.search(inner_stripped))
 
-        # If it's basically a sentence, treat as text (avoid entire sentences in $...$)
         if len(tokens) >= 6 and not has_math_ops:
             return html.escape(inner_stripped)
 
@@ -388,7 +420,6 @@ def _split_summary_and_steps(text: str):
     text = _strip_boilerplate(text)
     lines = [re.sub(r"\s+", " ", l).strip() for l in text.splitlines() if l.strip()]
 
-    # remove headings like "1. Resumen", "2. Pasos"
     lines = [
         re.sub(r"^\s*\(?\s*1\s*\)?\s*\.?\s*Resumen\s*:?\s*", "", l, flags=re.IGNORECASE)
         for l in lines
@@ -434,32 +465,28 @@ def _safe_textarea_payload(s: str) -> str:
 
 
 # =====================================
-# 🔹 Render HTML + MathJax + Copy converted API output
-# (NO f-strings inside JS/CSS to avoid NameError from braces)
+# 🔹 Render HTML + MathJax + Copy (button text changes to "Copied!")
 # =====================================
 def _render_html(summary: str, steps: list, font_type: str, language: str, api_output_text_converted: str):
     uid = uuid.uuid4().hex[:10]
     copy_src_id = f"copy_src_{uid}"
     btn_id = f"copy_btn_{uid}"
-    msg_id = f"copy_msg_{uid}"
 
     lang = (language or "spanish").strip().lower()
 
-    # Titles (requested)
     if lang.startswith("en"):
         title_summary = "Summary"
-        title_steps = "Step"   # <-- requested exactly
+        title_steps = "Step"     # requested
         copy_label = "Copy output"
         copied_label = "Copied!"
         copy_fail_label = "Copy failed"
     else:
         title_summary = "Resumen"
-        title_steps = "Pasos"  # <-- requested exactly
+        title_steps = "Pasos"    # requested
         copy_label = "Copiar output"
         copied_label = "¡Copiado!"
         copy_fail_label = "No se pudo copiar"
 
-    # ComponentsPanel-like style tokens
     teal = Color or "#0ea5a6"
     tealFaint = "rgba(14,165,166,0.12)"
     stroke = "rgba(0,0,0,0.15)"
@@ -524,20 +551,7 @@ def _render_html(summary: str, steps: list, font_type: str, language: str, api_o
     user-select: none;
   }
 
-  .copy-msg {
-    font-size:12px;
-    opacity:0.85;
-    color: __TEAL__;
-    min-width:110px;
-    margin-left:10px;
-  }
-
-  .p {
-    font-size:18px;
-    line-height:1.6;
-    margin:8px 0;
-  }
-
+  .p { font-size:18px; line-height:1.6; margin:8px 0; }
   .summary { color: __TEAL__; }
   .step { margin:10px 0; color: __TEAL__; }
   .idx { margin-right:8px; font-weight:900; }
@@ -567,8 +581,7 @@ window.MathJax = {
   <div class="title-row">
     <div class="title">__TITLE_SUMMARY__</div>
     <div>
-      <button id="__BTN_ID__" class="copy-btn">__COPY_LABEL__</button>
-      <span id="__MSG_ID__" class="copy-msg"></span>
+      <button id="__BTN_ID__" class="copy-btn" data-label="__COPY_LABEL__">__COPY_LABEL__</button>
     </div>
   </div>
 
@@ -586,25 +599,25 @@ window.MathJax = {
   const STROKE = "__STROKE__";
   const BG_PANEL = "__BGPANEL__";
 
-  function setMsg(text) {
-    const el = document.getElementById("__MSG_ID__");
-    if (!el) return;
-    el.textContent = text || "";
-    if (text) {
-      clearTimeout(el.__t);
-      el.__t = setTimeout(() => { el.textContent = ""; }, 1200);
-    }
+  function setBtnTemp(btn, text) {
+    if (!btn) return;
+    btn.textContent = text;
+    clearTimeout(btn.__t);
+    btn.__t = setTimeout(() => {
+      btn.textContent = btn.getAttribute("data-label") || "";
+    }, 900);
   }
 
-  async function doCopy() {
+  async function doCopy(btn) {
     const ta = document.getElementById("__COPY_SRC_ID__");
     if (!ta) return;
+
     const text = ta.value || "";
 
     try {
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text);
-        setMsg("__COPIED__");
+        setBtnTemp(btn, "__COPIED__");
         return;
       }
     } catch (e) {}
@@ -615,9 +628,9 @@ window.MathJax = {
       ta.setSelectionRange(0, ta.value.length);
       const ok = document.execCommand("copy");
       ta.style.opacity = "0";
-      setMsg(ok ? "__COPIED__" : "__COPY_FAIL__");
+      setBtnTemp(btn, ok ? "__COPIED__" : "__COPY_FAIL__");
     } catch (e) {
-      setMsg("__COPY_FAIL__");
+      setBtnTemp(btn, "__COPY_FAIL__");
     }
   }
 
@@ -637,7 +650,7 @@ window.MathJax = {
       btn.style.borderColor = STROKE;
     });
 
-    btn.addEventListener("click", doCopy);
+    btn.addEventListener("click", () => doCopy(btn));
   }
 
   setTimeout(wire, 0);
@@ -654,12 +667,10 @@ window.MathJax = {
     out = out.replace("__SHADOW__", str(shadow))
 
     out = out.replace("__TITLE_SUMMARY__", title_summary)
-    out = out.replace("__COPY_LABEL__", copy_label)
-
     out = out.replace("__BTN_ID__", btn_id)
-    out = out.replace("__MSG_ID__", msg_id)
     out = out.replace("__COPY_SRC_ID__", copy_src_id)
 
+    out = out.replace("__COPY_LABEL__", copy_label)
     out = out.replace("__COPIED__", copied_label)
     out = out.replace("__COPY_FAIL__", copy_fail_label)
 
@@ -680,14 +691,13 @@ def IA_CalculusSummary(
 ):
     """
     Uses global 'documento' as input.
-    Render: Summary + Steps (MathJax)
-    Copy button: copies the converted API output ($/$$ delimiters) exactly
+    Copy button: copies the converted API output ($/$$ delimiters) exactly.
     """
     global documento
 
     lang = (language or "spanish").strip().lower()
 
-    # Ask for $/$$ (and we ALSO convert whatever comes back, so it's guaranteed)
+    # Ask for $/$$ and also convert whatever comes back
     if lang.startswith("en"):
         base = (
             "Write in English, academic tone, formal and impersonal (third person). "
@@ -695,8 +705,8 @@ def IA_CalculusSummary(
             "Structure the output in two parts: "
             "(1) one summary paragraph; "
             "(2) then a numbered list of steps 1., 2., 3., etc. "
-            "IMPORTANT: All mathematical notation MUST be delimited with $ ... $ (inline) "
-            "and $$ ... $$ (display). Use LaTeX ONLY for short expressions."
+            "IMPORTANT: Use $ ... $ for inline formulas and $$ ... $$ for display equations. "
+            "Use LaTeX ONLY for short expressions."
         )
     else:
         base = (
@@ -705,8 +715,8 @@ def IA_CalculusSummary(
             "Estructura la salida en dos partes: "
             "(1) un párrafo de resumen; "
             "(2) luego una enumeración con pasos numerados 1., 2., 3., etc. "
-            "IMPORTANTE: Toda notación matemática DEBE ir con $ ... $ (en línea) "
-            "y $$ ... $$ (en bloque). Usa LaTeX SOLO para expresiones cortas."
+            "IMPORTANTE: Usa $ ... $ para fórmulas en línea y $$ ... $$ para ecuaciones en bloque. "
+            "Usa LaTeX SOLO para expresiones cortas."
         )
 
     if numero == 1:
@@ -720,12 +730,9 @@ def IA_CalculusSummary(
 
     prompt = f"{base}{detalle}\n\nContenido a resumir / Content to summarize:\n\n{documento}"
 
-    # 1) get API output (already converted to $/$$)
-    api_out = polli_text(prompt)
-
-    # 2) parse for display
+    api_out = polli_text(prompt)              # converted to $/$$
     summary, steps = _split_summary_and_steps(api_out)
 
-    # 3) render; copy button copies api_out exactly
     html_out = _render_html(summary, steps, font_type, language, api_out)
     display(HTML(html_out))
+
