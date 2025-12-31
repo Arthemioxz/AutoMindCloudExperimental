@@ -73,24 +73,29 @@ export function createComponentsPanel(app, theme) {
     // ✅ PANEL: y "doble de alto"
     // ✅ FIX: como el panel se escala a 0.5, compensamos maxHeight * (1/UI_SCALE)
     panel: {
-      position: "absolute",
-      right: "610px",
-      top: "14px",
-      width: "440px",
-      maxHeight: `calc(92vh * ${UI_SCALE_INV})`, // ✅ antes "92%" pero al escalar a 0.5 se veía la mitad
-      background: theme.bgPanel,
-      border: `1px solid ${theme.stroke}`,
-      boxShadow: theme.shadow,
-      borderRadius: "18px",
-      overflow: "hidden",
-      display: "block",
-      pointerEvents: "auto",
-      willChange: "transform, opacity",
-      transition:
-        "transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease",
-      transform: `translateX(${CLOSED_TX}px)`,
-      opacity: "0",
+        position: "absolute",
+        left: "max(14px, env(safe-area-inset-left))",
+        top: "max(14px, env(safe-area-inset-top))",
+        right: "auto",
+        bottom: "auto",
+
+        width: "min(440px, calc(100vw - 28px))",
+        maxHeight: "min(72vh, calc(100vh - 28px))",
+
+        background: theme.bgPanel,
+        border: `1px solid ${theme.stroke}`,
+        boxShadow: theme.shadow,
+        borderRadius: "18px",
+        overflow: "hidden",
+        display: "block",
+        pointerEvents: "auto",
+        willChange: "transform, opacity",
+        transition:
+            "transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease",
+        transform: "translateX(-520px)",
+        opacity: "0",
     },
+
 
     header: {
       display: "flex",
