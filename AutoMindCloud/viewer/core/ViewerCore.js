@@ -29,6 +29,137 @@ function applyDoubleSided(root) {
   });
 }
 
+
+/* ------------------------------------------------------------------
+ *  Color management + "black mesh" hardening
+ *  Fixes common "everything looks black" cases when:
+ *   1) renderer is not outputting sRGB
+ *   2) textures are treated as linear
+ *   3) Collada/URDF materials multiply textures by (0,0,0) diffuse
+ *   4) vertexColors are enabled while the exported vertex colors are all zeros
+ * ------------------------------------------------------------------ */
+
+function configureRendererColorManagement(renderer) {
+  if (!renderer) return;
+
+  try {
+    // Three r152+: explicit opt-in. Older versions ignore.
+    if (THREE.ColorManagement && typeof THREE.ColorManagement.enabled === "boolean") {
+      THREE.ColorManagement.enabled = true;
+    }
+
+    // Output color space (r152+) or encoding (<= r151 / r13x).
+    if (renderer.outputColorSpace !== undefined && THREE.SRGBColorSpace) {
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+    } else if (renderer.outputEncoding !== undefined && THREE.sRGBEncoding) {
+      renderer.outputEncoding = THREE.sRGBEncoding;
+    }
+
+    // Tone mapping helps prevent ultra-dark renders for PBR-ish assets.
+    if (renderer.toneMapping !== undefined && THREE.ACESFilmicToneMapping) {
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      if (renderer.toneMappingExposure !== undefined) {
+        if (!renderer.toneMappingExposure || renderer.toneMappingExposure < 0.01) {
+          renderer.toneMappingExposure = 1.05;
+        }
+      }
+    }
+
+    // Newer Three supports these flags.
+    if (renderer.physicallyCorrectLights !== undefined) renderer.physicallyCorrectLights = true;
+    if (renderer.useLegacyLights !== undefined) renderer.useLegacyLights = false;
+  } catch (_e) {
+    // silent: compatibility layer
+  }
+}
+
+function _setTextureColorSpace(tex, isColorData) {
+  if (!tex) return;
+  try {
+    // r152+: colorSpace API
+    if (tex.colorSpace !== undefined) {
+      if (isColorData && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+      if (!isColorData && THREE.NoColorSpace) tex.colorSpace = THREE.NoColorSpace;
+    }
+    // <= r151: encoding API
+    if (tex.encoding !== undefined) {
+      if (isColorData && THREE.sRGBEncoding) tex.encoding = THREE.sRGBEncoding;
+      if (!isColorData && THREE.LinearEncoding) tex.encoding = THREE.LinearEncoding;
+    }
+    tex.needsUpdate = true;
+  } catch (_e) {
+    // silent: compatibility layer
+  }
+}
+
+function normalizeObjectMaterials(root, renderer) {
+  if (!root) return;
+
+  const maxAniso =
+    renderer && renderer.capabilities && renderer.capabilities.getMaxAnisotropy
+      ? renderer.capabilities.getMaxAnisotropy()
+      : 1;
+
+  root.traverse((obj) => {
+    if (!obj || !obj.isMesh) return;
+
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+
+    for (const mat of mats) {
+      if (!mat) continue;
+
+      const hasMap = !!mat.map;
+
+      // Assign texture color spaces.
+      if (mat.map) {
+        _setTextureColorSpace(mat.map, true);
+        if (mat.map.anisotropy !== undefined) mat.map.anisotropy = Math.min(8, maxAniso);
+      }
+      if (mat.emissiveMap) _setTextureColorSpace(mat.emissiveMap, true);
+
+      // Non-color data maps (leave linear / NoColorSpace).
+      if (mat.normalMap) _setTextureColorSpace(mat.normalMap, false);
+      if (mat.roughnessMap) _setTextureColorSpace(mat.roughnessMap, false);
+      if (mat.metalnessMap) _setTextureColorSpace(mat.metalnessMap, false);
+      if (mat.aoMap) _setTextureColorSpace(mat.aoMap, false);
+      if (mat.bumpMap) _setTextureColorSpace(mat.bumpMap, false);
+      if (mat.displacementMap) _setTextureColorSpace(mat.displacementMap, false);
+      if (mat.alphaMap) _setTextureColorSpace(mat.alphaMap, false);
+
+      // Collada sometimes exports diffuse=(0,0,0) expecting a texture.
+      // If the texture exists, ensure we don't multiply it by black.
+      if (hasMap && mat.color && mat.color.isColor) {
+        if (mat.color.r < 0.05 && mat.color.g < 0.05 && mat.color.b < 0.05) {
+          mat.color.set(0xffffff);
+        }
+      }
+
+      // If there is no texture and the material is basically black, bump it up a bit
+      // so the model remains readable even if textures fail to resolve.
+      if (!hasMap && mat.color && mat.color.isColor) {
+        if (mat.color.r < 0.03 && mat.color.g < 0.03 && mat.color.b < 0.03) {
+          mat.color.set(0x888888);
+        }
+      }
+
+      // Very common "all black" cause:
+      // vertexColors enabled + exported vertex colors are all zeros.
+      // If we have a texture map, vertex colors are almost never desired → disable.
+      if (hasMap && mat.vertexColors) {
+        mat.vertexColors = false;
+      }
+
+      // Reduce "too dark" PBR defaults when there is no envMap.
+      if ((mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial) && !mat.envMap) {
+        if (mat.metalness !== undefined && mat.metalness > 0.35) mat.metalness = 0.1;
+        if (mat.roughness !== undefined && mat.roughness < 0.4) mat.roughness = 0.85;
+      }
+
+      mat.needsUpdate = true;
+    }
+  });
+}
+
 /** Many URDF assets come Z-up; we rectify to Y-up (Three default) once. */
 function rectifyUpForward(obj) {
   if (!obj || obj.userData.__rectified) return;
@@ -419,6 +550,7 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   // Shadows OFF by default
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    configureRendererColorManagement(renderer);
 
   // Controls
   const controls = new TrackballControls(camera, renderer.domElement);
@@ -437,6 +569,10 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   dir.shadow.camera.near = 0.1;
   dir.shadow.camera.far = 1000;
   scene.add(hemi);
+
+    // Soft fill so untextured / PBR-ish meshes don't turn into silhouettes.
+    const amb = new THREE.AmbientLight(0xffffff, 0.22);
+    scene.add(amb);
   scene.add(dir);
 
   // Helpers
@@ -497,6 +633,7 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
       scene.add(robotModel);
       rectifyUpForward(robotModel);
       applyDoubleSided(robotModel);
+      normalizeObjectMaterials(robotModel, renderer);
 
       // First fit
       setTimeout(() => {
