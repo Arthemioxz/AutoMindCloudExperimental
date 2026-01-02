@@ -1,153 +1,106 @@
 // /viewer/core/ViewerCore.js
 // Three.js r132 compatible core for a URDF viewer
 // Exports: createViewer({ container, background, pixelRatio })
-//
-// ✅ FIX “se ve negro” (Collada/URDF):
-//  - renderer.outputEncoding = sRGBEncoding
-//  - Texturas (map/emissiveMap) en sRGBEncoding
-//  - Si hay map y el material tiene color casi negro -> lo fuerza a blanco (evita multiplicar por 0)
-//  - Heurística: si “casi todo” el robot queda negro (sin texturas o colores mal importados) -> levanta a gris
-//  - También expone createViewer en window.createViewer para evitar “createViewer no encontrado”
 
 /* global THREE, URDFLoader */
 
 function assertThree() {
-  if (typeof THREE === "undefined") {
-    throw new Error("[ViewerCore] THREE is not defined. Load three.js before ViewerCore.js");
+  if (typeof THREE === 'undefined') {
+    throw new Error('[ViewerCore] THREE is not defined. Load three.js before ViewerCore.js');
   }
-  if (typeof URDFLoader === "undefined") {
-    throw new Error("[ViewerCore] URDFLoader is not defined. Load urdf-loader UMD before ViewerCore.js");
+  if (typeof URDFLoader === 'undefined') {
+    throw new Error('[ViewerCore] URDFLoader is not defined. Load urdf-loader UMD before ViewerCore.js');
   }
 }
 
 /** Minor math helpers */
-const clamp01 = (x) => Math.max(0, Math.min(1, x));
+const clamp01 = (x) => Math.max(0, Math.min(1, x)));
 
-/** Material/texture helpers (r132) */
-function _asArray(v) {
-  return Array.isArray(v) ? v : v ? [v] : [];
-}
+/** Ensure meshes are double-sided, fix common material issues (textures * color = black), and compute normals */
+function applyDoubleSided(root) {
+  const uniqMats = new Set();
 
-function _colorLuma(c) {
-  if (!c) return 0;
-  // linear-ish luminance
-  return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
-}
+  root?.traverse?.(n => {
+    if (n.isMesh && n.geometry) {
+      // Material fixes (array or single)
+      if (Array.isArray(n.material)) {
+        n.material.forEach(m => { patchMaterial(m); if (m) uniqMats.add(m); });
+      } else if (n.material) {
+        patchMaterial(n.material);
+        uniqMats.add(n.material);
+      }
 
-function _isNearlyBlackColor(c, eps = 0.02) {
-  return !!c && _colorLuma(c) < eps;
-}
+      // Shadows default ON (can be toggled from UI)
+      n.castShadow = true;
+      n.receiveShadow = true;
 
-function _ensureTextureSRGB(tex) {
-  if (!tex) return;
-  // r132: outputEncoding + texture.encoding
-  if (typeof THREE.sRGBEncoding !== "undefined") {
-    tex.encoding = THREE.sRGBEncoding;
-  }
-  // Collada suele venir bien con esto, pero si tu export a veces sale invertido,
-  // puedes comentar la línea flipY
-  // tex.flipY = false;
-  tex.needsUpdate = true;
-}
-
-function _fixOneMaterial(m) {
-  if (!m) return;
-
-  // Double sided
-  m.side = THREE.DoubleSide;
-
-  // Si hay textura de color -> debe ser sRGB
-  if (m.map) _ensureTextureSRGB(m.map);
-  if (m.emissiveMap) _ensureTextureSRGB(m.emissiveMap);
-
-  // 🔥 FIX típico “todo negro”: en Collada a veces viene color=negro y map existe,
-  // y el shader multiplica map * color => negro.
-  if ((m.map || m.emissiveMap) && m.color && _isNearlyBlackColor(m.color, 0.03)) {
-    m.color.setRGB(1, 1, 1);
-  }
-
-  // Si hay map, muchas veces vertexColors mal seteado oscurece todo (cuando no corresponde)
-  if (m.map && m.vertexColors) {
-    m.vertexColors = false;
-  }
-
-  m.needsUpdate = true;
-}
-
-function _fixMaterialsDeep(root) {
-  const mats = new Set();
-  root?.traverse?.((n) => {
-    if (n && n.isMesh && n.material) {
-      _asArray(n.material).forEach((m) => mats.add(m));
+      // Collada/URDF exports sometimes omit normals -> compute them
+      n.geometry.computeVertexNormals?.();
     }
   });
-  mats.forEach(_fixOneMaterial);
-  return mats;
+
+  // Heuristic fallback:
+  // If *most* materials are pure black AND have no textures, lift them to a neutral gray so the model is visible.
+  // (Keeps intentionally-black details intact in normal cases.)
+  try {
+    const mats = Array.from(uniqMats);
+    let total = 0, blackNoTex = 0;
+    for (const m of mats) {
+      if (!m || !m.color) continue;
+      total++;
+      const sum = (m.color.r || 0) + (m.color.g || 0) + (m.color.b || 0);
+      if (!m.map && sum < 1e-3) blackNoTex++;
+    }
+    if (total > 0 && (blackNoTex / total) > 0.8) {
+      for (const m of mats) {
+        if (!m || !m.color) continue;
+        const sum = (m.color.r || 0) + (m.color.g || 0) + (m.color.b || 0);
+        if (!m.map && sum < 1e-3) {
+          m.color.set(0x9aa0a6); // neutral gray
+          m.needsUpdate = true;
+        }
+      }
+    }
+  } catch (_) {}
 }
 
 /**
- * Heurística adicional:
- * Si el robot completo queda “casi todo negro”, probablemente el import dejó diffuse=negro
- * o se perdió el material. En ese caso, levantamos a gris (sin romper el URDF “bueno”).
+ * Patch materials so common Collada exports don't render "all black".
+ * - If a texture map exists but material color is ~black, set color to white.
+ * - Ensure texture color space is sRGB (three r132).
+ * - Force DoubleSide to avoid backface culling surprises.
  */
-function _liftIfMostlyBlack(root, opts = {}) {
-  const {
-    ratioThreshold = 0.85, // “casi todo”
-    lumaThreshold = 0.03,
-    liftTo = 0.65,         // gris claro
-    minMaterials = 6
-  } = opts;
+function patchMaterial(mat) {
+  if (!mat) return;
 
-  const mats = [];
-  root?.traverse?.((n) => {
-    if (n && n.isMesh && n.material) {
-      _asArray(n.material).forEach((m) => mats.push(m));
+  // Double sided (CAD meshes often have inconsistent winding)
+  mat.side = THREE.DoubleSide;
+
+  // If map exists and color is black, texture gets multiplied by black => silhouette
+  try {
+    if (mat.map && mat.color && (mat.color.r + mat.color.g + mat.color.b) < 1e-3) {
+      mat.color.set(0xffffff);
     }
-  });
+  } catch (_) {}
 
-  if (mats.length < minMaterials) return;
+  // sRGB for color textures (r132 uses outputEncoding + texture.encoding)
+  const setTexSRGB = (t) => {
+    if (!t) return;
+    try { t.encoding = THREE.sRGBEncoding; } catch (_) {}
+    try { t.needsUpdate = true; } catch (_) {}
+  };
 
-  let blackCount = 0;
-  let withMapCount = 0;
+  setTexSRGB(mat.map);
+  setTexSRGB(mat.emissiveMap);
+  setTexSRGB(mat.specularMap);
+  setTexSRGB(mat.alphaMap);
 
-  for (const m of mats) {
-    if (m?.map || m?.emissiveMap) withMapCount++;
-    if (m?.color && _isNearlyBlackColor(m.color, lumaThreshold)) blackCount++;
-  }
+  // Keep transparency consistent
+  try {
+    if (typeof mat.opacity === 'number' && mat.opacity < 1) mat.transparent = true;
+  } catch (_) {}
 
-  // Si hay MUCHOS materiales negros y casi no hay maps, suele ser el caso “robot negro”
-  const blackRatio = blackCount / Math.max(1, mats.length);
-
-  if (blackRatio >= ratioThreshold) {
-    mats.forEach((m) => {
-      if (!m) return;
-
-      // no tocar si ya tiene map (porque ya lo arreglamos a blanco arriba)
-      if (m.map || m.emissiveMap) return;
-
-      if (m.color && _isNearlyBlackColor(m.color, lumaThreshold)) {
-        m.color.setRGB(liftTo, liftTo, liftTo);
-        m.needsUpdate = true;
-      }
-    });
-  }
-}
-
-/** Ensure meshes are double-sided and normals OK */
-function applyDoubleSided(root) {
-  root?.traverse?.((n) => {
-    if (n && n.isMesh && n.geometry) {
-      if (Array.isArray(n.material)) n.material.forEach((m) => (m.side = THREE.DoubleSide));
-      else if (n.material) n.material.side = THREE.DoubleSide;
-
-      // OJO: si tienes modelos muy pesados, esto puede ser caro.
-      // Si ya vienen con normales bien, puedes comentar computeVertexNormals.
-      n.geometry.computeVertexNormals?.();
-      if (n.material) {
-        _asArray(n.material).forEach((m) => (m.needsUpdate = true));
-      }
-    }
-  });
+  mat.needsUpdate = true;
 }
 
 /** Many URDF assets come Z-up; we rectify to Y-up (Three default) once. */
@@ -184,16 +137,13 @@ function fitAndCenter(camera, controls, object, pad = 1.08) {
     camera.updateProjectionMatrix();
     // keep direction (if any); otherwise use iso-ish
     const dir = camera.position.clone().sub(controls.target || new THREE.Vector3()).normalize();
-    if (!Number.isFinite(dir.lengthSq()) || dir.lengthSq() < 1e-10) {
+    if (!isFinite(dir.lengthSq()) || dir.lengthSq() < 1e-10) {
       dir.set(1, 0.7, 1).normalize();
     }
     camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
   } else if (camera.isOrthographicCamera) {
     // set ortho frustum around object (and at least around grid size 10 => half 5)
-    const aspect = Math.max(
-      1e-6,
-      (controls?.domElement?.clientWidth || 1) / (controls?.domElement?.clientHeight || 1)
-    );
+    const aspect = Math.max(1e-6, (controls?.domElement?.clientWidth || 1) / (controls?.domElement?.clientHeight || 1));
     const minSpan = 5 * Math.SQRT2;
     const span = Math.max(maxDim, minSpan);
     camera.left = -span * aspect;
@@ -223,7 +173,7 @@ function buildHelpers() {
   // Ground (only useful if shadows are enabled)
   const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
-  groundMat.depthWrite = false; // prevents “cutting” artifacts with transparent modes + shadows
+  groundMat.depthWrite = false; // IMPORTANT: prevents "cutting" artifacts with transparent modes + shadows
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.0001;
   ground.receiveShadow = false;
@@ -240,7 +190,7 @@ function buildHelpers() {
 
 /**
  * Minimal TrackballControls (UMD-friendly) to allow full 360° rotation in any direction,
- * while keeping the SAME “smooth” feel (inertia) for rotate + pan + zoom.
+ * while keeping the SAME "smooth" feel (inertia) for rotate + pan + zoom.
  * API surface used by this project:
  *  - controls.object
  *  - controls.domElement
@@ -286,7 +236,7 @@ class TrackballControls {
       if (!this.enabled) return;
       e.preventDefault();
 
-      // wheel CAD-like
+      // FIX: wheel was inverted — invert delta so it matches the original feel
       const delta = -(e.deltaY || 0);
 
       this._dolly(delta);
@@ -299,7 +249,7 @@ class TrackballControls {
       this._pointerId = e.pointerId;
 
       // match common CAD defaults: L=rotate, M=zoom, R=pan
-      this._state = e.button === 0 ? 1 : e.button === 1 ? 2 : 3;
+      this._state = (e.button === 0) ? 1 : (e.button === 1) ? 2 : 3;
 
       this._start.set(e.clientX, e.clientY);
       this._end.copy(this._start);
@@ -309,11 +259,9 @@ class TrackballControls {
       this._lastPan.set(0, 0, 0);
       this._lastDolly = 0;
 
-      try {
-        this.domElement.setPointerCapture(e.pointerId);
-      } catch (_) {}
-      window.addEventListener("pointermove", this._onPointerMove, true);
-      window.addEventListener("pointerup", this._onPointerUp, true);
+      try { this.domElement.setPointerCapture(e.pointerId); } catch (_) {}
+      window.addEventListener('pointermove', this._onPointerMove, true);
+      window.addEventListener('pointerup', this._onPointerUp, true);
     };
 
     this._onPointerMove = (e) => {
@@ -325,7 +273,7 @@ class TrackballControls {
       if (this._state === 1) {
         this._rotate(this._start, this._end);
       } else if (this._state === 2) {
-        const dy = this._end.y - this._start.y;
+        const dy = (this._end.y - this._start.y);
         // Keep zoom drag consistent with wheel (up = zoom in)
         this._dolly(-dy * 4);
       } else if (this._state === 3) {
@@ -341,16 +289,14 @@ class TrackballControls {
       this._pointerId = null;
       this._state = 0;
 
-      window.removeEventListener("pointermove", this._onPointerMove, true);
-      window.removeEventListener("pointerup", this._onPointerUp, true);
-      try {
-        this.domElement.releasePointerCapture(e.pointerId);
-      } catch (_) {}
+      window.removeEventListener('pointermove', this._onPointerMove, true);
+      window.removeEventListener('pointerup', this._onPointerUp, true);
+      try { this.domElement.releasePointerCapture(e.pointerId); } catch (_) {}
     };
 
-    this.domElement.addEventListener("contextmenu", this._onContextMenu);
-    this.domElement.addEventListener("wheel", this._onWheel, { passive: false });
-    this.domElement.addEventListener("pointerdown", this._onPointerDown, true);
+    this.domElement.addEventListener('contextmenu', this._onContextMenu);
+    this.domElement.addEventListener('wheel', this._onWheel, { passive: false });
+    this.domElement.addEventListener('pointerdown', this._onPointerDown, true);
   }
 
   handleResize() {
@@ -360,10 +306,11 @@ class TrackballControls {
   update() {
     // apply inertia (smooth) after release — rotate + pan + zoom
     if (!this.staticMoving && this._state === 0) {
+
       // ROTATE inertia
       if (Math.abs(this._lastAngle) > 1e-6) {
         this._applyRotation(this._lastAxis, this._lastAngle);
-        this._lastAngle *= 1.0 - this.dynamicDampingFactor;
+        this._lastAngle *= (1.0 - this.dynamicDampingFactor);
         if (Math.abs(this._lastAngle) < 1e-6) this._lastAngle = 0;
       }
 
@@ -379,7 +326,7 @@ class TrackballControls {
       // ZOOM inertia
       if (Math.abs(this._lastDolly) > 1e-6) {
         this._dolly(this._lastDolly);
-        this._lastDolly *= 1.0 - this.dynamicDampingFactor;
+        this._lastDolly *= (1.0 - this.dynamicDampingFactor);
         if (Math.abs(this._lastDolly) < 1e-6) this._lastDolly = 0;
       }
     }
@@ -433,7 +380,7 @@ class TrackballControls {
     const dot = THREE.MathUtils.clamp(a.dot(b), -1, 1);
     let angle = Math.acos(dot) * this.rotateSpeed;
 
-    // dragging right should feel like model rotates “with” the drag (CAD-like)
+    // dragging right should feel like model rotates "with" the drag (CAD-like)
     angle = -angle;
 
     // axis in world space
@@ -447,7 +394,7 @@ class TrackballControls {
   }
 
   _dolly(delta) {
-    const zoomFactor = Math.pow(0.95, delta * this.zoomSpeed * 0.01);
+    const zoomFactor = Math.pow(0.95, (delta * this.zoomSpeed) * 0.01);
 
     if (this.object.isPerspectiveCamera) {
       const eye = this.object.position.clone().sub(this.target);
@@ -465,8 +412,8 @@ class TrackballControls {
 
   _pan(startPx, endPx) {
     const r = this._getRect();
-    const dx = endPx.x - startPx.x;
-    const dy = endPx.y - startPx.y;
+    const dx = (endPx.x - startPx.x);
+    const dy = (endPx.y - startPx.y);
 
     const h = Math.max(1, r.height);
 
@@ -474,8 +421,8 @@ class TrackballControls {
     if (this.object.isPerspectiveCamera) {
       const eye = this.object.position.clone().sub(this.target);
       const dist = eye.length();
-      const fov = ((this.object.fov || 60) * Math.PI) / 180;
-      const worldPerPixel = (2 * dist * Math.tan(fov / 2)) / h;
+      const fov = (this.object.fov || 60) * Math.PI / 180;
+      const worldPerPixel = 2 * dist * Math.tan(fov / 2) / h;
       scale = worldPerPixel;
     } else if (this.object.isOrthographicCamera) {
       const worldPerPixel = (this.object.top - this.object.bottom) / h;
@@ -503,13 +450,13 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   assertThree();
 
   const rootEl = container || document.body;
-  if (getComputedStyle(rootEl).position === "static") {
-    rootEl.style.position = "relative";
+  if (getComputedStyle(rootEl).position === 'static') {
+    rootEl.style.position = 'relative';
   }
 
   // Scene
   const scene = new THREE.Scene();
-  if (background === null || typeof background === "undefined") {
+  if (background === null || typeof background === 'undefined') {
     scene.background = null;
   } else {
     scene.background = new THREE.Color(background);
@@ -522,12 +469,9 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
 
   const orthoSize = 2.5;
   const ortho = new THREE.OrthographicCamera(
-    -orthoSize * aspect,
-    orthoSize * aspect,
-    orthoSize,
-    -orthoSize,
-    0.01,
-    10000
+    -orthoSize * aspect, orthoSize * aspect,
+    orthoSize, -orthoSize,
+    0.01, 10000
   );
   ortho.position.set(0, 0, 3);
 
@@ -536,25 +480,19 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   // Renderer
   const renderer = new THREE.WebGLRenderer({
     antialias: true,
-    preserveDrawingBuffer: false,
-    alpha: true // ✅ permite fondo transparente real si scene.background=null (evita “negro” por defecto)
+    preserveDrawingBuffer: false
   });
-
   renderer.setPixelRatio(pixelRatio || window.devicePixelRatio || 1);
+  // Correct color management for textures (three r132)
+  renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.setSize(rootEl.clientWidth || 1, rootEl.clientHeight || 1);
-  renderer.domElement.style.width = "100%";
-  renderer.domElement.style.height = "100%";
-  renderer.domElement.style.display = "block";
-  renderer.domElement.style.touchAction = "none";
+  renderer.domElement.style.width = '100%';
+  renderer.domElement.style.height = '100%';
+  renderer.domElement.style.display = 'block';
+  renderer.domElement.style.touchAction = 'none';
   rootEl.appendChild(renderer.domElement);
 
-  // ✅ Color management r132
-  if (typeof renderer.outputEncoding !== "undefined" && typeof THREE.sRGBEncoding !== "undefined") {
-    renderer.outputEncoding = THREE.sRGBEncoding;
-  }
-  renderer.setClearColor(0xffffff, 1);
-
-  // Shadows OFF by default (pero dejamos pipeline listo)
+  // Shadows OFF by default
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -566,16 +504,14 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   controls.staticMoving = false;
   controls.dynamicDampingFactor = 0.15;
 
-  // Lights (agregamos un ambient suave para evitar “negros” por falta de luz)
-  const ambient = new THREE.AmbientLight(0xffffff, 0.18);
-  const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.75);
+  // Lights
+  const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.7);
   const dir = new THREE.DirectionalLight(0xffffff, 1.05);
   dir.position.set(3, 4, 2);
   dir.castShadow = false;
   dir.shadow.mapSize.set(2048, 2048);
   dir.shadow.camera.near = 0.1;
   dir.shadow.camera.far = 1000;
-  scene.add(ambient);
   scene.add(hemi);
   scene.add(dir);
 
@@ -604,9 +540,9 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
     }
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
-    if (controls && typeof controls.handleResize === "function") controls.handleResize();
+    if (controls && typeof controls.handleResize === 'function') controls.handleResize();
   }
-  window.addEventListener("resize", onResize);
+  window.addEventListener('resize', onResize);
 
   // URDF loader & current robot
   const urdfLoader = new URDFLoader();
@@ -615,14 +551,12 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   /** Load URDF content (string) with an external loadMeshCb(path, manager, onComplete) */
   function loadURDF(urdfText, { loadMeshCb } = {}) {
     if (robotModel) {
-      try {
-        scene.remove(robotModel);
-      } catch (_) {}
+      try { scene.remove(robotModel); } catch (_) {}
       robotModel = null;
     }
-    if (!urdfText || typeof urdfText !== "string") return null;
+    if (!urdfText || typeof urdfText !== 'string') return null;
 
-    if (typeof loadMeshCb === "function") {
+    if (typeof loadMeshCb === 'function') {
       urdfLoader.loadMeshCb = loadMeshCb;
     }
 
@@ -630,23 +564,17 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
     try {
       robot = urdfLoader.parse(urdfText);
     } catch (e) {
-      console.warn("[ViewerCore] URDF parse error:", e);
+      console.warn('[ViewerCore] URDF parse error:', e);
       return null;
     }
 
     if (robot && robot.isObject3D) {
       robotModel = robot;
       scene.add(robotModel);
-
-      // Orient + shading
       rectifyUpForward(robotModel);
       applyDoubleSided(robotModel);
 
-      // ✅ FIX “negro”: arregla encoding + color multiplicativo
-      _fixMaterialsDeep(robotModel);
-      _liftIfMostlyBlack(robotModel);
-
-      // Fit
+      // First fit
       setTimeout(() => {
         if (!robotModel) return;
         const ok = fitAndCenter(camera, controls, robotModel, 1.06);
@@ -656,17 +584,15 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
         }
       }, 50);
     }
-
     return robotModel;
   }
 
   /** Switch projection mode (Perspective|Orthographic) while preserving view as much as possible */
-  function setProjection(mode = "Perspective") {
-    const w = rootEl.clientWidth || 1,
-      h = rootEl.clientHeight || 1;
+  function setProjection(mode = 'Perspective') {
+    const w = rootEl.clientWidth || 1, h = rootEl.clientHeight || 1;
     const asp = Math.max(1e-6, w / h);
 
-    if (mode === "Orthographic" && camera.isPerspectiveCamera) {
+    if (mode === 'Orthographic' && camera.isPerspectiveCamera) {
       const t = controls.target.clone();
       const v = camera.position.clone().sub(t);
       const dist = v.length();
@@ -674,7 +600,7 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
 
       const b = robotModel ? getObjectBounds(robotModel, 1.0) : null;
       const minSpan = 5 * Math.SQRT2; // ensures grid size 10 never clips
-      const span = Math.max(orthoSize, b ? b.maxDim : 0, minSpan);
+      const span = Math.max(orthoSize, (b ? b.maxDim : 0), minSpan);
 
       ortho.left = -span * asp;
       ortho.right = span * asp;
@@ -689,7 +615,7 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
       camera = ortho;
       controls.target.copy(t);
       controls.update();
-    } else if (mode === "Perspective" && camera.isOrthographicCamera) {
+    } else if (mode === 'Perspective' && camera.isOrthographicCamera) {
       const t = controls.target.clone();
       const v = camera.position.clone().sub(t);
       const dist = v.length();
@@ -710,15 +636,16 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
 
   /** Toggle helpers and shadows from upper layers (UI) */
   function setSceneToggles({ grid, ground, axes, shadows } = {}) {
-    if (typeof grid === "boolean") helpers.grid.visible = grid;
-    if (typeof ground === "boolean") helpers.ground.visible = ground;
-    if (typeof axes === "boolean") helpers.axes.visible = axes;
+    if (typeof grid === 'boolean') helpers.grid.visible = grid;
+    if (typeof ground === 'boolean') helpers.ground.visible = ground;
 
-    if (typeof shadows === "boolean") {
+    if (typeof axes === 'boolean') helpers.axes.visible = axes;
+
+    if (typeof shadows === 'boolean') {
       renderer.shadowMap.enabled = !!shadows;
       dir.castShadow = !!shadows;
       if (robotModel) {
-        robotModel.traverse((o) => {
+        robotModel.traverse(o => {
           if (o.isMesh && o.geometry) {
             o.castShadow = !!shadows;
             o.receiveShadow = !!shadows;
@@ -726,7 +653,6 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
         });
       }
     }
-
     // Resize axes to object
     if (helpers.axes.visible && robotModel) {
       const b = getObjectBounds(robotModel);
@@ -736,12 +662,10 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
 
   /** Set background (int color) or null for transparent */
   function setBackground(colorIntOrNull) {
-    if (colorIntOrNull === null || typeof colorIntOrNull === "undefined") {
+    if (colorIntOrNull === null || typeof colorIntOrNull === 'undefined') {
       scene.background = null;
-      renderer.setClearColor(0xffffff, 0); // ✅ transparente real
     } else {
       scene.background = new THREE.Color(colorIntOrNull);
-      renderer.setClearColor(colorIntOrNull, 1);
     }
   }
 
@@ -755,9 +679,7 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   // Animation loop
   let raf = null;
   let paused = false;
-  function setPaused(v) {
-    paused = !!v;
-  }
+  function setPaused(v) { paused = !!v; }
   function animate() {
     raf = requestAnimationFrame(animate);
     controls.update();
@@ -767,28 +689,20 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
 
   // Cleanup
   function destroy() {
-    try {
-      cancelAnimationFrame(raf);
-    } catch (_) {}
-    try {
-      window.removeEventListener("resize", onResize);
-    } catch (_) {}
+    try { cancelAnimationFrame(raf); } catch (_) {}
+    try { window.removeEventListener('resize', onResize); } catch (_) {}
     try {
       const el = renderer?.domElement;
       if (el && el.parentNode) el.parentNode.removeChild(el);
     } catch (_) {}
-    try {
-      renderer?.dispose?.();
-    } catch (_) {}
+    try { renderer?.dispose?.(); } catch (_) {}
   }
 
   // Public facade
   return {
     // Core Three.js objects
     scene,
-    get camera() {
-      return camera;
-    },
+    get camera() { return camera; },
     renderer,
     controls,
 
@@ -796,9 +710,7 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
     helpers,
 
     // Current robot getter
-    get robot() {
-      return robotModel;
-    },
+    get robot() { return robotModel; },
 
     // APIs
     setPaused,
@@ -813,11 +725,12 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   };
 }
 
-// ✅ Para evitar: “ViewerCore: createViewer no encontrado…”
+
+// Allow both ESM import * as ViewerCore AND direct window usage (Colab, simple <script> embeds)
 try {
-  if (typeof window !== "undefined") {
-    window.createViewer = createViewer;
-    window.ViewerCore = window.ViewerCore || {};
-    window.ViewerCore.createViewer = createViewer;
+  if (typeof window !== 'undefined') {
+    window.createViewer = window.createViewer || createViewer;
   }
 } catch (_) {}
+
+export default createViewer;
