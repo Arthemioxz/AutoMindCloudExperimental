@@ -1,433 +1,823 @@
-// /viewer/core/AssetDB.js
-// Build a normalized in-memory asset DB and a URDFLoader-compatible loadMeshCb.
-// Three r132 + urdf-loader 0.12.6
-/* global THREE */ 
+// /viewer/core/ViewerCore.js
+// Three.js r132 compatible core for a URDF viewer
+// Exports: createViewer({ container, background, pixelRatio })
+//
+// ✅ FIX “se ve negro” (Collada/URDF):
+//  - renderer.outputEncoding = sRGBEncoding
+//  - Texturas (map/emissiveMap) en sRGBEncoding
+//  - Si hay map y el material tiene color casi negro -> lo fuerza a blanco (evita multiplicar por 0)
+//  - Heurística: si “casi todo” el robot queda negro (sin texturas o colores mal importados) -> levanta a gris
+//  - También expone createViewer en window.createViewer para evitar “createViewer no encontrado”
 
-const ALLOWED_MESH_EXTS = new Set(['dae', 'stl', 'step', 'stp']);
-const ALLOWED_TEX_EXTS  = new Set(['png', 'jpg', 'jpeg']);
-const EXT_PRIORITY = { dae: 3, stl: 2, step: 1, stp: 1 };
+/* global THREE, URDFLoader */
 
-const MIME = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  stl: 'model/stl',                    // informative; we parse from bytes
-  dae: 'model/vnd.collada+xml',
-  step:'model/step',
-  stp: 'model/step'
-};
-
-/* ---------- helpers ---------- */
-
-function safeDecodeURIComponent(s) {
-  try { return decodeURIComponent(s); } catch (e) { return s; }
-}
-
-function stripQueryHash(s) {
-  return String(s || "").replace(/[?#].*$/, "");
-}
-
-// For absolute URLs, keep only the pathname (so we can match local keys like "meshes/foo.png").
-// For relative paths, returns the input unchanged.
-function urlToPathname(s) {
-  const str = String(s || "");
-  if (/^(data:|blob:)/i.test(str)) return str;
-  try {
-    return new URL(str, window.location.href).pathname || str;
-  } catch (e) {
-    return str;
+function assertThree() {
+  if (typeof THREE === "undefined") {
+    throw new Error("[ViewerCore] THREE is not defined. Load three.js before ViewerCore.js");
+  }
+  if (typeof URDFLoader === "undefined") {
+    throw new Error("[ViewerCore] URDFLoader is not defined. Load urdf-loader UMD before ViewerCore.js");
   }
 }
 
-function stripFileScheme(s) {
-  let out = String(s || "");
-  out = out.replace(/^file:(\/\/\/)?/i, "");     // file:///...
-  out = out.replace(/^\/+[A-Za-z]:\//, "");      // /C:/...
-  out = out.replace(/^[A-Za-z]:\//, "");         // C:/...
-  return out;
+/** Minor math helpers */
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+
+/** Material/texture helpers (r132) */
+function _asArray(v) {
+  return Array.isArray(v) ? v : v ? [v] : [];
 }
 
-// Normalize a path-like string:
-// - removes query/hash
-// - converts backslashes to slashes
-// - collapses repeated slashes
-// - resolves "." and ".."
-// - removes leading "/" and leading "./"
-// - optionally decodes %XX
-function normalizePathLike(input, { decode = true } = {}) {
-  let s = urlToPathname(input);
-  if (/^(data:|blob:)/i.test(String(input || ""))) return String(input || "");
-  s = stripFileScheme(stripQueryHash(s));
-  if (decode) s = safeDecodeURIComponent(s);
+function _colorLuma(c) {
+  if (!c) return 0;
+  // linear-ish luminance
+  return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+}
 
-  s = s.replace(/\\/g, "/");
-  s = s.replace(/^\.\/+/, "");
-  s = s.replace(/\/{2,}/g, "/");
+function _isNearlyBlackColor(c, eps = 0.02) {
+  return !!c && _colorLuma(c) < eps;
+}
 
-  const isAbs = s.startsWith("/");
-  const parts = s.split("/");
+function _ensureTextureSRGB(tex) {
+  if (!tex) return;
+  // r132: outputEncoding + texture.encoding
+  if (typeof THREE.sRGBEncoding !== "undefined") {
+    tex.encoding = THREE.sRGBEncoding;
+  }
+  // Collada suele venir bien con esto, pero si tu export a veces sale invertido,
+  // puedes comentar la línea flipY
+  // tex.flipY = false;
+  tex.needsUpdate = true;
+}
 
-  const out = [];
-  for (const part of parts) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      if (out.length && out[out.length - 1] !== "..") out.pop();
-      else if (!isAbs) out.push("..");
-      continue;
+function _fixOneMaterial(m) {
+  if (!m) return;
+
+  // Double sided
+  m.side = THREE.DoubleSide;
+
+  // Si hay textura de color -> debe ser sRGB
+  if (m.map) _ensureTextureSRGB(m.map);
+  if (m.emissiveMap) _ensureTextureSRGB(m.emissiveMap);
+
+  // 🔥 FIX típico “todo negro”: en Collada a veces viene color=negro y map existe,
+  // y el shader multiplica map * color => negro.
+  if ((m.map || m.emissiveMap) && m.color && _isNearlyBlackColor(m.color, 0.03)) {
+    m.color.setRGB(1, 1, 1);
+  }
+
+  // Si hay map, muchas veces vertexColors mal seteado oscurece todo (cuando no corresponde)
+  if (m.map && m.vertexColors) {
+    m.vertexColors = false;
+  }
+
+  m.needsUpdate = true;
+}
+
+function _fixMaterialsDeep(root) {
+  const mats = new Set();
+  root?.traverse?.((n) => {
+    if (n && n.isMesh && n.material) {
+      _asArray(n.material).forEach((m) => mats.add(m));
     }
-    out.push(part);
-  }
-
-  let norm = (isAbs ? "/" : "") + out.join("/");
-  norm = norm.replace(/^\/+/, ""); // keep keys relative
-  return norm;
+  });
+  mats.forEach(_fixOneMaterial);
+  return mats;
 }
-
-function extOf(p) {
-  const s = stripQueryHash(urlToPathname(p));
-  const m = s.match(/\.([a-zA-Z0-9]+)$/);
-  return m ? m[1].toLowerCase() : "";
-}
-
-function normKey(path) {
-  return normalizePathLike(path, { decode: true }).toLowerCase();
-}
-
-function basenameNoQuery(path) {
-  const s = normalizePathLike(path, { decode: true });
-  const parts = s.split("/");
-  return parts[parts.length - 1] || "";
-}
-
-function basenameNoQueryRaw(path) {
-  const s = normalizePathLike(path, { decode: false });
-  const parts = s.split("/");
-  return parts[parts.length - 1] || "";
-}
-
-// "package://pkg/.../file.ext" -> ".../file.ext"
-function dropPackagePrefix(k) {
-  return k.replace(/^package:\/\//i, "").replace(/^[^/]+\//, "");
-}
-
-// Generate variants for a requested URL so we can find it in meshDB,
-// even when exporters add prefixes, absolute paths, URL-encoding, etc.
-function variantsFor(path) {
-  const raw = String(path || "");
-  if (/^(data:|blob:)/i.test(raw)) return [raw];
-
-  const out = new Set();
-
-  const add = (p) => {
-    const k = normKey(p);
-    if (k) out.add(k);
-  };
-
-  // decoded + normalized
-  add(raw);
-
-  // raw (no decode) variants (useful if the DAE contains percent-encoded names)
-  const rawNorm = normalizePathLike(raw, { decode: false }).toLowerCase();
-  if (rawNorm) out.add(rawNorm);
-
-  // base names (decoded + raw)
-  const bDec = basenameNoQuery(raw);
-  if (bDec) out.add(normKey(bDec));
-  const bRaw = basenameNoQueryRaw(raw);
-  if (bRaw) out.add(normalizePathLike(bRaw, { decode: false }).toLowerCase());
-
-  // drop "package://<pkg>/" if present
-  add(dropPackagePrefix(raw));
-  out.add(dropPackagePrefix(rawNorm));
-
-  // also try stripping the first path segment (common when "meshes/" is omitted in keys)
-  const strip1 = (p) => {
-    const s = normalizePathLike(p, { decode: false });
-    const i = s.indexOf("/");
-    return i >= 0 ? s.slice(i + 1) : s;
-  };
-  out.add(strip1(raw).toLowerCase());
-  out.add(strip1(rawNorm).toLowerCase());
-
-  return Array.from(out);
-}
-
-function dataURLFor(ext, b64) {
-  const mime = MIME[ext] || 'application/octet-stream';
-  return `data:${mime};base64,${b64}`;
-}
-
-const textDecoder = new TextDecoder();
-function b64ToUint8(b64) {
-  // atob → bytes
-  const bin = atob(String(b64 || ''));
-  const len = bin.length;
-  const out = new Uint8Array(len);
-  for (let i = 0; i < len; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-function b64ToText(b64) {
-  return textDecoder.decode(b64ToUint8(b64));
-}
-
-/* ---------- public: buildAssetDB ---------- */
 
 /**
- * Normaliza claves y crea índices de búsqueda.
- * @param {Object.<string,string>} meshDB  — mapa key(base/path) → base64
- * @returns {{
- *   byKey: Object.<string,string>,
- *   byBase: Map<string, string[]>,
- *   has(key: string): boolean,
- *   get(key: string): string|undefined,
- *   keys(): string[]
- * }}
+ * Heurística adicional:
+ * Si el robot completo queda “casi todo negro”, probablemente el import dejó diffuse=negro
+ * o se perdió el material. En ese caso, levantamos a gris (sin romper el URDF “bueno”).
  */
-export function buildAssetDB(meshDB = {}) {
-  const byKey = {};
-  const byBase = new Map();
+function _liftIfMostlyBlack(root, opts = {}) {
+  const {
+    ratioThreshold = 0.85, // “casi todo”
+    lumaThreshold = 0.03,
+    liftTo = 0.65,         // gris claro
+    minMaterials = 6
+  } = opts;
 
-  // 1) Normaliza y duplica entradas útiles (sin package://)
-  Object.keys(meshDB).forEach((rawKey) => {
-    const b64 = meshDB[rawKey];
-    if (!b64) return;
-
-    const k = normKey(rawKey);
-    const kNoPkg = dropPackagePrefix(k);
-    const base = basenameNoQuery(k);
-
-    // Registra k
-    if (!byKey[k]) byKey[k] = b64;
-
-    // Registra variante sin package://
-    if (kNoPkg !== k && !byKey[kNoPkg]) byKey[kNoPkg] = b64;
-
-    // También permite lookup por basename (no exclusivo; puede haber duplicados)
-    const arr = byBase.get(base) || [];
-    arr.push(k);               // guardamos la key "completa" como referencia principal
-    if (kNoPkg !== k) arr.push(kNoPkg);
-    byBase.set(base, Array.from(new Set(arr)));
+  const mats = [];
+  root?.traverse?.((n) => {
+    if (n && n.isMesh && n.material) {
+      _asArray(n.material).forEach((m) => mats.push(m));
+    }
   });
 
-  return {
-    byKey,
-    byBase,
-    has(key) {
-      const ks = variantsFor(key);
-      return !!ks.find((k) => !!byKey[k]);
-    },
-    get(key) {
-      const ks = variantsFor(key);
-      for (const k of ks) {
-        if (byKey[k]) return byKey[k];
-      }
-      // último recurso: basename
-      const base = basenameNoQuery(key);
-      const arr = byBase.get(base) || [];
-      for (const k of arr) {
-        if (byKey[k]) return byKey[k];
-      }
-      return undefined;
-    },
-    keys() { return Object.keys(byKey); }
-  };
-}
+  if (mats.length < minMaterials) return;
 
-/* ---------- internal: choose best asset among candidates ---------- */
+  let blackCount = 0;
+  let withMapCount = 0;
 
-function pickBestKey(tryKeys, assetDB) {
-  // Agrupa por basename y elige por prioridad de extensión y tamaño aprox
-  const groups = new Map();
-  for (const kk of tryKeys) {
-    const k = normKey(kk);
-    const b64 = assetDB.byKey[k];
-    if (!b64) continue;
-    const ext = extOf(k);
-    if (!ALLOWED_MESH_EXTS.has(ext)) continue;
-    const base = basenameNoQuery(k);
-    const arr = groups.get(base) || [];
-    arr.push({
-      key: k,
-      ext,
-      prio: EXT_PRIORITY[ext] ?? 0,
-      bytes: approxBytesFromB64(b64)
+  for (const m of mats) {
+    if (m?.map || m?.emissiveMap) withMapCount++;
+    if (m?.color && _isNearlyBlackColor(m.color, lumaThreshold)) blackCount++;
+  }
+
+  // Si hay MUCHOS materiales negros y casi no hay maps, suele ser el caso “robot negro”
+  const blackRatio = blackCount / Math.max(1, mats.length);
+
+  if (blackRatio >= ratioThreshold) {
+    mats.forEach((m) => {
+      if (!m) return;
+
+      // no tocar si ya tiene map (porque ya lo arreglamos a blanco arriba)
+      if (m.map || m.emissiveMap) return;
+
+      if (m.color && _isNearlyBlackColor(m.color, lumaThreshold)) {
+        m.color.setRGB(liftTo, liftTo, liftTo);
+        m.needsUpdate = true;
+      }
     });
-    groups.set(base, arr);
   }
-  // Devuelve el mejor del primer grupo con contenido
-  for (const [, arr] of groups) {
-    arr.sort((a, b) => (b.prio - a.prio) || (b.bytes - a.bytes));
-    if (arr[0]) return arr[0].key;
-  }
-  return null;
 }
 
-/* ---------- public: createLoadMeshCb ---------- */
+/** Ensure meshes are double-sided and normals OK */
+function applyDoubleSided(root) {
+  root?.traverse?.((n) => {
+    if (n && n.isMesh && n.geometry) {
+      if (Array.isArray(n.material)) n.material.forEach((m) => (m.side = THREE.DoubleSide));
+      else if (n.material) n.material.side = THREE.DoubleSide;
+
+      // OJO: si tienes modelos muy pesados, esto puede ser caro.
+      // Si ya vienen con normales bien, puedes comentar computeVertexNormals.
+      n.geometry.computeVertexNormals?.();
+      if (n.material) {
+        _asArray(n.material).forEach((m) => (m.needsUpdate = true));
+      }
+    }
+  });
+}
+
+/** Many URDF assets come Z-up; we rectify to Y-up (Three default) once. */
+function rectifyUpForward(obj) {
+  if (!obj || obj.userData.__rectified) return;
+  obj.rotateX(-Math.PI / 2);
+  obj.userData.__rectified = true;
+  obj.updateMatrixWorld(true);
+}
+
+/** Compute a padded bounding box for an object */
+function getObjectBounds(object, pad = 1.0) {
+  const box = new THREE.Box3().setFromObject(object);
+  if (box.isEmpty()) return null;
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3()).multiplyScalar(pad);
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  return { box, center, size, maxDim };
+}
+
+/** Fit an object to the given camera+controls */
+function fitAndCenter(camera, controls, object, pad = 1.08) {
+  const b = getObjectBounds(object, pad);
+  if (!b) return false;
+
+  const { center, maxDim } = b;
+
+  if (camera.isPerspectiveCamera) {
+    // distance heuristic robust across FOVs
+    const fov = (camera.fov || 60) * Math.PI / 180;
+    const dist = maxDim / Math.tan(Math.max(1e-6, fov / 2));
+    camera.near = Math.max(maxDim / 1000, 0.001);
+    camera.far = Math.max(maxDim * 1500, 1500);
+    camera.updateProjectionMatrix();
+    // keep direction (if any); otherwise use iso-ish
+    const dir = camera.position.clone().sub(controls.target || new THREE.Vector3()).normalize();
+    if (!Number.isFinite(dir.lengthSq()) || dir.lengthSq() < 1e-10) {
+      dir.set(1, 0.7, 1).normalize();
+    }
+    camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
+  } else if (camera.isOrthographicCamera) {
+    // set ortho frustum around object (and at least around grid size 10 => half 5)
+    const aspect = Math.max(
+      1e-6,
+      (controls?.domElement?.clientWidth || 1) / (controls?.domElement?.clientHeight || 1)
+    );
+    const minSpan = 5 * Math.SQRT2;
+    const span = Math.max(maxDim, minSpan);
+    camera.left = -span * aspect;
+    camera.right = span * aspect;
+    camera.top = span;
+    camera.bottom = -span;
+    camera.near = Math.max(maxDim / 1000, 0.001);
+    camera.far = Math.max(maxDim * 1500, 1500);
+    camera.updateProjectionMatrix();
+    camera.position.copy(center.clone().add(new THREE.Vector3(maxDim, maxDim * 0.9, maxDim)));
+  }
+
+  controls.target.copy(center);
+  controls.update();
+  return true;
+}
+
+/** Build ground, grid, axes helpers (hidden by default) */
+function buildHelpers() {
+  const group = new THREE.Group();
+
+  // Grid (teal-ish defaults; can be recolored by UI later)
+  const grid = new THREE.GridHelper(10, 20, 0x0ea5a6, 0x14b8b9);
+  grid.visible = false;
+  group.add(grid);
+
+  // Ground (only useful if shadows are enabled)
+  const groundMat = new THREE.ShadowMaterial({ opacity: 0.25 });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
+  groundMat.depthWrite = false; // prevents “cutting” artifacts with transparent modes + shadows
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.0001;
+  ground.receiveShadow = false;
+  ground.visible = false;
+  group.add(ground);
+
+  // Axes
+  const axes = new THREE.AxesHelper(1);
+  axes.visible = false;
+  group.add(axes);
+
+  return { group, grid, ground, axes };
+}
 
 /**
- * Crea un callback compatible con URDFLoader.loadMeshCb(path, manager, onComplete)
- * que renderiza STL/DAE desde base64 + resuelve subrecursos embebidos (texturas).
- *
- * @param {*} assetDB - resultado de buildAssetDB()
- * @param {Object} [hooks]
- * @param {(meshOrGroup:THREE.Object3D, assetKey:string)=>void} [hooks.onMeshTag] - se llama tras crear el objeto
- * @returns {(path:string, manager:THREE.LoadingManager, onComplete:(obj:THREE.Object3D)=>void)=>void}
+ * Minimal TrackballControls (UMD-friendly) to allow full 360° rotation in any direction,
+ * while keeping the SAME “smooth” feel (inertia) for rotate + pan + zoom.
+ * API surface used by this project:
+ *  - controls.object
+ *  - controls.domElement
+ *  - controls.enabled
+ *  - controls.target (THREE.Vector3)
+ *  - controls.update()
+ *  - controls.handleResize() (optional)
  */
-export function createLoadMeshCb(assetDB, hooks = {}) {
-  const daeCache = new Map();
+class TrackballControls {
+  constructor(object, domElement) {
+    this.object = object;
+    this.domElement = domElement;
 
-  function tagAll(obj, key) {
-    obj.userData.__assetKey = key;
-    obj.traverse((o) => {
-      if (o && o.isMesh && o.geometry) {
-        o.userData.__assetKey = key;
-        // sombras quedan off por defecto (lo decide UI/Core)
-        o.castShadow = true;
-        o.receiveShadow = true;
+    this.enabled = true;
+
+    this.rotateSpeed = 4.0;
+    this.zoomSpeed = 1.2;
+    this.panSpeed = 0.8;
+
+    // If false -> inertia after releasing pointer (smooth)
+    this.staticMoving = false;
+    this.dynamicDampingFactor = 0.15;
+
+    this.target = new THREE.Vector3();
+
+    this._state = 0; // 0 none, 1 rotate, 2 zoom, 3 pan
+    this._rect = null;
+
+    this._start = new THREE.Vector2();
+    this._end = new THREE.Vector2();
+
+    this._pointerId = null;
+
+    // inertia (rotate + pan + zoom)
+    this._lastAxis = new THREE.Vector3(1, 0, 0);
+    this._lastAngle = 0;
+    this._lastPan = new THREE.Vector3(0, 0, 0);
+    this._lastDolly = 0;
+
+    this._onContextMenu = (e) => e.preventDefault();
+
+    this._onWheel = (e) => {
+      if (!this.enabled) return;
+      e.preventDefault();
+
+      // wheel CAD-like
+      const delta = -(e.deltaY || 0);
+
+      this._dolly(delta);
+      this.update();
+    };
+
+    this._onPointerDown = (e) => {
+      if (!this.enabled) return;
+      if (this._pointerId !== null) return;
+      this._pointerId = e.pointerId;
+
+      // match common CAD defaults: L=rotate, M=zoom, R=pan
+      this._state = e.button === 0 ? 1 : e.button === 1 ? 2 : 3;
+
+      this._start.set(e.clientX, e.clientY);
+      this._end.copy(this._start);
+
+      // stop inertia when user re-engages
+      this._lastAngle = 0;
+      this._lastPan.set(0, 0, 0);
+      this._lastDolly = 0;
+
+      try {
+        this.domElement.setPointerCapture(e.pointerId);
+      } catch (_) {}
+      window.addEventListener("pointermove", this._onPointerMove, true);
+      window.addEventListener("pointerup", this._onPointerUp, true);
+    };
+
+    this._onPointerMove = (e) => {
+      if (!this.enabled) return;
+      if (this._pointerId !== e.pointerId) return;
+
+      this._end.set(e.clientX, e.clientY);
+
+      if (this._state === 1) {
+        this._rotate(this._start, this._end);
+      } else if (this._state === 2) {
+        const dy = this._end.y - this._start.y;
+        // Keep zoom drag consistent with wheel (up = zoom in)
+        this._dolly(-dy * 4);
+      } else if (this._state === 3) {
+        this._pan(this._start, this._end);
       }
-    });
+
+      this._start.copy(this._end);
+      this.update();
+    };
+
+    this._onPointerUp = (e) => {
+      if (this._pointerId !== e.pointerId) return;
+      this._pointerId = null;
+      this._state = 0;
+
+      window.removeEventListener("pointermove", this._onPointerMove, true);
+      window.removeEventListener("pointerup", this._onPointerUp, true);
+      try {
+        this.domElement.releasePointerCapture(e.pointerId);
+      } catch (_) {}
+    };
+
+    this.domElement.addEventListener("contextmenu", this._onContextMenu);
+    this.domElement.addEventListener("wheel", this._onWheel, { passive: false });
+    this.domElement.addEventListener("pointerdown", this._onPointerDown, true);
   }
 
-  function makeEmpty() {
-    return new THREE.Mesh(); // placeholder neutral
+  handleResize() {
+    this._rect = this.domElement.getBoundingClientRect();
   }
 
-  return function loadMeshCb(path, _manager, onComplete) {
-    try {
-      const tries = variantsFor(path);
-      const bestKey = pickBestKey(tries, assetDB);
-      if (!bestKey) {
-        onComplete(makeEmpty());
-        return;
+  update() {
+    // apply inertia (smooth) after release — rotate + pan + zoom
+    if (!this.staticMoving && this._state === 0) {
+      // ROTATE inertia
+      if (Math.abs(this._lastAngle) > 1e-6) {
+        this._applyRotation(this._lastAxis, this._lastAngle);
+        this._lastAngle *= 1.0 - this.dynamicDampingFactor;
+        if (Math.abs(this._lastAngle) < 1e-6) this._lastAngle = 0;
       }
 
-      const ext = extOf(bestKey);
-      const b64 = assetDB.byKey[bestKey];
-      if (!b64) {
-        onComplete(makeEmpty());
-        return;
+      // PAN inertia
+      if (this._lastPan.lengthSq() > 1e-12) {
+        this.object.position.add(this._lastPan);
+        this.target.add(this._lastPan);
+
+        this._lastPan.multiplyScalar(1.0 - this.dynamicDampingFactor);
+        if (this._lastPan.lengthSq() < 1e-12) this._lastPan.set(0, 0, 0);
       }
 
-      // STEP/STP no se soporta en Three sin parser extra — devolvemos placeholder
-      if (ext === 'step' || ext === 'stp') {
-        onComplete(makeEmpty());
-        return;
+      // ZOOM inertia
+      if (Math.abs(this._lastDolly) > 1e-6) {
+        this._dolly(this._lastDolly);
+        this._lastDolly *= 1.0 - this.dynamicDampingFactor;
+        if (Math.abs(this._lastDolly) < 1e-6) this._lastDolly = 0;
       }
-
-      // STL binario
-      if (ext === 'stl') {
-        const bytes = b64ToUint8(b64);
-        const loader = new THREE.STLLoader();
-        const geom = loader.parse(bytes.buffer);
-        geom.computeVertexNormals?.();
-        const mesh = new THREE.Mesh(
-          geom,
-          new THREE.MeshStandardMaterial({
-            color: 0x7fd4d4,
-            roughness: 0.85,
-            metalness: 0.12,
-            side: THREE.DoubleSide
-          })
-        );
-        tagAll(mesh, bestKey);
-        hooks.onMeshTag?.(mesh, bestKey);
-        onComplete(mesh);
-        return;
-      }
-
-      // DAE texto + subrecursos
-      if (ext === 'dae') {
-        // Cache por key para reusar escenas clonadas
-        if (daeCache.has(bestKey)) {
-          const obj = daeCache.get(bestKey).clone(true);
-          tagAll(obj, bestKey);
-          hooks.onMeshTag?.(obj, bestKey);
-          onComplete(obj);
-          return;
-        }
-
-        const daeText = b64ToText(b64);
-
-        // Extrae unidad <unit meter="..."> para escalar correcto
-        let scale = 1.0;
-        const m = /<unit[^>]*meter\s*=\s*"([\d.eE+\-]+)"/i.exec(daeText);
-        if (m) {
-          const meter = parseFloat(m[1]);
-          if (isFinite(meter) && meter > 0) scale = meter;
-        }
-
-        // Manager que mapea URLs a data: desde assetDB (texturas, otras DAEs, etc.)
-        // IMPORTANTE: esperamos a que terminen de cargar las texturas antes de llamar onComplete,
-        // para que las capturas/thumbnails salgan con texturas (no en blanco).
-        const mgr = new THREE.LoadingManager();
-
-        let started = false;
-        let finished = false;
-
-        mgr.onStart = () => { started = true; };
-        mgr.onLoad = () => {
-          if (finished) return;
-          finished = true;
-        };
-
-        mgr.setURLModifier((url) => {
-          const v = variantsFor(url);             // prueba varias formas
-          const k = v.find((x) => assetDB.byKey[x]);
-          if (k) {
-            const e = extOf(k);
-            const b = assetDB.byKey[k];
-            return dataURLFor(e, b);
-          }
-          return url; // fallback: deja URL original (por si acaso)
-        });
-
-        const loader = new THREE.ColladaLoader(mgr);
-        const collada = loader.parse(daeText, '');
-        const obj = (collada && collada.scene) ? collada.scene : new THREE.Object3D();
-        if (scale !== 1.0) obj.scale.setScalar(scale);
-
-        const finalize = () => {
-          // Cachea el original y devuelve un clon para no compartir refs
-          if (!daeCache.has(bestKey)) daeCache.set(bestKey, obj);
-          const clone = obj.clone(true);
-          tagAll(clone, bestKey);
-          hooks.onMeshTag?.(clone, bestKey);
-          onComplete(clone);
-        };
-
-        // Si ColladaLoader inició cargas (texturas), esperamos a onLoad.
-        // Si no inició nada, finalizamos de inmediato.
-        // Nota: onLoad podría no dispararse si no hubo ningún itemStart.
-        Promise.resolve().then(() => {
-          if (!started) {
-            finalize();
-            return;
-          }
-          if (finished) {
-            finalize();
-            return;
-          }
-          // Esperar a que el manager termine
-          const prevOnLoad = mgr.onLoad;
-          mgr.onLoad = () => {
-            try { prevOnLoad?.(); } catch (_) {}
-            finalize();
-          };
-        });
-
-        return;
-      }
-
-      // Ext desconocido (o no permitido): placeholder
-      onComplete(makeEmpty());
-    } catch (_e) {
-      try { onComplete(makeEmpty()); } catch (_ee) {}
     }
+
+    this.object.lookAt(this.target);
+  }
+
+  _getRect() {
+    if (!this._rect) this.handleResize();
+    return this._rect;
+  }
+
+  _getNDC(clientX, clientY) {
+    const r = this._getRect();
+    const x = (clientX - r.left) / Math.max(1, r.width);
+    const y = (clientY - r.top) / Math.max(1, r.height);
+    return new THREE.Vector2(x * 2 - 1, -(y * 2 - 1));
+  }
+
+  _projectOnSphere(ndc) {
+    const v = new THREE.Vector3(ndc.x, ndc.y, 0);
+    const d2 = v.x * v.x + v.y * v.y;
+    if (d2 <= 1.0) {
+      v.z = Math.sqrt(1.0 - d2);
+    } else {
+      v.normalize();
+      v.z = 0.0;
+    }
+    return v;
+  }
+
+  _applyRotation(axisWorld, angle) {
+    const q = new THREE.Quaternion().setFromAxisAngle(axisWorld, angle);
+
+    const eye = this.object.position.clone().sub(this.target);
+    eye.applyQuaternion(q);
+
+    this.object.up.applyQuaternion(q);
+    this.object.position.copy(this.target.clone().add(eye));
+  }
+
+  _rotate(startPx, endPx) {
+    const a = this._projectOnSphere(this._getNDC(startPx.x, startPx.y));
+    const b = this._projectOnSphere(this._getNDC(endPx.x, endPx.y));
+
+    const axisCam = new THREE.Vector3().crossVectors(a, b);
+    const axisLen = axisCam.length();
+    if (axisLen < 1e-8) return;
+    axisCam.normalize();
+
+    const dot = THREE.MathUtils.clamp(a.dot(b), -1, 1);
+    let angle = Math.acos(dot) * this.rotateSpeed;
+
+    // dragging right should feel like model rotates “with” the drag (CAD-like)
+    angle = -angle;
+
+    // axis in world space
+    const axisWorld = axisCam.clone().applyQuaternion(this.object.quaternion).normalize();
+
+    this._applyRotation(axisWorld, angle);
+
+    // inertia seed
+    this._lastAxis.copy(axisWorld);
+    this._lastAngle = angle;
+  }
+
+  _dolly(delta) {
+    const zoomFactor = Math.pow(0.95, delta * this.zoomSpeed * 0.01);
+
+    if (this.object.isPerspectiveCamera) {
+      const eye = this.object.position.clone().sub(this.target);
+      const newLen = Math.max(1e-6, eye.length() * zoomFactor);
+      eye.setLength(newLen);
+      this.object.position.copy(this.target.clone().add(eye));
+    } else if (this.object.isOrthographicCamera) {
+      this.object.zoom = Math.max(1e-3, this.object.zoom / zoomFactor);
+      this.object.updateProjectionMatrix();
+    }
+
+    // inertia seed
+    this._lastDolly = delta;
+  }
+
+  _pan(startPx, endPx) {
+    const r = this._getRect();
+    const dx = endPx.x - startPx.x;
+    const dy = endPx.y - startPx.y;
+
+    const h = Math.max(1, r.height);
+
+    let scale = 1.0;
+    if (this.object.isPerspectiveCamera) {
+      const eye = this.object.position.clone().sub(this.target);
+      const dist = eye.length();
+      const fov = ((this.object.fov || 60) * Math.PI) / 180;
+      const worldPerPixel = (2 * dist * Math.tan(fov / 2)) / h;
+      scale = worldPerPixel;
+    } else if (this.object.isOrthographicCamera) {
+      const worldPerPixel = (this.object.top - this.object.bottom) / h;
+      scale = worldPerPixel;
+    }
+
+    const panX = -dx * scale * this.panSpeed;
+    const panY = dy * scale * this.panSpeed;
+
+    const te = this.object.matrix.elements;
+    const xAxis = new THREE.Vector3(te[0], te[1], te[2]);
+    const yAxis = new THREE.Vector3(te[4], te[5], te[6]);
+
+    const pan = xAxis.multiplyScalar(panX).add(yAxis.multiplyScalar(panY));
+
+    this.object.position.add(pan);
+    this.target.add(pan);
+
+    // inertia seed
+    this._lastPan.copy(pan);
+  }
+}
+
+export function createViewer({ container, background = 0xffffff, pixelRatio } = {}) {
+  assertThree();
+
+  const rootEl = container || document.body;
+  if (getComputedStyle(rootEl).position === "static") {
+    rootEl.style.position = "relative";
+  }
+
+  // Scene
+  const scene = new THREE.Scene();
+  if (background === null || typeof background === "undefined") {
+    scene.background = null;
+  } else {
+    scene.background = new THREE.Color(background);
+  }
+
+  // Cameras
+  const aspect = Math.max(1e-6, (rootEl.clientWidth || 1) / (rootEl.clientHeight || 1));
+  const persp = new THREE.PerspectiveCamera(75, aspect, 0.01, 10000);
+  persp.position.set(0, 0, 3);
+
+  const orthoSize = 2.5;
+  const ortho = new THREE.OrthographicCamera(
+    -orthoSize * aspect,
+    orthoSize * aspect,
+    orthoSize,
+    -orthoSize,
+    0.01,
+    10000
+  );
+  ortho.position.set(0, 0, 3);
+
+  let camera = persp;
+
+  // Renderer
+  const renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    preserveDrawingBuffer: false,
+    alpha: true // ✅ permite fondo transparente real si scene.background=null (evita “negro” por defecto)
+  });
+
+  renderer.setPixelRatio(pixelRatio || window.devicePixelRatio || 1);
+  renderer.setSize(rootEl.clientWidth || 1, rootEl.clientHeight || 1);
+  renderer.domElement.style.width = "100%";
+  renderer.domElement.style.height = "100%";
+  renderer.domElement.style.display = "block";
+  renderer.domElement.style.touchAction = "none";
+  rootEl.appendChild(renderer.domElement);
+
+  // ✅ Color management r132
+  if (typeof renderer.outputEncoding !== "undefined" && typeof THREE.sRGBEncoding !== "undefined") {
+    renderer.outputEncoding = THREE.sRGBEncoding;
+  }
+  renderer.setClearColor(0xffffff, 1);
+
+  // Shadows OFF by default (pero dejamos pipeline listo)
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  // Controls
+  const controls = new TrackballControls(camera, renderer.domElement);
+  controls.rotateSpeed = 4.0;
+  controls.zoomSpeed = 1.4;
+  controls.panSpeed = 0.8;
+  controls.staticMoving = false;
+  controls.dynamicDampingFactor = 0.15;
+
+  // Lights (agregamos un ambient suave para evitar “negros” por falta de luz)
+  const ambient = new THREE.AmbientLight(0xffffff, 0.18);
+  const hemi = new THREE.HemisphereLight(0xffffff, 0xcfeeee, 0.75);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.05);
+  dir.position.set(3, 4, 2);
+  dir.castShadow = false;
+  dir.shadow.mapSize.set(2048, 2048);
+  dir.shadow.camera.near = 0.1;
+  dir.shadow.camera.far = 1000;
+  scene.add(ambient);
+  scene.add(hemi);
+  scene.add(dir);
+
+  // Helpers
+  const helpers = buildHelpers();
+  scene.add(helpers.group);
+
+  function sizeAxesHelper(maxDim, center) {
+    helpers.axes.scale.setScalar(maxDim * 0.75);
+    helpers.axes.position.copy(center || new THREE.Vector3());
+  }
+
+  // Handle resizes
+  function onResize() {
+    const w = rootEl.clientWidth || 1;
+    const h = rootEl.clientHeight || 1;
+    const asp = Math.max(1e-6, w / h);
+    if (camera.isPerspectiveCamera) {
+      camera.aspect = asp;
+    } else {
+      const size = Math.abs(camera.top) || orthoSize;
+      camera.left = -size * asp;
+      camera.right = size * asp;
+      camera.top = size;
+      camera.bottom = -size;
+    }
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+    if (controls && typeof controls.handleResize === "function") controls.handleResize();
+  }
+  window.addEventListener("resize", onResize);
+
+  // URDF loader & current robot
+  const urdfLoader = new URDFLoader();
+  let robotModel = null;
+
+  /** Load URDF content (string) with an external loadMeshCb(path, manager, onComplete) */
+  function loadURDF(urdfText, { loadMeshCb } = {}) {
+    if (robotModel) {
+      try {
+        scene.remove(robotModel);
+      } catch (_) {}
+      robotModel = null;
+    }
+    if (!urdfText || typeof urdfText !== "string") return null;
+
+    if (typeof loadMeshCb === "function") {
+      urdfLoader.loadMeshCb = loadMeshCb;
+    }
+
+    let robot = null;
+    try {
+      robot = urdfLoader.parse(urdfText);
+    } catch (e) {
+      console.warn("[ViewerCore] URDF parse error:", e);
+      return null;
+    }
+
+    if (robot && robot.isObject3D) {
+      robotModel = robot;
+      scene.add(robotModel);
+
+      // Orient + shading
+      rectifyUpForward(robotModel);
+      applyDoubleSided(robotModel);
+
+      // ✅ FIX “negro”: arregla encoding + color multiplicativo
+      _fixMaterialsDeep(robotModel);
+      _liftIfMostlyBlack(robotModel);
+
+      // Fit
+      setTimeout(() => {
+        if (!robotModel) return;
+        const ok = fitAndCenter(camera, controls, robotModel, 1.06);
+        if (ok) {
+          const b = getObjectBounds(robotModel);
+          if (b) sizeAxesHelper(b.maxDim, b.center);
+        }
+      }, 50);
+    }
+
+    return robotModel;
+  }
+
+  /** Switch projection mode (Perspective|Orthographic) while preserving view as much as possible */
+  function setProjection(mode = "Perspective") {
+    const w = rootEl.clientWidth || 1,
+      h = rootEl.clientHeight || 1;
+    const asp = Math.max(1e-6, w / h);
+
+    if (mode === "Orthographic" && camera.isPerspectiveCamera) {
+      const t = controls.target.clone();
+      const v = camera.position.clone().sub(t);
+      const dist = v.length();
+      const dirN = v.clone().normalize();
+
+      const b = robotModel ? getObjectBounds(robotModel, 1.0) : null;
+      const minSpan = 5 * Math.SQRT2; // ensures grid size 10 never clips
+      const span = Math.max(orthoSize, b ? b.maxDim : 0, minSpan);
+
+      ortho.left = -span * asp;
+      ortho.right = span * asp;
+      ortho.top = span;
+      ortho.bottom = -span;
+      ortho.near = Math.max(0.001, dist * 0.01);
+      ortho.far = Math.max(1000, dist * 50);
+      ortho.position.copy(t.clone().add(dirN.multiplyScalar(dist)));
+      ortho.updateProjectionMatrix();
+
+      controls.object = ortho;
+      camera = ortho;
+      controls.target.copy(t);
+      controls.update();
+    } else if (mode === "Perspective" && camera.isOrthographicCamera) {
+      const t = controls.target.clone();
+      const v = camera.position.clone().sub(t);
+      const dist = v.length();
+      const dirN = v.clone().normalize();
+
+      persp.aspect = asp;
+      persp.near = Math.max(0.001, dist * 0.01);
+      persp.far = Math.max(1000, dist * 50);
+      persp.position.copy(t.clone().add(dirN.multiplyScalar(dist)));
+      persp.updateProjectionMatrix();
+
+      controls.object = persp;
+      camera = persp;
+      controls.target.copy(t);
+      controls.update();
+    }
+  }
+
+  /** Toggle helpers and shadows from upper layers (UI) */
+  function setSceneToggles({ grid, ground, axes, shadows } = {}) {
+    if (typeof grid === "boolean") helpers.grid.visible = grid;
+    if (typeof ground === "boolean") helpers.ground.visible = ground;
+    if (typeof axes === "boolean") helpers.axes.visible = axes;
+
+    if (typeof shadows === "boolean") {
+      renderer.shadowMap.enabled = !!shadows;
+      dir.castShadow = !!shadows;
+      if (robotModel) {
+        robotModel.traverse((o) => {
+          if (o.isMesh && o.geometry) {
+            o.castShadow = !!shadows;
+            o.receiveShadow = !!shadows;
+          }
+        });
+      }
+    }
+
+    // Resize axes to object
+    if (helpers.axes.visible && robotModel) {
+      const b = getObjectBounds(robotModel);
+      if (b) sizeAxesHelper(b.maxDim, b.center);
+    }
+  }
+
+  /** Set background (int color) or null for transparent */
+  function setBackground(colorIntOrNull) {
+    if (colorIntOrNull === null || typeof colorIntOrNull === "undefined") {
+      scene.background = null;
+      renderer.setClearColor(0xffffff, 0); // ✅ transparente real
+    } else {
+      scene.background = new THREE.Color(colorIntOrNull);
+      renderer.setClearColor(colorIntOrNull, 1);
+    }
+  }
+
+  /** Allow upper layer to adjust pixel ratio (e.g., for performance) */
+  function setPixelRatio(r) {
+    const pr = Math.max(0.5, Math.min(3, r || window.devicePixelRatio || 1));
+    renderer.setPixelRatio(pr);
+    onResize();
+  }
+
+  // Animation loop
+  let raf = null;
+  let paused = false;
+  function setPaused(v) {
+    paused = !!v;
+  }
+  function animate() {
+    raf = requestAnimationFrame(animate);
+    controls.update();
+    if (!paused) renderer.render(scene, camera);
+  }
+  animate();
+
+  // Cleanup
+  function destroy() {
+    try {
+      cancelAnimationFrame(raf);
+    } catch (_) {}
+    try {
+      window.removeEventListener("resize", onResize);
+    } catch (_) {}
+    try {
+      const el = renderer?.domElement;
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    } catch (_) {}
+    try {
+      renderer?.dispose?.();
+    } catch (_) {}
+  }
+
+  // Public facade
+  return {
+    // Core Three.js objects
+    scene,
+    get camera() {
+      return camera;
+    },
+    renderer,
+    controls,
+
+    // Helpers group (in case UI needs references)
+    helpers,
+
+    // Current robot getter
+    get robot() {
+      return robotModel;
+    },
+
+    // APIs
+    setPaused,
+    loadURDF,
+    fitAndCenter: (obj, pad) => fitAndCenter(camera, controls, obj || robotModel, pad),
+    setProjection,
+    setSceneToggles,
+    setBackground,
+    setPixelRatio,
+    onResize,
+    destroy
   };
 }
 
-/* ---------- (opcional) export ALLOWED sets if UI wants them ---------- */
-export const ALLOWED_EXTS = {
-  mesh: ALLOWED_MESH_EXTS,
-  tex: ALLOWED_TEX_EXTS
-};
+// ✅ Para evitar: “ViewerCore: createViewer no encontrado…”
+try {
+  if (typeof window !== "undefined") {
+    window.createViewer = createViewer;
+    window.ViewerCore = window.ViewerCore || {};
+    window.ViewerCore.createViewer = createViewer;
+  }
+} catch (_) {}
