@@ -14,61 +14,63 @@ function assertThree() {
 }
 
 /** Minor math helpers */
-const clamp01 = (x) => Math.max(0, Math.min(1, x));
+const clamp01 = (x) => Math.max(0, Math.min(1, x)));
 
-/**
- * Fix common material issues:
- * - Some exporters set diffuse/albedo to near-black while expecting the texture to provide color.
- *   In Three.js, map is multiplied by material.color -> this can render fully black.
- * - Ensure sRGB encoding on color textures (r132 uses .encoding).
- */
-const _NEAR_BLACK = 0.04;
-function _fixMaterial(m) {
-  if (!m) return;
-
-  // Double sided is important for many CAD exports (thin shells, inverted normals).
-  m.side = THREE.DoubleSide;
-
-  // If a texture exists but diffuse is black, whiten diffuse so the map shows.
-  if (m.map && m.color && m.color.isColor) {
-    const c = m.color;
-    if (c.r <= _NEAR_BLACK && c.g <= _NEAR_BLACK && c.b <= _NEAR_BLACK) {
-      c.setRGB(1, 1, 1);
-    }
+/** Texture encoding helpers (Three r132: outputEncoding / sRGBEncoding) */
+function _setTexEncodingSRGB(tex) {
+  if (!tex) return;
+  // Three r132 uses `.encoding`
+  if ('encoding' in tex && typeof THREE !== 'undefined' && THREE.sRGBEncoding) {
+    try { tex.encoding = THREE.sRGBEncoding; } catch (_) {}
   }
-
-  // If no texture and diffuse is black, lift it a bit so geometry isn't a silhouette.
-  if (!m.map && m.color && m.color.isColor) {
-    const c = m.color;
-    if (c.r <= _NEAR_BLACK && c.g <= _NEAR_BLACK && c.b <= _NEAR_BLACK) {
-      c.setRGB(0.65, 0.65, 0.65);
-    }
-  }
-
-  // Ensure color textures use sRGB (r132).
-  try {
-    if (m.map && m.map.encoding !== undefined && THREE.sRGBEncoding !== undefined) {
-      m.map.encoding = THREE.sRGBEncoding;
-      m.map.needsUpdate = true;
-    }
-  } catch (_) {}
-
-  m.needsUpdate = true;
+  // Some loaders set flipY incorrectly for certain atlases; keep loader default unless user overrides.
+  tex.needsUpdate = true;
 }
 
-/** Ensure meshes are double-sided and compute normals (also applies the material fixes above). */
-function applyDoubleSided(root) {
-  root?.traverse?.(n => {
-    if (n.isMesh && n.geometry) {
-      if (Array.isArray(n.material)) n.material.forEach(_fixMaterial);
-      else _fixMaterial(n.material);
+/** Normalize common Collada material pitfalls:
+ *  - Many exporters set diffuse color to black even when a texture exists (color * map => black).
+ *  - Ensure textures are treated as sRGB so colors don't look washed/dark.
+ */
+function _normalizeMaterial(mat) {
+  if (!mat) return;
 
-      // Shadows are controlled by UI toggles; keep them on at mesh-level by default.
+  // If the material has a diffuse map and its color is (near) black, force it to white.
+  if (mat.map && mat.color) {
+    const r = mat.color.r ?? 0, g = mat.color.g ?? 0, b = mat.color.b ?? 0;
+    if ((r + g + b) < 0.15) {
+      try { mat.color.setRGB(1, 1, 1); } catch (_) {}
+    }
+    _setTexEncodingSRGB(mat.map);
+  }
+
+  // Emissive maps (rare, but can appear)
+  if (mat.emissiveMap) _setTexEncodingSRGB(mat.emissiveMap);
+
+  // If vertex colors are used, keep material.color at white to avoid tinting them.
+  if (mat.vertexColors && mat.color) {
+    try { mat.color.setRGB(1, 1, 1); } catch (_) {}
+  }
+
+  mat.needsUpdate = true;
+}
+
+/** Ensure meshes are double-sided and (optionally) sanitize materials */
+function applyDoubleSided(root) {
+  root?.traverse?.((n) => {
+    if (n && n.isMesh && n.geometry) {
+      const mats = Array.isArray(n.material) ? n.material : [n.material];
+      mats.forEach((m) => {
+        if (!m) return;
+        m.side = THREE.DoubleSide;
+        _normalizeMaterial(m);
+      });
+
+      // keep shadows enabled on meshes; directional light decides casting
       n.castShadow = true;
       n.receiveShadow = true;
 
-      // CAD meshes often ship without normals.
-      n.geometry.computeVertexNormals?.();
+      // Some exporters omit normals; compute if possible
+      try { n.geometry.computeVertexNormals?.(); } catch (_) {}
     }
   });
 }
@@ -452,13 +454,15 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
     antialias: true,
     preserveDrawingBuffer: false
   });
-
-  // Color management (r132): keep textures/colors consistent across browsers
-  if (renderer.outputEncoding !== undefined && THREE.sRGBEncoding !== undefined) {
-    renderer.outputEncoding = THREE.sRGBEncoding;
-  }
-
   renderer.setPixelRatio(pixelRatio || window.devicePixelRatio || 1);
+
+  // Color management (Three r132): use sRGB output so textures/materials don't appear too dark.
+  try {
+    if ('outputEncoding' in renderer && THREE.sRGBEncoding) {
+      renderer.outputEncoding = THREE.sRGBEncoding;
+    }
+  } catch (_) {}
+
   renderer.setSize(rootEl.clientWidth || 1, rootEl.clientHeight || 1);
   renderer.domElement.style.width = '100%';
   renderer.domElement.style.height = '100%';
@@ -699,14 +703,14 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
   };
 }
 
-// ESM default export (some bundlers import ViewerCore as default)
+// Dual export (ESM default + named) for convenience
 export default createViewer;
 
-// Also expose globally for non-module consumers / quick notebook usage.
+// Optional: also expose on window for non-module consumers
 try {
   if (typeof window !== 'undefined') {
+    window.createViewer = createViewer;
     window.ViewerCore = window.ViewerCore || {};
     window.ViewerCore.createViewer = createViewer;
-    window.createViewer = createViewer;
   }
 } catch (_) {}
