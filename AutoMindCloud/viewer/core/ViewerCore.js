@@ -14,63 +14,17 @@ function assertThree() {
 }
 
 /** Minor math helpers */
-const clamp01 = (x) => Math.max(0, Math.min(1, x)));
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
 
-/** Texture encoding helpers (Three r132: outputEncoding / sRGBEncoding) */
-function _setTexEncodingSRGB(tex) {
-  if (!tex) return;
-  // Three r132 uses `.encoding`
-  if ('encoding' in tex && typeof THREE !== 'undefined' && THREE.sRGBEncoding) {
-    try { tex.encoding = THREE.sRGBEncoding; } catch (_) {}
-  }
-  // Some loaders set flipY incorrectly for certain atlases; keep loader default unless user overrides.
-  tex.needsUpdate = true;
-}
-
-/** Normalize common Collada material pitfalls:
- *  - Many exporters set diffuse color to black even when a texture exists (color * map => black).
- *  - Ensure textures are treated as sRGB so colors don't look washed/dark.
- */
-function _normalizeMaterial(mat) {
-  if (!mat) return;
-
-  // If the material has a diffuse map and its color is (near) black, force it to white.
-  if (mat.map && mat.color) {
-    const r = mat.color.r ?? 0, g = mat.color.g ?? 0, b = mat.color.b ?? 0;
-    if ((r + g + b) < 0.15) {
-      try { mat.color.setRGB(1, 1, 1); } catch (_) {}
-    }
-    _setTexEncodingSRGB(mat.map);
-  }
-
-  // Emissive maps (rare, but can appear)
-  if (mat.emissiveMap) _setTexEncodingSRGB(mat.emissiveMap);
-
-  // If vertex colors are used, keep material.color at white to avoid tinting them.
-  if (mat.vertexColors && mat.color) {
-    try { mat.color.setRGB(1, 1, 1); } catch (_) {}
-  }
-
-  mat.needsUpdate = true;
-}
-
-/** Ensure meshes are double-sided and (optionally) sanitize materials */
+/** Ensure meshes are double-sided and shadows off by default */
 function applyDoubleSided(root) {
-  root?.traverse?.((n) => {
-    if (n && n.isMesh && n.geometry) {
-      const mats = Array.isArray(n.material) ? n.material : [n.material];
-      mats.forEach((m) => {
-        if (!m) return;
-        m.side = THREE.DoubleSide;
-        _normalizeMaterial(m);
-      });
-
-      // keep shadows enabled on meshes; directional light decides casting
+  root?.traverse?.(n => {
+    if (n.isMesh && n.geometry) {
+      if (Array.isArray(n.material)) n.material.forEach(m => (m.side = THREE.DoubleSide));
+      else if (n.material) n.material.side = THREE.DoubleSide;
       n.castShadow = true;
       n.receiveShadow = true;
-
-      // Some exporters omit normals; compute if possible
-      try { n.geometry.computeVertexNormals?.(); } catch (_) {}
+      n.geometry.computeVertexNormals?.();
     }
   });
 }
@@ -455,14 +409,6 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
     preserveDrawingBuffer: false
   });
   renderer.setPixelRatio(pixelRatio || window.devicePixelRatio || 1);
-
-  // Color management (Three r132): use sRGB output so textures/materials don't appear too dark.
-  try {
-    if ('outputEncoding' in renderer && THREE.sRGBEncoding) {
-      renderer.outputEncoding = THREE.sRGBEncoding;
-    }
-  } catch (_) {}
-
   renderer.setSize(rootEl.clientWidth || 1, rootEl.clientHeight || 1);
   renderer.domElement.style.width = '100%';
   renderer.domElement.style.height = '100%';
@@ -702,15 +648,3 @@ export function createViewer({ container, background = 0xffffff, pixelRatio } = 
     destroy
   };
 }
-
-// Dual export (ESM default + named) for convenience
-export default createViewer;
-
-// Optional: also expose on window for non-module consumers
-try {
-  if (typeof window !== 'undefined') {
-    window.createViewer = createViewer;
-    window.ViewerCore = window.ViewerCore || {};
-    window.ViewerCore.createViewer = createViewer;
-  }
-} catch (_) {}
