@@ -33,7 +33,7 @@ export function createComponentsPanel(app, theme) {
   // 3) Tabla el DOBLE de alto (y AHORA además compensamos el UI_SCALE=0.5 para que entren ~4 filas visibles)
   // ============================================================
 
-  const CLOSED_TX = -1400; // igual lógica que ToolsDock del ejemplo (off-screen "a la izquierda")
+  const CLOSED_TX = -1600; // igual lógica que ToolsDock del ejemplo (off-screen "a la izquierda")
 
   // UI scale (50% más chico) — NO toca open/close transforms ni hover
   const UI_SCALE = 0.5;
@@ -225,7 +225,7 @@ export function createComponentsPanel(app, theme) {
     open = !!isOpen;
     if (open) {
       ui.panel.style.opacity = "1";
-      ui.panel.style.transform = "translateX(-1000px)";
+      ui.panel.style.transform = "translateX(-1400px)";
       ui.panel.style.pointerEvents = "auto";
     } else {
       ui.panel.style.opacity = "0";
