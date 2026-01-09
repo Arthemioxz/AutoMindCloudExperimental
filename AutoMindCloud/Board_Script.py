@@ -396,7 +396,7 @@ def board(serial: str = "board"):
 
   <!-- Badge tipo AutoMindCloud, igual que el visualizador STEP -->
   <div id="app"></div>
-  <div style="padding-left:20px; overflow:visible; position:fixed; right:0; bottom:24px; z-index:999999;">
+  <div style="padding-left:20px; overflow:visible; position:fixed; right:0; bottom:100px; z-index:999999;">
     <div class="badge" style="display:inline-block; transform: scale(2.5) translateX(-15px); transform-origin: bottom right; margin:0; overflow:visible; pointer-events:none;">
       <img src="https://raw.githubusercontent.com/artemioadaysolvers/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="AutoMind" style="display:block; height:40px; width:auto;"/>
     </div>
