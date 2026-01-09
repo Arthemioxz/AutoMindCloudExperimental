@@ -225,7 +225,7 @@ export function createComponentsPanel(app, theme) {
     open = !!isOpen;
     if (open) {
       ui.panel.style.opacity = "1";
-      ui.panel.style.transform = "translateX(-1400px)";
+      ui.panel.style.transform = "translateX(-1300px)";
       ui.panel.style.pointerEvents = "auto";
     } else {
       ui.panel.style.opacity = "0";
