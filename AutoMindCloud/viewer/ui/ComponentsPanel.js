@@ -67,7 +67,7 @@ export function createComponentsPanel(app, theme) {
       willChange: "transform, opacity",
       transition:
         "transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease",
-      transform: "translateX(520px)",
+      transform: "translateX(-400px)",
       opacity: "0",
     },
     header: {
@@ -185,7 +185,7 @@ export function createComponentsPanel(app, theme) {
     open = !!isOpen;
     if (open) {
       ui.panel.style.opacity = "1";
-      ui.panel.style.transform = "translateX(0)";
+      ui.panel.style.transform = "translateX(-540)";
       ui.panel.style.pointerEvents = "auto";
     } else {
       ui.panel.style.opacity = "0";
