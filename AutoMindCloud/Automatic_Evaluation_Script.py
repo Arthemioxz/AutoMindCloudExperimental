@@ -71,6 +71,11 @@ def S(c_componente):#Guardar
   for elemento in DatosList:
     if elemento[0] == c_componente[0]:# si el componente esta adentro, entonces
       dentro = True
+      # ✅ ACTUALIZA el valor guardado
+      if c_componente[1] == None:
+        elemento[1] = c_componente[0]
+      else:
+        elemento[1] = c_componente[1]
 
   if c_componente[1] == None:
     c_componente[1] = c_componente[0]
