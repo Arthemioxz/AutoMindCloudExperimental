@@ -11,9 +11,10 @@
 //  - Mantiene UI_SCALE = 0.5.
 //  - Mantiene panel width = 440px.
 //  - Mantiene thumbnails 128x96.
+//  - Mantiene el sistema de traslación/tween con transform + transition.
 //  - Panel aparece abajo a la izquierda.
-//  - Se ajusta automáticamente al tamaño del visualizador.
-//  - No usa offsets duros dependientes del PC como right: 610px o translateX(-1370px).
+//  - El translateX cerrado se calcula automáticamente según el visualizador.
+//  - Ya no necesitas reajustar right/translateX al cambiar de PC.
 
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll) {
@@ -34,7 +35,18 @@ export function createComponentsPanel(app, theme) {
   };
 
   // ============================================================
-  // CONFIGURACIÓN RESPONSIVE SIN CAMBIAR FORMATO
+  // CONFIGURACIÓN BASE
+  // ============================================================
+  // Se mantiene el formato anterior:
+  // - botón escalado a 0.5
+  // - panel escalado a 0.5
+  // - panel base de 440px
+  // - thumbnails 128x96
+  //
+  // El cambio importante:
+  // - El panel ahora se ancla abajo a la izquierda.
+  // - El sistema de apertura/cierre sigue usando translateX.
+  // - El CLOSED_TX se calcula automáticamente.
   // ============================================================
 
   const UI_SCALE = 0.5;
@@ -42,10 +54,20 @@ export function createComponentsPanel(app, theme) {
 
   const BUTTON_LEFT = 50;
   const BUTTON_BOTTOM = 14;
-  const PANEL_GAP_ABOVE_BUTTON = 10;
-  const SAFE_GAP = 14;
 
   const PANEL_BASE_WIDTH = 440;
+  const PANEL_GAP_ABOVE_BUTTON = 10;
+
+  const SAFE_GAP = 14;
+
+  let open = false;
+  let building = false;
+  let disposed = false;
+
+  let currentEnt = null;
+  let currentIndex = null;
+
+  let currentClosedTx = -2000;
 
   const css = {
     root: {
@@ -61,7 +83,7 @@ export function createComponentsPanel(app, theme) {
         "Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
     },
 
-    // Mantiene el botón como antes
+    // Botón: mismo formato/tamaño que antes
     btn: {
       position: "absolute",
       left: `${BUTTON_LEFT}px`,
@@ -78,8 +100,7 @@ export function createComponentsPanel(app, theme) {
       transition: "all .12s ease",
     },
 
-    // Mantiene el panel con el tamaño/formato anterior
-    // pero ahora abajo a la izquierda y responsive.
+    // Panel: mismo formato/tamaño que antes, pero abajo a la izquierda
     panel: {
       position: "absolute",
       left: `${BUTTON_LEFT}px`,
@@ -96,11 +117,13 @@ export function createComponentsPanel(app, theme) {
       display: "block",
       pointerEvents: "auto",
       willChange: "transform, opacity",
+
+      // Este es el tween que te gustaba.
       transition:
         "transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease",
-      transform: "translateY(12px)",
+
+      transform: "translateX(-2000px)",
       opacity: "0",
-      boxSizing: "border-box",
     },
 
     header: {
@@ -151,7 +174,6 @@ export function createComponentsPanel(app, theme) {
       whiteSpace: "pre-wrap",
     },
 
-    // Mantiene el alto escalado como antes
     list: {
       overflowY: "auto",
       maxHeight: `calc((92vh - 52px) * ${UI_SCALE_INV})`,
@@ -170,10 +192,11 @@ export function createComponentsPanel(app, theme) {
   applyStyles(ui.detailsBody, css.detailsBody);
   applyStyles(ui.list, css.list);
 
-  // Mantiene tamaño visual anterior
+  // Mantiene el tamaño visual anterior
   ui.btn.style.transformOrigin = "bottom left";
   ui.btn.style.scale = String(UI_SCALE);
 
+  // Importante: panel escalado igual que antes, pero anclado abajo a la izquierda
   ui.panel.style.transformOrigin = "bottom left";
   ui.panel.style.scale = String(UI_SCALE);
 
@@ -196,8 +219,7 @@ export function createComponentsPanel(app, theme) {
       ? app.renderer.domElement.parentElement
       : null) || document.body;
 
-  // Asegura que el panel se mida respecto al visualizador,
-  // no respecto a toda la página.
+  // Para que absolute sea relativo al visualizador, no al body completo
   const hostStyle = window.getComputedStyle(host);
   if (hostStyle.position === "static") {
     host.style.position = "relative";
@@ -205,26 +227,40 @@ export function createComponentsPanel(app, theme) {
 
   host.appendChild(ui.root);
 
-  let open = false;
-  let building = false;
-  let disposed = false;
-
-  let currentEnt = null;
-  let currentIndex = null;
-
   // ============================================================
-  // RESPONSIVE LAYOUT
+  // RESPONSIVE + CLOSED TRANSLATE AUTOMÁTICO
   // ============================================================
+
+  function getHostSize() {
+    const rect = host.getBoundingClientRect();
+
+    return {
+      width: Math.max(rect.width || window.innerWidth || 1, 1),
+      height: Math.max(rect.height || window.innerHeight || 1, 1),
+    };
+  }
+
+  function computeClosedTx({ left, panelWidth, hostW }) {
+    // El panel está escalado con UI_SCALE.
+    // Para asegurar que desaparezca totalmente hacia la izquierda,
+    // usamos una distancia lógica grande basada en el tamaño real del host.
+    //
+    // No es un número calibrado a mano: cambia con el tamaño del visualizador.
+    const visualPanelWidth = panelWidth * UI_SCALE;
+
+    const neededVisualMove =
+      left + visualPanelWidth + SAFE_GAP + Math.max(80, hostW * 0.08);
+
+    return -Math.ceil(neededVisualMove * UI_SCALE_INV);
+  }
 
   function updateResponsiveLayout() {
     if (disposed) return;
 
-    const rect = host.getBoundingClientRect();
-    const hostW = Math.max(rect.width || window.innerWidth || 1, 1);
-    const hostH = Math.max(rect.height || window.innerHeight || 1, 1);
+    const { width: hostW, height: hostH } = getHostSize();
 
-    // Mantiene el left original si cabe.
-    // Si el visualizador es muy angosto, lo acerca al borde para no salirse.
+    // Mantiene BUTTON_LEFT = 50 cuando se puede.
+    // Si el visualizador es muy angosto, evita que se salga.
     const left =
       hostW < 360
         ? SAFE_GAP
@@ -233,16 +269,16 @@ export function createComponentsPanel(app, theme) {
     const btnHeightVisual = (ui.btn.offsetHeight || 42) * UI_SCALE;
     const panelBottom = BUTTON_BOTTOM + btnHeightVisual + PANEL_GAP_ABOVE_BUTTON;
 
-    // Mantiene el width base 440.
-    // Solo reduce si el visualizador es extremadamente pequeño.
-    const maxLayoutWidth = Math.max(
+    // Mantiene 440px de ancho lógico.
+    // Solo reduce si el visualizador es demasiado angosto.
+    const maxPanelWidthByHost = Math.max(
       260,
       (hostW - left - SAFE_GAP) * UI_SCALE_INV
     );
 
-    const panelWidth = Math.min(PANEL_BASE_WIDTH, maxLayoutWidth);
+    const panelWidth = Math.min(PANEL_BASE_WIDTH, maxPanelWidthByHost);
 
-    // Como el panel está escalado a 0.5, el maxHeight lógico debe ser mayor.
+    // Como el panel se escala a 0.5, la altura lógica debe compensarse.
     const availableVisualHeight = Math.max(
       120,
       hostH - panelBottom - SAFE_GAP
@@ -259,6 +295,18 @@ export function createComponentsPanel(app, theme) {
     ui.panel.style.maxHeight = `${availableLayoutHeight}px`;
 
     ui.list.style.maxHeight = `${Math.max(80, availableLayoutHeight - 52)}px`;
+
+    currentClosedTx = computeClosedTx({
+      left,
+      panelWidth,
+      hostW,
+    });
+
+    // Si está cerrado y cambia el tamaño del visualizador,
+    // actualizamos su posición cerrada sin romper el tween.
+    if (!open) {
+      ui.panel.style.transform = `translateX(${currentClosedTx}px)`;
+    }
   }
 
   let resizeObserver = null;
@@ -309,20 +357,27 @@ export function createComponentsPanel(app, theme) {
   });
 
   // ============================================================
-  // ABRIR / CERRAR
+  // OPEN / CLOSE CON TRANSLATEX + TWEEN
   // ============================================================
 
   function set(isOpen) {
     open = !!isOpen;
+
     updateResponsiveLayout();
 
     if (open) {
       ui.panel.style.opacity = "1";
-      ui.panel.style.transform = "translateY(0)";
+
+      // Abierto: vuelve a su posición natural abajo a la izquierda.
+      // El tween ocurre desde currentClosedTx hasta 0.
+      ui.panel.style.transform = "translateX(0px)";
       ui.panel.style.pointerEvents = "auto";
     } else {
       ui.panel.style.opacity = "0";
-      ui.panel.style.transform = "translateY(12px)";
+
+      // Cerrado: se va hacia la izquierda con translateX dinámico.
+      // Mantiene la animación tipo dock.
+      ui.panel.style.transform = `translateX(${currentClosedTx}px)`;
       ui.panel.style.pointerEvents = "none";
     }
   }
@@ -490,7 +545,7 @@ export function createComponentsPanel(app, theme) {
   function showDetails(ent, index) {
     if (disposed) return;
 
-    let text = resolveDescription(ent, index);
+    const text = resolveDescription(ent, index);
 
     if (!text) {
       console.debug(
@@ -502,10 +557,12 @@ export function createComponentsPanel(app, theme) {
     // Mantengo tu comportamiento anterior:
     // no se muestra el bloque details aunque exista descripción.
     //
-    // Si después quieres mostrar la descripción, descomenta esto:
+    // Si quieres volver a mostrar la descripción IA en el panel,
+    // descomenta este bloque:
     //
     // ui.detailsTitle.textContent = ent.base;
-    // ui.detailsBody.textContent = text || "Sin descripción generada para esta pieza.";
+    // ui.detailsBody.textContent =
+    //   text || "Sin descripción generada para esta pieza.";
     // ui.details.style.display = "block";
 
     console.debug("[ComponentsPanel] showDetails:", ent.assetKey, "=>", text);
