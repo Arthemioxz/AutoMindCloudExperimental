@@ -55,7 +55,7 @@ export function createComponentsPanel(app, theme) {
     // ✅ BOTÓN: NO CAMBIAR POSICIÓN
     btn: {
       position: "absolute",
-      left: "14px",
+      left: "50px",
       bottom: "14px",
       padding: "8px 12px",
       borderRadius: "12px",
