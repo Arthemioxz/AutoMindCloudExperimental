@@ -53,7 +53,7 @@ export function createComponentsPanel(app, theme) {
     },
     panel: {
       position: "absolute",
-      right: "14px",
+      right: "50px",
       bottom: "14px",
       width: "440px",
       maxHeight: "72%",
