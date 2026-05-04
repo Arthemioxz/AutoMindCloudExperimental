@@ -1,8 +1,19 @@
 // /viewer/ui/ComponentsPanel.js
 // Lista de componentes + frame de descripción al hacer click.
-// Panel responsive abajo a la izquierda.
-// No usa offsets duros tipo right: 610px ni translateX(-1370px).
-// Se ajusta solo al tamaño del visualizador usando min(), clamp(), vh/vw y ResizeObserver.
+// Integra IA:
+//  - Usa app.getComponentDescription(assetKey, index) / app.componentDescriptions.
+//  - Actualiza descripción al hacer click.
+//  - Si la IA llega después, refresca automáticamente el detalle actual
+//    al recibir el evento 'ia_descriptions_ready'.
+//
+// Versión arreglada:
+//  - Mantiene el tamaño/formato visual anterior.
+//  - Mantiene UI_SCALE = 0.5.
+//  - Mantiene panel width = 440px.
+//  - Mantiene thumbnails 128x96.
+//  - Panel aparece abajo a la izquierda.
+//  - Se ajusta automáticamente al tamaño del visualizador.
+//  - No usa offsets duros dependientes del PC como right: 610px o translateX(-1370px).
 
 export function createComponentsPanel(app, theme) {
   if (!app || !app.assets || !app.isolate || !app.showAll) {
@@ -23,23 +34,24 @@ export function createComponentsPanel(app, theme) {
   };
 
   // ============================================================
-  // CONFIG RESPONSIVE
-  // ============================================================
-  // El panel queda abajo a la izquierda, sobre el botón Components.
-  // Se adapta al tamaño real del contenedor del renderer.
-  // No hay que recalibrar al cambiar de PC.
+  // CONFIGURACIÓN RESPONSIVE SIN CAMBIAR FORMATO
   // ============================================================
 
-  const SAFE_GAP = 14;
+  const UI_SCALE = 0.5;
+  const UI_SCALE_INV = 1 / UI_SCALE;
+
+  const BUTTON_LEFT = 50;
   const BUTTON_BOTTOM = 14;
-  const BUTTON_LEFT = 14;
-  const BUTTON_ESTIMATED_HEIGHT = 42;
   const PANEL_GAP_ABOVE_BUTTON = 10;
+  const SAFE_GAP = 14;
+
+  const PANEL_BASE_WIDTH = 440;
 
   const css = {
     root: {
       position: "absolute",
-      inset: "0",
+      left: "0",
+      top: "0",
       width: "100%",
       height: "100%",
       pointerEvents: "none",
@@ -49,6 +61,7 @@ export function createComponentsPanel(app, theme) {
         "Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
     },
 
+    // Mantiene el botón como antes
     btn: {
       position: "absolute",
       left: `${BUTTON_LEFT}px`,
@@ -62,48 +75,35 @@ export function createComponentsPanel(app, theme) {
       cursor: "pointer",
       boxShadow: theme.shadow,
       pointerEvents: "auto",
-      transition:
-        "transform .12s ease, background .12s ease, border-color .12s ease",
-      userSelect: "none",
-      whiteSpace: "nowrap",
+      transition: "all .12s ease",
     },
 
+    // Mantiene el panel con el tamaño/formato anterior
+    // pero ahora abajo a la izquierda y responsive.
     panel: {
       position: "absolute",
+      left: `${BUTTON_LEFT}px`,
+      bottom: "60px",
 
-      // Abajo a la izquierda, responsive.
-      left: `clamp(10px, 1.5vw, ${SAFE_GAP}px)`,
-      bottom: `${
-        BUTTON_BOTTOM + BUTTON_ESTIMATED_HEIGHT + PANEL_GAP_ABOVE_BUTTON
-      }px`,
-
-      // Nunca se sale del visualizador.
-      width: `min(440px, calc(100% - ${SAFE_GAP * 2}px))`,
-      maxWidth: `calc(100% - ${SAFE_GAP * 2}px)`,
-
-      // Altura ajustable. También se recalcula por ResizeObserver más abajo.
-      maxHeight: `calc(100% - ${
-        BUTTON_BOTTOM + BUTTON_ESTIMATED_HEIGHT + PANEL_GAP_ABOVE_BUTTON + SAFE_GAP
-      }px)`,
+      width: `${PANEL_BASE_WIDTH}px`,
+      maxHeight: `calc(92vh * ${UI_SCALE_INV})`,
 
       background: theme.bgPanel,
       border: `1px solid ${theme.stroke}`,
       boxShadow: theme.shadow,
       borderRadius: "18px",
       overflow: "hidden",
-      display: "flex",
-      flexDirection: "column",
-      pointerEvents: "none",
+      display: "block",
+      pointerEvents: "auto",
       willChange: "transform, opacity",
       transition:
-        "transform 220ms cubic-bezier(.2,.7,.2,1), opacity 180ms ease",
-      transform: "translateY(10px) scale(0.98)",
+        "transform 260ms cubic-bezier(.2,.7,.2,1), opacity 200ms ease",
+      transform: "translateY(12px)",
       opacity: "0",
       boxSizing: "border-box",
     },
 
     header: {
-      flex: "0 0 auto",
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between",
@@ -117,29 +117,20 @@ export function createComponentsPanel(app, theme) {
       fontWeight: "800",
       color: "#ffffff",
       fontSize: "14px",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
     },
 
     showAllBtn: {
-      flex: "0 0 auto",
       padding: "6px 10px",
       borderRadius: "10px",
       border: `1px solid ${theme.stroke}`,
       background: theme.bgPanel,
-      color: theme.text,
       fontWeight: "700",
       cursor: "pointer",
       fontSize: "11px",
-      transition:
-        "transform .12s ease, background .12s ease, border-color .12s ease",
-      userSelect: "none",
-      whiteSpace: "nowrap",
+      transition: "all .12s ease",
     },
 
     details: {
-      flex: "0 0 auto",
       display: "none",
       padding: "10px 12px",
       borderBottom: `1px solid ${theme.stroke}`,
@@ -160,13 +151,11 @@ export function createComponentsPanel(app, theme) {
       whiteSpace: "pre-wrap",
     },
 
+    // Mantiene el alto escalado como antes
     list: {
-      flex: "1 1 auto",
-      minHeight: "0",
       overflowY: "auto",
-      overscrollBehavior: "contain",
+      maxHeight: `calc((92vh - 52px) * ${UI_SCALE_INV})`,
       padding: "10px",
-      boxSizing: "border-box",
     },
   };
 
@@ -180,6 +169,13 @@ export function createComponentsPanel(app, theme) {
   applyStyles(ui.detailsTitle, css.detailsTitle);
   applyStyles(ui.detailsBody, css.detailsBody);
   applyStyles(ui.list, css.list);
+
+  // Mantiene tamaño visual anterior
+  ui.btn.style.transformOrigin = "bottom left";
+  ui.btn.style.scale = String(UI_SCALE);
+
+  ui.panel.style.transformOrigin = "bottom left";
+  ui.panel.style.scale = String(UI_SCALE);
 
   ui.btn.textContent = "Components";
   ui.title.textContent = "Components";
@@ -200,9 +196,10 @@ export function createComponentsPanel(app, theme) {
       ? app.renderer.domElement.parentElement
       : null) || document.body;
 
-  // Importante: para que position:absolute se mida contra el visualizador.
-  const hostComputed = window.getComputedStyle(host);
-  if (hostComputed.position === "static") {
+  // Asegura que el panel se mida respecto al visualizador,
+  // no respecto a toda la página.
+  const hostStyle = window.getComputedStyle(host);
+  if (hostStyle.position === "static") {
     host.style.position = "relative";
   }
 
@@ -216,60 +213,52 @@ export function createComponentsPanel(app, theme) {
   let currentIndex = null;
 
   // ============================================================
-  // RESPONSIVE REAL: recalcula altura según tamaño del host
+  // RESPONSIVE LAYOUT
   // ============================================================
 
   function updateResponsiveLayout() {
     if (disposed) return;
 
     const rect = host.getBoundingClientRect();
-
     const hostW = Math.max(rect.width || window.innerWidth || 1, 1);
     const hostH = Math.max(rect.height || window.innerHeight || 1, 1);
 
-    const isTiny = hostW < 520 || hostH < 420;
+    // Mantiene el left original si cabe.
+    // Si el visualizador es muy angosto, lo acerca al borde para no salirse.
+    const left =
+      hostW < 360
+        ? SAFE_GAP
+        : Math.min(BUTTON_LEFT, Math.max(SAFE_GAP, hostW - 160));
 
-    const left = isTiny ? 10 : 14;
-    const bottomButton = isTiny ? 10 : BUTTON_BOTTOM;
-    const buttonHeight = ui.btn.offsetHeight || BUTTON_ESTIMATED_HEIGHT;
-    const panelBottom = bottomButton + buttonHeight + PANEL_GAP_ABOVE_BUTTON;
+    const btnHeightVisual = (ui.btn.offsetHeight || 42) * UI_SCALE;
+    const panelBottom = BUTTON_BOTTOM + btnHeightVisual + PANEL_GAP_ABOVE_BUTTON;
 
-    const panelWidth = Math.min(440, Math.max(260, hostW - left * 2));
-    const availableHeight = Math.max(160, hostH - panelBottom - left);
+    // Mantiene el width base 440.
+    // Solo reduce si el visualizador es extremadamente pequeño.
+    const maxLayoutWidth = Math.max(
+      260,
+      (hostW - left - SAFE_GAP) * UI_SCALE_INV
+    );
+
+    const panelWidth = Math.min(PANEL_BASE_WIDTH, maxLayoutWidth);
+
+    // Como el panel está escalado a 0.5, el maxHeight lógico debe ser mayor.
+    const availableVisualHeight = Math.max(
+      120,
+      hostH - panelBottom - SAFE_GAP
+    );
+
+    const availableLayoutHeight = availableVisualHeight * UI_SCALE_INV;
 
     ui.btn.style.left = `${left}px`;
-    ui.btn.style.bottom = `${bottomButton}px`;
+    ui.btn.style.bottom = `${BUTTON_BOTTOM}px`;
 
     ui.panel.style.left = `${left}px`;
     ui.panel.style.bottom = `${panelBottom}px`;
     ui.panel.style.width = `${panelWidth}px`;
-    ui.panel.style.maxWidth = `calc(100% - ${left * 2}px)`;
-    ui.panel.style.maxHeight = `${availableHeight}px`;
+    ui.panel.style.maxHeight = `${availableLayoutHeight}px`;
 
-    // En pantallas chicas hacemos filas más compactas.
-    const rows = ui.list.querySelectorAll("[data-component-row='1']");
-    rows.forEach((row) => {
-      if (isTiny) {
-        row.style.gridTemplateColumns = "72px 1fr";
-        row.style.gap = "8px";
-        row.style.padding = "8px";
-      } else {
-        row.style.gridTemplateColumns = "112px 1fr";
-        row.style.gap = "12px";
-        row.style.padding = "10px";
-      }
-    });
-
-    const thumbs = ui.list.querySelectorAll("[data-component-thumb='1']");
-    thumbs.forEach((thumb) => {
-      if (isTiny) {
-        thumb.style.width = "72px";
-        thumb.style.height = "54px";
-      } else {
-        thumb.style.width = "112px";
-        thumb.style.height = "84px";
-      }
-    });
+    ui.list.style.maxHeight = `${Math.max(80, availableLayoutHeight - 52)}px`;
   }
 
   let resizeObserver = null;
@@ -315,25 +304,25 @@ export function createComponentsPanel(app, theme) {
     try {
       app.showAll();
     } catch (_) {}
+
     hideDetails();
   });
 
   // ============================================================
-  // OPEN / CLOSE
+  // ABRIR / CERRAR
   // ============================================================
 
   function set(isOpen) {
     open = !!isOpen;
-
     updateResponsiveLayout();
 
     if (open) {
       ui.panel.style.opacity = "1";
-      ui.panel.style.transform = "translateY(0) scale(1)";
+      ui.panel.style.transform = "translateY(0)";
       ui.panel.style.pointerEvents = "auto";
     } else {
       ui.panel.style.opacity = "0";
-      ui.panel.style.transform = "translateY(10px) scale(0.98)";
+      ui.panel.style.transform = "translateY(12px)";
       ui.panel.style.pointerEvents = "none";
     }
   }
@@ -354,7 +343,9 @@ export function createComponentsPanel(app, theme) {
 
   async function maybeBuild() {
     if (building || disposed) return;
+
     building = true;
+
     try {
       await renderList();
       updateResponsiveLayout();
@@ -364,7 +355,7 @@ export function createComponentsPanel(app, theme) {
   }
 
   // ============================================================
-  // LISTA
+  // RENDER LIST
   // ============================================================
 
   async function renderList() {
@@ -391,38 +382,29 @@ export function createComponentsPanel(app, theme) {
 
     items.forEach((ent, index) => {
       const row = document.createElement("div");
-      row.dataset.componentRow = "1";
       applyStyles(row, rowStyles(theme));
 
       const img = document.createElement("img");
-      img.dataset.componentThumb = "1";
       applyStyles(img, thumbStyles(theme));
       img.alt = ent.base;
       img.loading = "eager";
       img.decoding = "async";
 
       const meta = document.createElement("div");
-      meta.style.minWidth = "0";
 
       const title = document.createElement("div");
       title.textContent = ent.base;
       title.style.fontWeight = "700";
-      title.style.fontSize = "13px";
+      title.style.fontSize = "14px";
       title.style.color = theme.text;
-      title.style.overflow = "hidden";
-      title.style.textOverflow = "ellipsis";
-      title.style.whiteSpace = "nowrap";
 
       const small = document.createElement("div");
       small.textContent = `.${ent.ext || "asset"} • ${ent.count} instance${
         ent.count > 1 ? "s" : ""
       }`;
       small.style.color = theme.textMuted;
-      small.style.fontSize = "11px";
+      small.style.fontSize = "12px";
       small.style.marginTop = "2px";
-      small.style.overflow = "hidden";
-      small.style.textOverflow = "ellipsis";
-      small.style.whiteSpace = "nowrap";
 
       meta.appendChild(title);
       meta.appendChild(small);
@@ -432,7 +414,7 @@ export function createComponentsPanel(app, theme) {
       ui.list.appendChild(row);
 
       row.addEventListener("mouseenter", () => {
-        row.style.transform = "translateY(-1px) scale(1.01)";
+        row.style.transform = "translateY(-1px) scale(1.02)";
         row.style.background = theme.tealFaint;
         row.style.borderColor = theme.tealSoft ?? theme.teal;
       });
@@ -459,6 +441,7 @@ export function createComponentsPanel(app, theme) {
       (async () => {
         try {
           const url = await app.assets.thumbnail?.(ent.assetKey);
+
           if (url) {
             img.src = url;
           } else {
@@ -476,7 +459,7 @@ export function createComponentsPanel(app, theme) {
   }
 
   // ============================================================
-  // DESCRIPCIONES IA
+  // IA DESCRIPTION
   // ============================================================
 
   function resolveDescription(ent, index) {
@@ -507,27 +490,23 @@ export function createComponentsPanel(app, theme) {
   function showDetails(ent, index) {
     if (disposed) return;
 
-    const text = resolveDescription(ent, index);
+    let text = resolveDescription(ent, index);
 
     if (!text) {
       console.debug(
         "[ComponentsPanel] No se encontró descripción para",
         ent.assetKey
       );
-
-      // Lo dejo oculto igual que en tu versión anterior.
-      // Si quieres mostrar un detalle visible, descomenta estas líneas:
-      //
-      // ui.detailsTitle.textContent = ent.base;
-      // ui.detailsBody.textContent = "Sin descripción generada para esta pieza.";
-      // ui.details.style.display = "block";
-    } else {
-      // Si quieres que la descripción IA aparezca en el panel,
-      // deja estas líneas activas:
-      ui.detailsTitle.textContent = ent.base;
-      ui.detailsBody.textContent = text;
-      ui.details.style.display = "block";
     }
+
+    // Mantengo tu comportamiento anterior:
+    // no se muestra el bloque details aunque exista descripción.
+    //
+    // Si después quieres mostrar la descripción, descomenta esto:
+    //
+    // ui.detailsTitle.textContent = ent.base;
+    // ui.detailsBody.textContent = text || "Sin descripción generada para esta pieza.";
+    // ui.details.style.display = "block";
 
     console.debug("[ComponentsPanel] showDetails:", ent.assetKey, "=>", text);
     updateResponsiveLayout();
@@ -548,16 +527,12 @@ export function createComponentsPanel(app, theme) {
     const txt = resolveDescription(currentEnt, currentIndex);
 
     if (txt && txt !== ui.detailsBody.textContent) {
-      ui.detailsTitle.textContent = currentEnt.base;
       ui.detailsBody.textContent = txt;
-      ui.details.style.display = "block";
 
       console.debug(
         "[ComponentsPanel][IA] Detalle actualizado tras IA para",
         currentEnt.assetKey
       );
-
-      updateResponsiveLayout();
     }
   }
 
@@ -591,10 +566,6 @@ export function createComponentsPanel(app, theme) {
       clearInterval(pollTimer);
     }
   }, 500);
-
-  // ============================================================
-  // API
-  // ============================================================
 
   async function refresh() {
     if (disposed) return;
@@ -665,10 +636,6 @@ export function createComponentsPanel(app, theme) {
   };
 }
 
-// ============================================================
-// HELPERS
-// ============================================================
-
 function applyStyles(el, styles) {
   Object.assign(el.style, styles);
 }
@@ -686,7 +653,7 @@ function basenameNoExt(p) {
 function rowStyles(theme) {
   return {
     display: "grid",
-    gridTemplateColumns: "112px 1fr",
+    gridTemplateColumns: "128px 1fr",
     gap: "12px",
     alignItems: "center",
     padding: "10px",
@@ -695,33 +662,26 @@ function rowStyles(theme) {
     marginBottom: "10px",
     background: "#fff",
     cursor: "pointer",
-    transition:
-      "transform .08s ease, box-shadow .12s ease, background .12s ease, border-color .12s ease",
-    boxSizing: "border-box",
-    minWidth: "0",
+    transition: "transform .08s ease, box-shadow .12s ease",
   };
 }
 
 function thumbStyles(theme) {
   return {
-    width: "112px",
-    height: "84px",
+    width: "128px",
+    height: "96px",
     objectFit: "contain",
     background: "#f7fbfb",
     borderRadius: "10px",
     border: `1px solid ${theme.stroke}`,
-    boxSizing: "border-box",
-    flex: "0 0 auto",
   };
 }
 
 function makeThumbFallback(label, theme) {
   const wrap = document.createElement("div");
 
-  wrap.dataset.componentThumb = "1";
-
-  wrap.style.width = "112px";
-  wrap.style.height = "84px";
+  wrap.style.width = "128px";
+  wrap.style.height = "96px";
   wrap.style.display = "flex";
   wrap.style.alignItems = "center";
   wrap.style.justifyContent = "center";
@@ -731,10 +691,6 @@ function makeThumbFallback(label, theme) {
   wrap.style.fontSize = "11px";
   wrap.style.color = theme.textMuted;
   wrap.style.textAlign = "center";
-  wrap.style.boxSizing = "border-box";
-  wrap.style.padding = "6px";
-  wrap.style.overflow = "hidden";
-  wrap.style.wordBreak = "break-word";
   wrap.textContent = label || "—";
 
   return wrap;
